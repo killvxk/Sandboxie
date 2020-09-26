@@ -25,7 +25,6 @@
 #include "api.h"
 #include "util.h"
 
-
 //---------------------------------------------------------------------------
 // Functions
 //---------------------------------------------------------------------------
@@ -36,11 +35,11 @@ static void Log_Event_Msg(
     const WCHAR *string1,
     const WCHAR *string2);
 
-static void Log_Popup_Msg_2(
+/*static void Log_Popup_Msg_2(
     NTSTATUS error_code,
     const WCHAR *string1, ULONG string1_len,
     const WCHAR *string2, ULONG string2_len,
-    ULONG session_id);
+    ULONG session_id);*/
 
 
 //---------------------------------------------------------------------------
@@ -106,7 +105,8 @@ _FX void Log_Popup_Msg(
     NTSTATUS error_code,
     const WCHAR *string1,
     const WCHAR *string2,
-    ULONG session_id)
+    ULONG session_id,
+	HANDLE pid)
 {
     ULONG string1_len, string2_len;
 
@@ -133,15 +133,17 @@ _FX void Log_Popup_Msg(
     if ((Driver_OsVersion >= DRIVER_WINDOWS_VISTA) && (session_id == 0))
         session_id = 1;
 
-    Log_Popup_Msg_2(
-        error_code, string1, string1_len, string2, string2_len, session_id);
+    //Log_Popup_Msg_2(
+	Api_AddMessage(
+        error_code, string1, string1_len, string2, string2_len, session_id, (ULONG)pid);
 
     //
     // log message to SbieSvc and trigger SbieSvc to wake up and collect it
     //
 
-    Log_Popup_Msg_2(
-        error_code, string1, string1_len, string2, string2_len, -1);
+    //Log_Popup_Msg_2(
+	Api_AddMessage(
+        error_code, string1, string1_len, string2, string2_len, -1, (ULONG)pid);
 
     string1_len = 0;
     Api_SendServiceMessage(SVC_LOG_MESSAGE, sizeof(ULONG), &string1_len);
@@ -155,7 +157,7 @@ _FX void Log_Popup_Msg(
 //---------------------------------------------------------------------------
 
 
-_FX void Log_Popup_Msg_2(
+/*_FX void Log_Popup_Msg_2(
     NTSTATUS error_code,
     const WCHAR *string1, ULONG string1_len,
     const WCHAR *string2, ULONG string2_len,
@@ -202,7 +204,7 @@ _FX void Log_Popup_Msg_2(
 
         Api_AddWork(work_item);
     }
-}
+}*/
 
 
 //---------------------------------------------------------------------------
@@ -230,13 +232,27 @@ _FX void Log_Msg_Session(
     const WCHAR *string2,
     ULONG session_id)
 {
-    ULONG facility = (error_code >> 16) & 0x0F;
-    if (facility & MSG_FACILITY_EVENT)
-        Log_Event_Msg(error_code, string1, string2);
-    if (facility & MSG_FACILITY_POPUP)
-        Log_Popup_Msg(error_code, string1, string2, session_id);
+	Log_Msg_Process(error_code, string1, string2, session_id, (HANDLE)4);
 }
 
+//---------------------------------------------------------------------------
+// Log_Msg_Process
+//---------------------------------------------------------------------------
+
+
+_FX void Log_Msg_Process(
+	NTSTATUS error_code,
+	const WCHAR *string1,
+	const WCHAR *string2,
+	ULONG session_id,
+	HANDLE process_id)
+{
+	ULONG facility = (error_code >> 16) & 0x0F;
+	if (facility & MSG_FACILITY_EVENT)
+		Log_Event_Msg(error_code, string1, string2);
+	if (facility & MSG_FACILITY_POPUP)
+		Log_Popup_Msg(error_code, string1, string2, session_id, process_id);
+}
 
 //---------------------------------------------------------------------------
 // Log_Status_Ex
@@ -265,6 +281,22 @@ _FX void Log_Status_Ex_Session(
     const WCHAR *string2,
     ULONG session_id)
 {
+	Log_Status_Ex_Process(error_code, error_subcode, nt_status, string2, session_id, (HANDLE)4);
+}
+
+//---------------------------------------------------------------------------
+// Log_Status_Ex_Process
+//---------------------------------------------------------------------------
+
+
+_FX void Log_Status_Ex_Process(
+    NTSTATUS error_code,
+    ULONG error_subcode,
+    NTSTATUS nt_status,
+    const WCHAR *string2,
+    ULONG session_id,
+	HANDLE process_id)
+{
     WCHAR str[100];
 
     if (error_subcode)
@@ -272,7 +304,7 @@ _FX void Log_Status_Ex_Session(
     else
         swprintf(str, L"[%08X]", nt_status);
 
-    Log_Msg_Session(error_code, str, string2, session_id);
+    Log_Msg_Process(error_code, str, string2, session_id, process_id);
 }
 
 

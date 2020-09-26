@@ -328,8 +328,7 @@ _FX BOOLEAN Thread_InitProcess(PROCESS *proc)
 
         if (! NT_SUCCESS(status)) {
 
-            Log_Status_Ex_Session(
-                MSG_1231, 0x44, status, NULL, proc->box->session_id);
+			Log_Status_Ex_Process( MSG_1231, 0x44, status, NULL, proc->box->session_id, proc->pid);
             return FALSE;
         }
     }
@@ -1034,7 +1033,7 @@ _FX NTSTATUS Thread_CheckObject_Common(
             --nptr; *nptr = L':';
             --nptr; *nptr = L'$';
 
-            Session_MonitorPut(mon_type, nptr);
+            Session_MonitorPut(mon_type, nptr, proc->pid);
 
             Mem_Free(nbuf, nlen);
         }

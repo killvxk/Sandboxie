@@ -152,7 +152,7 @@ BOOL CAboutDialog::OnInitDialog()
     //
     //
 
-    text.Format(L"%S", MY_COPYRIGHT_STRING);
+    text.Format(L"%S\r\n%S", MY_COPYRIGHT_STRING, MY_COPYRIGHT_STRING_OLD);
     GetDlgItem(ID_ABOUT_COPYRIGHT)->SetWindowText(text);
 
     GetDlgItem(IDOK)->SetWindowText(CMyMsg(MSG_3001));

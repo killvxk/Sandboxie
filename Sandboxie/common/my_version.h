@@ -20,8 +20,9 @@
 #ifndef _MY_VERSION_H
 #define _MY_VERSION_H
 
-#define MY_VERSION_BINARY       5,40
-#define MY_VERSION_STRING       "5.40"
+#define MY_VERSION_BINARY       5,43,5
+#define MY_VERSION_STRING       "5.43.5"
+#define MY_VERSION_COMPAT		"5.43.5"
 
 // These #defines are used by either Resource Compiler, or by NSIC installer
 #define SBIE_INSTALLER_PATH		"..\\Bin\\"
@@ -29,11 +30,14 @@
 #define SBIE_INSTALLER_PATH_64  "..\\Bin\\x64\\SandboxieInstall64.exe"
 
 #define MY_PRODUCT_NAME_STRING  "Sandboxie"
-#define MY_COMPANY_NAME_STRING  "Sandboxie Holdings, LLC"
-#define MY_COPYRIGHT_STRING     "Copyright © 2004-2020 by Sandboxie Holdings, LLC"
+#define MY_COMPANY_NAME_STRING  "xanasoft.com"
+#define MY_COPYRIGHT_STRING     "Copyright © 2020 by David Xanatos (xanasoft.com)"
+#define MY_COPYRIGHT_STRING_OLD "Copyright © 2004-2020 by Sandboxie Holdings, LLC"
 
 #define SANDBOXIE               L"Sandboxie"
 #define SBIE                    L"SBIE"
+
+#define SANDBOXIE_USER			L"Sandboxie"
 
 #define SBIE_BOXED_             SBIE L"_BOXED_"
 #define SBIE_BOXED_LEN          (4 + 7)

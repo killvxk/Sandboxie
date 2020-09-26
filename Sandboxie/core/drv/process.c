@@ -512,7 +512,7 @@ _FX void Process_CreateTerminated(HANDLE ProcessId, ULONG SessionId)
     if (pid_str.Buffer) {
 
         RtlIntPtrToUnicodeString((ULONG_PTR)ProcessId, 10, &pid_str);
-        Log_Msg_Session(MSG_1211, pid_str.Buffer, NULL, SessionId);
+		Log_Msg_Process(MSG_1211, pid_str.Buffer, NULL, SessionId, ProcessId);
 
         Mem_Free(pid_str.Buffer, pid_str.MaximumLength);
     }
@@ -558,7 +558,7 @@ _FX PROCESS *Process_Create(
 
     pool = Pool_Create();
     if (! pool) {
-        Log_Msg_Session(MSG_1201, NULL, NULL, box->session_id);
+		Log_Msg_Process(MSG_1201, NULL, NULL, box->session_id, ProcessId);
         Process_CreateTerminated(ProcessId, box->session_id);
         return NULL;
     }
@@ -566,7 +566,7 @@ _FX PROCESS *Process_Create(
     proc = Mem_Alloc(pool, sizeof(PROCESS));
     if (! proc) {
         // first allocation from a new pool should never fail
-        Log_Msg_Session(MSG_1201, NULL, NULL, box->session_id);
+		Log_Msg_Process(MSG_1201, NULL, NULL, box->session_id, ProcessId);
         Pool_Delete(pool);
         Process_CreateTerminated(ProcessId, box->session_id);
         return NULL;
@@ -591,8 +591,7 @@ _FX PROCESS *Process_Create(
     status = PsLookupProcessByProcessId(proc->pid, &ProcessObject);
     if (! NT_SUCCESS(status)) {
 
-        Log_Status_Ex_Session(
-                        MSG_1231, 0x33, status, L"???", box->session_id);
+		Log_Status_Ex_Process(MSG_1231, 0x33, status, L"???", box->session_id, ProcessId);
 
         Pool_Delete(pool);
         Process_CreateTerminated(ProcessId, box->session_id);
@@ -645,7 +644,7 @@ _FX PROCESS *Process_Create(
                     memcpy(proc->image_name, image_name,
                            proc->image_name_len);
                 } else
-                    Log_Msg_Session(MSG_1201, NULL, NULL, box->session_id);
+					Log_Msg_Process(MSG_1201, NULL, NULL, box->session_id, proc->pid);
             }
         }
 
@@ -655,8 +654,7 @@ _FX PROCESS *Process_Create(
     if ((! proc->image_name) || (! proc->image_path)) {
 
         const ULONG status = STATUS_INVALID_IMAGE_FORMAT;
-        Log_Status_Ex_Session(
-                        MSG_1231, 0x11, status, L"???", box->session_id);
+		Log_Status_Ex_Process(MSG_1231, 0x11, status, L"???", box->session_id, proc->pid);
 
         Pool_Delete(pool);
         Process_CreateTerminated(ProcessId, box->session_id);
@@ -685,7 +683,7 @@ _FX PROCESS *Process_Create(
         if (proc->gui_lock)
             Mem_FreeLockResource(&proc->gui_lock);
 
-        Log_Msg_Session(MSG_1201, NULL, NULL, box->session_id);
+		Log_Msg_Process(MSG_1201, NULL, NULL, box->session_id, ProcessId);
         Pool_Delete(pool);
         Process_CreateTerminated(ProcessId, box->session_id);
         return NULL;
@@ -1026,7 +1024,7 @@ _FX void Process_NotifyProcess_Create(
                 // don't put the process into a job if OpenWinClass=*
                 //
 
-                if (new_proc->open_all_win_classes) {
+                if (new_proc->open_all_win_classes || Conf_Get_Boolean(box->name, L"NoAddProcessToJob", 0, FALSE)) {
 
                     add_process_to_job = FALSE;
                 }
@@ -1166,7 +1164,7 @@ _FX void Process_NotifyImage(
 {
     static const WCHAR *_Ntdll32 = L"\\syswow64\\ntdll.dll";    // 19 chars
     PROCESS *proc;
-    BOOLEAN ok;
+    ULONG fail = 0;
 
     //
     // the notify routine is invoked for any image mapped for any purpose.
@@ -1216,60 +1214,61 @@ _FX void Process_NotifyImage(
     // create the sandbox space
     //
 
-    ok = TRUE;
-
     if (!proc->bHostInject)
     {
-        if (ok)
-            ok = File_CreateBoxPath(proc);
+		if (!fail && !File_CreateBoxPath(proc))
+			fail = 0x01;
 
-        if (ok)
-            ok = Ipc_CreateBoxPath(proc);
+        if (!fail && !Ipc_CreateBoxPath(proc))
+			fail = 0x02;
 
-        if (ok)
-            ok = Key_MountHive(proc);
+        if (!fail && !Key_MountHive(proc))
+			fail = 0x03;
 
         //
         // initialize the filtering components
         //
 
-        if (ok)
-            ok = File_InitProcess(proc);
+        if (!fail && !File_InitProcess(proc))
+			fail = 0x04;
 
-        if (ok)
-            ok = Key_InitProcess(proc);
+        if (!fail && !Key_InitProcess(proc))
+			fail = 0x05;
 
-        if (ok)
-            ok = Ipc_InitProcess(proc);
+        if (!fail && !Ipc_InitProcess(proc))
+			fail = 0x06;
 
-        if (ok)
-            ok = Gui_InitProcess(proc);
+        if (!fail && !Gui_InitProcess(proc))
+			fail = 0x07;
 
-        if (ok)
-            ok = Process_Low_InitConsole(proc);
+        if (!fail && !Process_Low_InitConsole(proc))
+			fail = 0x08;
 
-        if (ok)
-            ok = Token_ReplacePrimary(proc);
+		if (!fail && !Token_ReplacePrimary(proc))
+			fail = 0x09;
 
-        if (ok)
-            ok = Thread_InitProcess(proc);
+        if (!fail && !Thread_InitProcess(proc))
+			fail = 0x0A;
     }
 
     //
     // terminate process if initialization failed
     //
 
-    if (ok) {
+    if (!fail) {
 
         proc->initialized = TRUE;
 
     } else {
 
+		Log_Status_Ex_Process(MSG_1231, fail, STATUS_UNSUCCESSFUL, NULL, proc->box->session_id, proc->pid);
+
         proc->terminated = TRUE;
+		proc->reason = 0xA0 + fail;
         Process_CancelProcess(proc);
     }
 
-    //DbgPrint("IMAGE LOADED, PROCESS INITIALIZATION %d COMPLETE %d\n", proc->pid, ok);
+    //DbgPrint("IMAGE LOADED, PROCESS INITIALIZATION %d COMPLETE %d\n", proc->pid, !fail);
 }
 
 

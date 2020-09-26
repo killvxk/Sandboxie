@@ -190,7 +190,7 @@ CMyFrame::CMyFrame(BOOL ForceVisible, BOOL ForceSync)
     m_view = m_view_old = 0;
     m_hidden = FALSE;
 
-    CUserSettings::GetInstance().GetBool(_ShowWelcome, m_ShowWelcome, TRUE);
+    //CUserSettings::GetInstance().GetBool(_ShowWelcome, m_ShowWelcome, TRUE);
     CUserSettings::GetInstance().GetBool(_AlwaysOnTop, m_AlwaysOnTop, FALSE);
 
     m_ReSyncShortcuts = ForceSync;
@@ -223,7 +223,8 @@ CMyFrame::CMyFrame(BOOL ForceVisible, BOOL ForceSync)
     AdjustSizePosition(left, top, width, height);
 
     ULONG exStyle = (CMyApp::m_LayoutRTL) ? WS_EX_LAYOUTRTL : 0;
-    CreateEx(   exStyle, (LPCTSTR)CMyApp::m_atom, CMyApp::m_appTitle,
+	CString strTitle = CMyApp::m_appTitle + " - xanasoft.com";
+    CreateEx(   exStyle, (LPCTSTR)CMyApp::m_atom, strTitle,
                 WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_SYSMENU,
                 left, top, width, height,
                 NULL, NULL, NULL);
@@ -1974,7 +1975,7 @@ void CMyFrame::OnTimer(UINT_PTR nIDEvent)
         // first time?
         //
 
-        if (m_ShowWelcome && (! inModalState)) {
+        /*if (m_ShowWelcome && (! inModalState)) {
 
             m_ShowWelcome = FALSE;
             CUserSettings::GetInstance().SetBool(_ShowWelcome, FALSE);
@@ -1984,7 +1985,7 @@ void CMyFrame::OnTimer(UINT_PTR nIDEvent)
 
             CGettingStartedWizard wizard(this);
             return;
-        }
+        }*/
 
         //
         // resync shortcuts?  usually Sandboxie Control does not resync

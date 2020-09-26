@@ -178,6 +178,12 @@ skip_e9_rewrite: ;
             SourceFunc = (void *)target;
     }
 
+	//
+	// this simplification fails for delay loaded libraries, see coments about SetSecurityInfo,
+	// resulting in an endless loop, so just dont do that 
+	//
+
+#if 0
     //
     // 64-bit only:  if the function begins with 'jmp qword ptr [x]'
     // (6 bytes) then replace the value at x, rather than overwrite
@@ -216,6 +222,7 @@ skip_e9_rewrite: ;
 
         return orig_addr;
     }
+#endif
 
 #endif _WIN64
 
@@ -284,6 +291,9 @@ skip_e9_rewrite: ;
         return NULL;
     }
 
+	ULONG ByteCount = *(ULONG*)(tramp + 80);
+	ULONG UsedCount = 0;
+	
     //
     // create the detour
     //
@@ -323,10 +333,12 @@ skip_e9_rewrite: ;
             func[0] = 0x48;             // 32bit relative JMP DetourFunc
             func[1] = 0xE9;             // 32bit relative JMP DetourFunc
             *(ULONG *)(&func[2]) = (ULONG)diff;
+			UsedCount = 1 + 1 + 4;
         }
         else {
             func[0] = 0xE9;             // 32bit relative JMP DetourFunc
             *(ULONG *)(&func[1]) = (ULONG)diff;
+			UsedCount = 1 + 4;
         }
     }
 
@@ -393,6 +405,7 @@ skip_e9_rewrite: ;
                         ((ULONG_PTR *)ptrVTable->offset)[ptrVTable->index] = (ULONG_PTR)DetourFunc;
                         *(USHORT *)&func[0] = 0x25ff;
                         *(ULONG *)&func[2] = (ULONG)diff;
+						UsedCount = 2 + 4;
                         ptrVTable->index++;
                         hookset = TRUE;
                     }
@@ -418,9 +431,15 @@ skip_e9_rewrite: ;
     diff = (UCHAR *)DetourFunc - (func + 5);
     func[0] = 0xE9;             // JMP DetourFunc
     *(ULONG *)(&func[1]) = (ULONG)diff;
+	UsedCount = 1 + 4;
 #endif
 
-    VirtualProtect(&func[-8], 20, prot, &dummy_prot);
+	// just in case nop out the rest of the code we moved to the trampoline
+	// ToDo: why does this break unity games
+	//for(; UsedCount < ByteCount; UsedCount++)
+	//	func[UsedCount] = 0x90; // nop
+
+	VirtualProtect(&func[-8], 20, prot, &dummy_prot);
 
     // the trampoline code begins at trampoline + 16 bytes
     func = (UCHAR *)(ULONG_PTR)(tramp + 16);
