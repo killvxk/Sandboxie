@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2021 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -111,7 +112,6 @@ SBIEDLL_EXPORT  BOOL SbieDll_RunSandboxed(
     const WCHAR *box_name, const WCHAR *cmd, const WCHAR *dir,
     ULONG creation_flags, STARTUPINFO *si, PROCESS_INFORMATION *pi);
 
-
 //---------------------------------------------------------------------------
 // Functions (CallSvc)
 //---------------------------------------------------------------------------
@@ -121,6 +121,9 @@ SBIEDLL_EXPORT  const WCHAR *SbieDll_PortName(void);
 
 SBIEDLL_EXPORT  struct _MSG_HEADER *SbieDll_CallServer(
     struct _MSG_HEADER *req);
+
+SBIEDLL_EXPORT  void *SbieDll_CallServerQueue(
+	const WCHAR* queue, void *req, ULONG req_len, ULONG rpl_min_len);
 
 SBIEDLL_EXPORT  void SbieDll_FreeMem(void *data);
 
@@ -146,6 +149,9 @@ SBIEDLL_EXPORT  ULONG SbieDll_UpdateConf(
     WCHAR OpCode, const WCHAR *Password, const WCHAR *Section,
     const WCHAR *Setting, const WCHAR *Value);
 
+SBIEDLL_EXPORT  ULONG SbieDll_QueryConf(
+    const WCHAR *Section, const WCHAR *Setting,
+    ULONG setting_index, WCHAR *out_buffer, ULONG buffer_len);
 
 //---------------------------------------------------------------------------
 // Functions (Other)
@@ -176,6 +182,10 @@ SBIEDLL_EXPORT  BOOLEAN SbieDll_IsBoxedService(HANDLE hService);
 SBIEDLL_EXPORT  BOOL SbieDll_StartBoxedService(
     const WCHAR *ServiceName, BOOLEAN WithAdd);
 
+SBIEDLL_EXPORT  BOOL SbieDll_CheckProcessLocalSystem(HANDLE ProcessHandle);
+
+SBIEDLL_EXPORT  HANDLE SbieDll_OpenProcess(ACCESS_MASK DesiredAccess, HANDLE idProcess);
+
 SBIEDLL_EXPORT  HRESULT SbieDll_ComCreateProxy(
     REFIID riid, void *pUnkOuter, void *pChannel, void **ppUnknown);
 
@@ -192,8 +202,29 @@ SBIEDLL_EXPORT  BOOLEAN SbieDll_RegisterDllCallback(void *Callback);
 SBIEDLL_EXPORT  BOOLEAN SbieDll_ExpandAndRunProgram(const WCHAR *Command);
 
 
-//---------------------------------------------------------------------------
+SBIEDLL_EXPORT  ULONG SbieDll_InjectLow_InitHelper();
+SBIEDLL_EXPORT  ULONG SbieDll_InjectLow_InitSyscalls(BOOLEAN drv_init);
+SBIEDLL_EXPORT  ULONG SbieDll_InjectLow(HANDLE hProcess, ULONG init_flags, BOOLEAN dup_drv_handle);
 
+
+SBIEDLL_EXPORT  BOOLEAN SbieDll_MatchImage(const WCHAR* pat_str, const WCHAR* test_str, const WCHAR* BoxName);
+
+SBIEDLL_EXPORT  BOOLEAN SbieDll_GetStringForStringList(const WCHAR* string, const WCHAR* boxname, const WCHAR* setting, WCHAR* value, ULONG value_size);
+SBIEDLL_EXPORT  BOOLEAN SbieDll_CheckStringInList(const WCHAR* string, const WCHAR* boxname, const WCHAR* setting);
+
+SBIEDLL_EXPORT  BOOLEAN SbieDll_CheckPatternInList(const WCHAR* string, ULONG length, const WCHAR* boxname, const WCHAR* setting);
+
+SBIEDLL_EXPORT  BOOLEAN SbieDll_GetSettingsForName(
+    const WCHAR* boxname, const WCHAR* name, const WCHAR* setting, WCHAR* value, ULONG value_size, const WCHAR* deftext);
+
+SBIEDLL_EXPORT  BOOLEAN SbieDll_GetSettingsForName_bool(
+    const WCHAR* boxname, const WCHAR* name, const WCHAR* setting, BOOLEAN defval);
+
+SBIEDLL_EXPORT  BOOLEAN SbieDll_GetBorderColor(const WCHAR* box_name, COLORREF* color, BOOL* title, int* width);
+
+SBIEDLL_EXPORT  BOOLEAN SbieDll_IsReservedFileName(const WCHAR* name);
+
+//---------------------------------------------------------------------------
 
 #ifdef __cplusplus
 }

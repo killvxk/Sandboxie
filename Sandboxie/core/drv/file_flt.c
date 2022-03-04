@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -362,7 +363,7 @@ _FX FLT_PREOP_CALLBACK_STATUS File_PreOperation(
                 {
                     proc = Process_Find((HANDLE)ulOwnerPid, NULL);  // is this a sandboxed process?
                     if (proc && proc != PROCESS_TERMINATED &&
-                        !proc->m_boolAllowSpoolerPrintToFile)   // if process specifically allowed to use spooler print to file, we can skip everything below
+                        !proc->ipc_allowSpoolerPrintToFile)   // if process specifically allowed to use spooler print to file, we can skip everything below
                     {
                         FLT_FILE_NAME_INFORMATION   *pTargetFileNameInfo = NULL;
                         BOOLEAN     result = FALSE;
@@ -396,7 +397,7 @@ _FX FLT_PREOP_CALLBACK_STATUS File_PreOperation(
                                 WCHAR   wcPid[32];
 
                                 status = STATUS_ACCESS_DENIED;  // disallow the call
-                                swprintf(wcPid, L"[%d]", ulOwnerPid);
+                                RtlStringCbPrintfW(wcPid, sizeof(wcPid), L"[%d]", ulOwnerPid);
 
                                 // create a string for the sandboxed proc name plus the blocked file name (plus a L", " plus NULL = 6)
                                 len = proc->image_name_len + pTargetFileNameInfo->Name.Length + 6;
@@ -413,8 +414,11 @@ _FX FLT_PREOP_CALLBACK_STATUS File_PreOperation(
 								Log_Msg_Process(MSG_1319, wcPid, (PWCHAR)pStr, proc->box->session_id, proc->pid);
                                 Mem_Free(pStr, len);
                             }
-                            FltReleaseFileNameInformation(pTargetFileNameInfo);
                         }   // if (FltGetFileNameInformation)
+
+                        if (pTargetFileNameInfo != NULL) {
+                            FltReleaseFileNameInformation(pTargetFileNameInfo);
+                        }
                     }   // if (proc)
                 }   // if (ulOwnerPid)
             }   // is this the print spooler process?
@@ -431,7 +435,7 @@ _FX FLT_PREOP_CALLBACK_STATUS File_PreOperation(
         status = STATUS_PROCESS_IS_TERMINATING;
         goto finish;
     }
-    if (!proc || proc->bHostInject)
+    if (!proc || proc->bHostInject || proc->disable_file_flt)
         goto finish;
 
     //
@@ -441,7 +445,8 @@ _FX FLT_PREOP_CALLBACK_STATUS File_PreOperation(
     if (Iopb->MajorFunction == IRP_MJ_SET_INFORMATION) {
         // Do not allow hard links outside the sandbox
         if (Iopb->Parameters.SetFileInformation.FileInformationClass == FileLinkInformation) {
-            if (!Box_IsBoxedPath(proc->box, file, &Iopb->Parameters.SetFileInformation.ParentOfTarget->FileName)) {
+            if(Iopb->Parameters.SetFileInformation.ParentOfTarget &&
+               !Box_IsBoxedPath(proc->box, file, &Iopb->Parameters.SetFileInformation.ParentOfTarget->FileName)) {
                 status = STATUS_ACCESS_DENIED;
                 goto finish;
             }
@@ -490,6 +495,7 @@ _FX FLT_PREOP_CALLBACK_STATUS File_PreOperation(
 
                         RtlInitUnicodeString(&usFileName, (PCWSTR)pTempFullPath);
                     }
+                    FltReleaseFileNameInformation(pTargetFileNameInfo);
                 }
             }
         }

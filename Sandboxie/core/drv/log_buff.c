@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 DavidXanatos for sandboxie project
+ * Copyright 2020 DavidXanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -38,7 +38,7 @@ void log_buffer_free(LOG_BUFFER* ptr_buffer)
 	ExFreePoolWithTag(ptr_buffer, tzuk);
 }
 
-CHAR* log_buffer_push_entry(LOG_BUFFER_SIZE_T size, LOG_BUFFER* ptr_buffer)
+CHAR* log_buffer_push_entry(LOG_BUFFER_SIZE_T size, LOG_BUFFER* ptr_buffer, BOOLEAN can_pop)
 {
 	SIZE_T total_size = size + sizeof(LOG_BUFFER_SIZE_T) * 2 + sizeof(LOG_BUFFER_SEQ_T);
 	if (total_size > ptr_buffer->buffer_size)
@@ -46,8 +46,11 @@ CHAR* log_buffer_push_entry(LOG_BUFFER_SIZE_T size, LOG_BUFFER* ptr_buffer)
 
 	ptr_buffer->seq_counter++;
 
-	while (ptr_buffer->buffer_size - ptr_buffer->buffer_used < total_size)
+	while (ptr_buffer->buffer_size - ptr_buffer->buffer_used < total_size) {
+		if (!can_pop)
+			return NULL;
 		log_buffer_pop_entry(ptr_buffer);
+	}
 
 	CHAR* write_ptr = ptr_buffer->buffer_start_ptr + ptr_buffer->buffer_used;
 	ptr_buffer->buffer_used += total_size;
@@ -132,7 +135,7 @@ CHAR* log_buffer_get_next(LOG_BUFFER_SEQ_T seq_number, LOG_BUFFER* ptr_buffer)
 			return NULL; // the last entry in the list is the last one we already got, return NULL
 
 		if (cur_number == seq_number + 1)
-			return read_ptr; // this entry is the one after the last oen we already got, return it
+			return read_ptr; // this entry is the one after the last one we already got, return it
 
 		size_left -= total_size;
 	}

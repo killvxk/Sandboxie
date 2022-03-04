@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -1862,6 +1863,64 @@ _FX void Sxs_ActivateDefaultManifest(void *ImageBase)
 
 
 //---------------------------------------------------------------------------
+// Sxs_CheckManifestForElevation
+//---------------------------------------------------------------------------
+
+
+_FX ULONG Sxs_CheckManifestForElevation(
+    const WCHAR* DosPath, 
+    BOOLEAN *pAsInvoker, 
+    BOOLEAN *pRequireAdministrator, 
+    BOOLEAN *pHighestAvailable)
+{
+    ACTCTX ActCtx;
+    SXS_ARGS args;
+    ULONG rc;
+
+    if (Dll_OsBuild < 6000)
+        return STATUS_NOT_IMPLEMENTED;
+
+    //
+    // invoke Sxs_GetPathAndText to get the manifest text
+    //
+
+    memzero(&args, sizeof(args));
+
+    if (! Sxs_AllocOrFreeBuffers(&args, TRUE))
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    memzero(&ActCtx, sizeof(ACTCTX));
+    ActCtx.cbSize = sizeof(ACTCTX);
+    ActCtx.lpSource = DosPath;
+
+    rc = STATUS_UNSUCCESSFUL;
+
+    if (Sxs_GetPathAndText(&ActCtx, &args)) {
+
+        rc = STATUS_SUCCESS; // manifest found
+
+        _strlwr(args.ManifestText);
+
+        if (pAsInvoker) *pAsInvoker = 
+            (strstr(args.ManifestText, "level='asinvoker'") 
+            || strstr(args.ManifestText, "level=\"asinvoker\""));
+
+        if (pRequireAdministrator) *pRequireAdministrator = 
+            (strstr(args.ManifestText, "level='requireadministrator'")
+            || strstr(args.ManifestText, "level=\"requireadministrator\""));
+
+        if (pHighestAvailable) *pHighestAvailable = 
+            (strstr(args.ManifestText, "level='highestavailable'")
+            || strstr(args.ManifestText, "level=\"highestavailable\""));
+    }
+
+    Sxs_AllocOrFreeBuffers(&args, FALSE);
+
+    return rc;
+}
+
+
+//---------------------------------------------------------------------------
 // Sxs_CheckManifestForCreateProcess
 //---------------------------------------------------------------------------
 
@@ -1869,9 +1928,8 @@ _FX void Sxs_ActivateDefaultManifest(void *ImageBase)
 _FX ULONG Sxs_CheckManifestForCreateProcess(const WCHAR *DosPath)
 {
     THREAD_DATA *TlsData = Dll_GetTlsData(NULL);
-    ACTCTX ActCtx;
-    SXS_ARGS args;
     ULONG rc, ElvType;
+    BOOLEAN AsInvoker, RequireAdministrator, HighestAvailable;
 
     //
     // Windows Vista UAC auto-elevates program names that includes words
@@ -1904,24 +1962,9 @@ _FX ULONG Sxs_CheckManifestForCreateProcess(const WCHAR *DosPath)
         return 0;
     }
 
-    //
-    // invoke Sxs_GetPathAndText to get the manifest text
-    //
+    rc = Sxs_CheckManifestForElevation(DosPath, &AsInvoker, &RequireAdministrator, &HighestAvailable);
 
-    memzero(&args, sizeof(args));
-
-    if (! Sxs_AllocOrFreeBuffers(&args, TRUE))
-        return STATUS_INSUFFICIENT_RESOURCES;
-
-    memzero(&ActCtx, sizeof(ACTCTX));
-    ActCtx.cbSize = sizeof(ACTCTX);
-    ActCtx.lpSource = DosPath;
-
-    rc = 0;
-
-    if (Sxs_GetPathAndText(&ActCtx, &args)) {
-
-        UCHAR *RequireAdministrator, *HighestAvailable;
+    if (NT_SUCCESS(rc)) {
 
         //
         // asInvoker means to use alternate manifest files in
@@ -1931,15 +1974,8 @@ _FX ULONG Sxs_CheckManifestForCreateProcess(const WCHAR *DosPath)
         // our Proc_CreateProcess caller to use SH32_DoRunAs
         //
 
-        _strlwr(args.ManifestText);
-
-        if (strstr(args.ManifestText, "level=\"asinvoker\""))
+        if (AsInvoker)
             TlsData->proc_create_process_as_invoker = TRUE;
-
-        RequireAdministrator =
-            strstr(args.ManifestText, "level=\"requireadministrator\"");
-        HighestAvailable =
-            strstr(args.ManifestText, "level=\"highestavailable\"");
 
         if (RequireAdministrator ||
                 (HighestAvailable && ElvType != TokenElevationTypeDefault)) {
@@ -1960,8 +1996,6 @@ _FX ULONG Sxs_CheckManifestForCreateProcess(const WCHAR *DosPath)
         }
     }
 
-    Sxs_AllocOrFreeBuffers(&args, FALSE);
-
     return rc;
 }
 
@@ -1979,6 +2013,9 @@ _FX BOOLEAN Sxs_KeyCallback(const WCHAR *path, HANDLE *out_handle)
     // key so we can redirect to the SbieSvc service key which includes
     // a pre-set value for PreferExternalManifest
     //
+
+    if (!Config_GetSettingsForImageName_bool(L"PreferExternalManifest", FALSE))
+        return FALSE;
 
     THREAD_DATA *TlsData = Dll_GetTlsData(NULL);
 
@@ -2041,7 +2078,7 @@ _FX BOOLEAN Sxs_KeyCallback(const WCHAR *path, HANDLE *out_handle)
                         *(ULONG *)info.kvpi.Data != 0) {
 
                         //WCHAR txt[1024];
-                        //Sbie_swprintf(txt, L"REDIR KEY - %s\n", path);
+                        //Sbie_snwprintf(txt, 1024, L"REDIR KEY - %s\n", path);
                         //OutputDebugString(txt);
 
                         *out_handle = handle;
@@ -2073,6 +2110,9 @@ _FX BOOLEAN Sxs_FileCallback(const WCHAR *path, HANDLE *out_handle)
     // and .config files and redirect them to our dummy/empty manifest from
     // our installation home directory
     //
+
+    if (!Config_GetSettingsForImageName_bool(L"PreferExternalManifest", FALSE))
+        return FALSE;
 
     THREAD_DATA *TlsData = Dll_GetTlsData(NULL);
 
@@ -2120,7 +2160,7 @@ _FX BOOLEAN Sxs_FileCallback(const WCHAR *path, HANDLE *out_handle)
             HANDLE handle;
 
             WCHAR *FilePath = Dll_AllocTemp(MAX_PATH * 2 * sizeof(WCHAR));
-            SbieApi_GetHomePath(NULL, 0, FilePath, MAX_PATH);
+            wcscpy(FilePath, Dll_HomeDosPath);
             wcscat(FilePath, FileName);
 
             //OutputDebugString(L"*** *** ***\n");
@@ -2149,7 +2189,7 @@ _FX BOOLEAN Sxs_FileCallback(const WCHAR *path, HANDLE *out_handle)
                                 open_info.EndOfFile.QuadPart == FileSize) {
 
                     //WCHAR txt[1024];
-                    //Sbie_swprintf(txt, L"REDIR FILE - %s\n", path);
+                    //Sbie_snwprintf(txt, 1024, L"REDIR FILE - %s\n", path);
                     //OutputDebugString(txt);
 
                     *out_handle = handle;

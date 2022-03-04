@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2021 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -27,7 +28,9 @@
 #include "obj.h"
 #include "api.h"
 #include "util.h"
-
+#include "session.h"
+#include "conf.h"
+#include "common/pattern.h"
 
 
 //---------------------------------------------------------------------------
@@ -95,63 +98,14 @@ static BOOLEAN Syscall_GetKernelAddr(
 #pragma alloc_text (INIT, Syscall_ErrorForAsciiName)
 #pragma alloc_text (INIT, Syscall_GetIndexFromNtdll)
 #pragma alloc_text (INIT, Syscall_GetKernelAddr)
-#ifdef _WIN64
-// only needed for 32-bit gui_xp code
 #pragma alloc_text (INIT, Syscall_GetServiceTable)
-#endif _WIN64
 #endif // ALLOC_PRAGMA
 
+#include "syscall_util.c"
 
-//---------------------------------------------------------------------------
-
-
-typedef NTSTATUS (*P_SystemService00)(void);
-typedef NTSTATUS (*P_SystemService01)(
-    ULONG_PTR arg01);
-typedef NTSTATUS (*P_SystemService02)(
-    ULONG_PTR arg01, ULONG_PTR arg02);
-typedef NTSTATUS (*P_SystemService03)(
-    ULONG_PTR arg01, ULONG_PTR arg02, ULONG_PTR arg03);
-typedef NTSTATUS (*P_SystemService04)(
-    ULONG_PTR arg01, ULONG_PTR arg02, ULONG_PTR arg03, ULONG_PTR arg04);
-typedef NTSTATUS (*P_SystemService05)(
-    ULONG_PTR arg01, ULONG_PTR arg02, ULONG_PTR arg03, ULONG_PTR arg04,
-    ULONG_PTR arg05);
-typedef NTSTATUS (*P_SystemService06)(
-    ULONG_PTR arg01, ULONG_PTR arg02, ULONG_PTR arg03, ULONG_PTR arg04,
-    ULONG_PTR arg05, ULONG_PTR arg06);
-typedef NTSTATUS (*P_SystemService07)(
-    ULONG_PTR arg01, ULONG_PTR arg02, ULONG_PTR arg03, ULONG_PTR arg04,
-    ULONG_PTR arg05, ULONG_PTR arg06, ULONG_PTR arg07);
-typedef NTSTATUS (*P_SystemService08)(
-    ULONG_PTR arg01, ULONG_PTR arg02, ULONG_PTR arg03, ULONG_PTR arg04,
-    ULONG_PTR arg05, ULONG_PTR arg06, ULONG_PTR arg07, ULONG_PTR arg08);
-typedef NTSTATUS (*P_SystemService09)(
-    ULONG_PTR arg01, ULONG_PTR arg02, ULONG_PTR arg03, ULONG_PTR arg04,
-    ULONG_PTR arg05, ULONG_PTR arg06, ULONG_PTR arg07, ULONG_PTR arg08,
-    ULONG_PTR arg09);
-typedef NTSTATUS (*P_SystemService10)(
-    ULONG_PTR arg01, ULONG_PTR arg02, ULONG_PTR arg03, ULONG_PTR arg04,
-    ULONG_PTR arg05, ULONG_PTR arg06, ULONG_PTR arg07, ULONG_PTR arg08,
-    ULONG_PTR arg09, ULONG_PTR arg10);
-typedef NTSTATUS (*P_SystemService11)(
-    ULONG_PTR arg01, ULONG_PTR arg02, ULONG_PTR arg03, ULONG_PTR arg04,
-    ULONG_PTR arg05, ULONG_PTR arg06, ULONG_PTR arg07, ULONG_PTR arg08,
-    ULONG_PTR arg09, ULONG_PTR arg10, ULONG_PTR arg11);
-typedef NTSTATUS (*P_SystemService12)(
-    ULONG_PTR arg01, ULONG_PTR arg02, ULONG_PTR arg03, ULONG_PTR arg04,
-    ULONG_PTR arg05, ULONG_PTR arg06, ULONG_PTR arg07, ULONG_PTR arg08,
-    ULONG_PTR arg09, ULONG_PTR arg10, ULONG_PTR arg11, ULONG_PTR arg12);
-typedef NTSTATUS (*P_SystemService13)(
-    ULONG_PTR arg01, ULONG_PTR arg02, ULONG_PTR arg03, ULONG_PTR arg04,
-    ULONG_PTR arg05, ULONG_PTR arg06, ULONG_PTR arg07, ULONG_PTR arg08,
-    ULONG_PTR arg09, ULONG_PTR arg10, ULONG_PTR arg11, ULONG_PTR arg12,
-    ULONG_PTR arg13);
-typedef NTSTATUS (*P_SystemService14)(
-    ULONG_PTR arg01, ULONG_PTR arg02, ULONG_PTR arg03, ULONG_PTR arg04,
-    ULONG_PTR arg05, ULONG_PTR arg06, ULONG_PTR arg07, ULONG_PTR arg08,
-    ULONG_PTR arg09, ULONG_PTR arg10, ULONG_PTR arg11, ULONG_PTR arg12,
-    ULONG_PTR arg13, ULONG_PTR arg14);
+#ifdef HOOK_WIN32K
+#include "syscall_win32.c"
+#endif
 
 
 //---------------------------------------------------------------------------
@@ -185,6 +139,17 @@ _FX BOOLEAN Syscall_Init(void)
 
     if (! Syscall_Init_ServiceData())
         return FALSE;
+
+#ifdef HOOK_WIN32K
+    if (Driver_OsBuild >= 10041 && Conf_Get_Boolean(NULL, L"EnableWin32kHooks", 0, TRUE)) {
+
+        if (!Syscall_Init_List32())
+            return FALSE;
+
+        if (!Syscall_Init_Table32())
+            return FALSE;
+    }
+#endif
 
     if (! Syscall_Set1("DuplicateObject", Syscall_DuplicateHandle))
         return FALSE;
@@ -251,6 +216,8 @@ _FX BOOLEAN Syscall_Init_List(void)
         for (name_len = 0; (name_len < 64) && name[name_len]; ++name_len)
             ;
 
+        //DbgPrint("    Found SysCall %s\n", name);
+
         entry = NULL;
 
         //
@@ -268,16 +235,20 @@ _FX BOOLEAN Syscall_Init_List(void)
 #define IS_PROC_NAME(ln,nm) (name_len == ln && memcmp(name, nm, ln) == 0)
 
         if (    IS_PROC_NAME(8,  "Continue")
+            ||  IS_PROC_NAME(10, "ContinueEx")
             ||  IS_PROC_NAME(14, "CallbackReturn")
             ||  IS_PROC_NAME(14, "RaiseException")
             ||  IS_PROC_NAME(18, "TerminateJobObject")
             ||  IS_PROC_NAME(16, "TerminateProcess")
             ||  IS_PROC_NAME(15, "TerminateThread")
-            ||  IS_PROC_NAME(14, "YieldExecution")            // ICD-10607 - McAfee uses it to pass its own data in the stack. The call is not important to us. 
 
                                                             ) {
             goto next_zwxxx;
         }
+
+        // ICD-10607 - McAfee uses it to pass its own data in the stack. The call is not important to us. 
+        if (    IS_PROC_NAME(14, "YieldExecution"))
+            goto next_zwxxx;
 
         //
         // the Google Chrome "wow_helper" process expects NtMapViewOfSection
@@ -312,6 +283,8 @@ _FX BOOLEAN Syscall_Init_List(void)
             if (syscall_index != -1) {
                 Syscall_GetKernelAddr(
                             syscall_index, &ntos_addr, &param_count);
+
+                //DbgPrint("    Found SysCall: %s, pcnt %d; idx: %d\r\n", name, param_count, syscall_index);
             }
         }
 
@@ -368,19 +341,6 @@ next_zwxxx:
         Log_Msg1(MSG_1113, L"500");
         return FALSE;
     }
-
-    //
-    // workaround for Online Armor driver
-    //
-
-#ifndef _WIN64
-
-    if (1) {
-        extern void Syscall_HandleOADriver(void);
-        Syscall_HandleOADriver();
-    }
-
-#endif ! _WIN64
 
     return TRUE;
 }
@@ -562,106 +522,24 @@ _FX void Syscall_ErrorForAsciiName(const UCHAR *name_a)
 //---------------------------------------------------------------------------
 extern unsigned int g_TrapFrameOffset;
 
+NTSTATUS Sbie_InvokeSyscall_asm(void* func, ULONG count, void* args);
+
 _FX NTSTATUS Syscall_Invoke(SYSCALL_ENTRY *entry, ULONG_PTR *stack)
 {
     NTSTATUS status;
+
+    //
+    // Note: when directly calling win32k functions with "Core Isolation" (HVCI) enabled
+    //  the nt!guard_dispatch_icall will cause a bugcheck!
+    //  Hence we use a call proxy Sbie_InvokeSyscall_asm instead of a direct call
+    //  alternatively we could disable "Control Flow Guard" for this file
+    //
 
     __try {
 
         //DbgPrint("[syscall] request param count = %d\n", entry->param_count);
 
-        if (entry->param_count == 0) {
-
-            P_SystemService00 nt = (P_SystemService00)entry->ntos_func;
-            status = nt();
-
-        } else if (entry->param_count == 1) {
-
-            P_SystemService01 nt = (P_SystemService01)entry->ntos_func;
-            status = nt(stack[0]);
-
-        } else if (entry->param_count == 2) {
-
-            P_SystemService02 nt = (P_SystemService02)entry->ntos_func;
-            status = nt(stack[0], stack[1]);
-
-        } else if (entry->param_count == 3) {
-
-            P_SystemService03 nt = (P_SystemService03)entry->ntos_func;
-            status = nt(stack[0], stack[1], stack[2]);
-
-        } else if (entry->param_count == 4) {
-
-            P_SystemService04 nt = (P_SystemService04)entry->ntos_func;
-            status = nt(stack[0], stack[1], stack[2], stack[3]);
-
-        } else if (entry->param_count == 5) {
-
-            P_SystemService05 nt = (P_SystemService05)entry->ntos_func;
-            status = nt(stack[0], stack[1], stack[2], stack[3], stack[4]);
-
-        } else if (entry->param_count == 6) {
-
-            P_SystemService06 nt = (P_SystemService06)entry->ntos_func;
-            status = nt(stack[0], stack[1], stack[2], stack[3], stack[4],
-                        stack[5]);
-
-        } else if (entry->param_count == 7) {
-
-            P_SystemService07 nt = (P_SystemService07)entry->ntos_func;
-            status = nt(stack[0], stack[1], stack[2], stack[3], stack[4],
-                        stack[5], stack[6]);
-
-        } else if (entry->param_count == 8) {
-
-            P_SystemService08 nt = (P_SystemService08)entry->ntos_func;
-            status = nt(stack[0], stack[1], stack[2], stack[3], stack[4],
-                        stack[5], stack[6], stack[7]);
-
-        } else if (entry->param_count == 9) {
-
-            P_SystemService09 nt = (P_SystemService09)entry->ntos_func;
-            status = nt(stack[0], stack[1], stack[2], stack[3], stack[4],
-                        stack[5], stack[6], stack[7], stack[8]);
-
-        } else if (entry->param_count == 10) {
-
-            P_SystemService10 nt = (P_SystemService10)entry->ntos_func;
-            status = nt(stack[0], stack[1], stack[2], stack[3], stack[4],
-                        stack[5], stack[6], stack[7], stack[8], stack[9]);
-
-        } else if (entry->param_count == 11) {
-
-            P_SystemService11 nt = (P_SystemService11)entry->ntos_func;
-            status = nt(stack[0], stack[1], stack[2], stack[3], stack[4],
-                        stack[5], stack[6], stack[7], stack[8], stack[9],
-                        stack[10]);
-
-        } else if (entry->param_count == 12) {
-
-            P_SystemService12 nt = (P_SystemService12)entry->ntos_func;
-            status = nt(stack[0], stack[1], stack[2], stack[3], stack[4],
-                        stack[5], stack[6], stack[7], stack[8], stack[9],
-                        stack[10], stack[11]);
-
-        } else if (entry->param_count == 13) {
-
-            P_SystemService13 nt = (P_SystemService13)entry->ntos_func;
-            status = nt(stack[0], stack[1], stack[2], stack[3], stack[4],
-                        stack[5], stack[6], stack[7], stack[8], stack[9],
-                        stack[10], stack[11], stack[12]);
-
-        } else if (entry->param_count == 14) {
-
-            P_SystemService14 nt = (P_SystemService14)entry->ntos_func;
-            status = nt(stack[0], stack[1], stack[2], stack[3], stack[4],
-                        stack[5], stack[6], stack[7], stack[8], stack[9],
-                        stack[10], stack[11], stack[12], stack[13]);
-
-        } else {
-
-            status = STATUS_INVALID_SYSTEM_SERVICE;
-        }
+        status = Sbie_InvokeSyscall_asm(entry->ntos_func, entry->param_count, stack);
 
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         status = GetExceptionCode();
@@ -689,7 +567,6 @@ _FX NTSTATUS Syscall_Api_Invoke(PROCESS *proc, ULONG64 *parms)
     volatile PETHREAD pThread = PsGetCurrentThread();
     volatile PKTRAP_FRAME pTrapFrame = NULL;
 #endif
-    BOOLEAN bContinueEx = FALSE;
     //int exception;
 
     //
@@ -700,6 +577,14 @@ _FX NTSTATUS Syscall_Api_Invoke(PROCESS *proc, ULONG64 *parms)
         return STATUS_NOT_IMPLEMENTED;
 
     syscall_index = (ULONG)parms[1];
+
+#ifdef HOOK_WIN32K
+    if ((syscall_index & 0x1000) != 0) { // win32k syscall
+        return Syscall_Api_Invoke32(proc, parms);
+    }
+#endif
+
+    syscall_index = (syscall_index & 0xFFF);
 
     //DbgPrint("[syscall] request for service %d / %08X\n", syscall_index, syscall_index);
 
@@ -713,31 +598,24 @@ _FX NTSTATUS Syscall_Api_Invoke(PROCESS *proc, ULONG64 *parms)
 
     // DbgPrint("[syscall] request p=%06d t=%06d - BEGIN %s\n", PsGetCurrentProcessId(), PsGetCurrentThreadId(), entry->name);
 
+#ifdef XP_SUPPORT
     //
     // make sure the thread has sufficient access rights to itself
     // then impersonate the full access token for the thread or process
     //
 
-    if ((strcmp(entry->name, "ContinueEx")) == 0)
-    {
-        bContinueEx = TRUE;
+    if (!Thread_AdjustGrantedAccess()) {
+
+        Process_SetTerminated(proc, 5);
     }
-    else {
+    else
+#endif
 
-        if (!Thread_AdjustGrantedAccess()) {
-
-            Process_SetTerminated(proc, 5);
-
-        }
-        else {
-
-            Thread_SetThreadToken(proc);        // may set proc->terminated
-        }
-    }
+        Thread_SetThreadToken(proc);        // may set proc->terminated
 
     if (proc->terminated) {
 
-        Process_CancelProcess(proc);
+        Process_TerminateProcess(proc);
         return STATUS_PROCESS_IS_TERMINATING;
     }
 
@@ -749,6 +627,7 @@ _FX NTSTATUS Syscall_Api_Invoke(PROCESS *proc, ULONG64 *parms)
 
     __try {
 
+        BOOLEAN traced = FALSE;
         const ULONG args_len = entry->param_count * sizeof(ULONG_PTR);
 #ifdef _WIN64
         ProbeForRead(user_args, args_len, sizeof(ULONG_PTR));
@@ -782,20 +661,20 @@ _FX NTSTATUS Syscall_Api_Invoke(PROCESS *proc, ULONG64 *parms)
         ProbeForRead(user_args, args_len, sizeof(UCHAR));
 #endif _WIN64
 
-        /*
-        if (proc->ipc_trace & (TRACE_ALLOW | TRACE_DENY))
-        {
-            if (strcmp(entry->name, "AlpcSendWaitReceivePort") == 0)
-            {
-                HANDLE  hConnection;
-                hConnection = (HANDLE*)user_args[0];
-                DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "SBIE [syscall] p=%06d t=%06d - %s, handle = %X >>>>>>\n",
-                    PsGetCurrentProcessId(), PsGetCurrentThreadId(),
-                    entry->name,
-                    hConnection);
-            }
-        }
-        */
+        
+        //if (proc->ipc_trace & (TRACE_ALLOW | TRACE_DENY))
+        //{
+        //    if (strcmp(entry->name, "AlpcSendWaitReceivePort") == 0)
+        //    {
+        //        HANDLE  hConnection;
+        //        hConnection = (HANDLE*)user_args[0];
+        //        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "SBIE [syscall] p=%06d t=%06d - %s, handle = %X >>>>>>\n",
+        //            PsGetCurrentProcessId(), PsGetCurrentThreadId(),
+        //            entry->name,
+        //            hConnection);
+        //    }
+        //}
+
 
         if (entry->handler1_func) {
 
@@ -810,17 +689,20 @@ _FX NTSTATUS Syscall_Api_Invoke(PROCESS *proc, ULONG64 *parms)
 
         if (proc->ipc_trace & (TRACE_ALLOW | TRACE_DENY))
         {
+            HANDLE  hConnection = NULL;
+            UNICODE_STRING* puStr = NULL;
+
             if ((strcmp(entry->name, "ConnectPort") == 0) ||
                 (strcmp(entry->name, "AlpcConnectPort") == 0) )
             {
-                HANDLE  hConnection = *(HANDLE*)user_args[0];
-                UNICODE_STRING  *puStr = (UNICODE_STRING*)user_args[1];
+                hConnection = *(HANDLE*)user_args[0];
+                puStr = (UNICODE_STRING*)user_args[1];
 
-                DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "SBIE [syscall] p=%06d t=%06d - %s, '%.*S', status = 0x%X, handle = %X\n",
-                    PsGetCurrentProcessId(), PsGetCurrentThreadId(),
-                    entry->name,
-                    (puStr->Length / 2), puStr->Buffer,
-                    status, hConnection);
+                //DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "SBIE [syscall] p=%06d t=%06d - %s, '%.*S', status = 0x%X, handle = %X\n",
+                //    PsGetCurrentProcessId(), PsGetCurrentThreadId(),
+                //    entry->name,
+                //    (puStr->Length / 2), puStr->Buffer,
+                //    status, hConnection);
                 //if (puStr && puStr->Buffer && wcsstr(puStr->Buffer, L"\\RPC Control\\LRPC-"))
                 //{
                     //int i = 0;          // place breakpoint here if you want to debug a particular port
@@ -829,17 +711,16 @@ _FX NTSTATUS Syscall_Api_Invoke(PROCESS *proc, ULONG64 *parms)
             else if ( (strcmp(entry->name, "AlpcCreatePort") == 0) ||
                 (strcmp(entry->name, "AlpcConnectPortEx") == 0) )
             {
-                HANDLE  hConnection = *(HANDLE*)user_args[0];
+                hConnection = *(HANDLE*)user_args[0];
                 POBJECT_ATTRIBUTES  pObjectAttributes = (POBJECT_ATTRIBUTES)user_args[1];
-                UNICODE_STRING  *puStr = NULL;
                 if (pObjectAttributes)
                     puStr = (UNICODE_STRING*)pObjectAttributes->ObjectName;
 
-                DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "SBIE [syscall] p=%06d t=%06d - %s, '%.*S', status = 0x%X, handle = %X\n",
-                    PsGetCurrentProcessId(), PsGetCurrentThreadId(),
-                    entry->name,
-                    (puStr->Length / 2), puStr->Buffer,
-                    status, hConnection);
+                //DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "SBIE [syscall] p=%06d t=%06d - %s, '%.*S', status = 0x%X, handle = %X\n",
+                //    PsGetCurrentProcessId(), PsGetCurrentThreadId(),
+                //    entry->name,
+                //    (puStr->Length / 2), puStr->Buffer,
+                //    status, hConnection);
             }
             else if ((strcmp(entry->name, "ReplyWaitReceivePort") == 0) ||
                 (strcmp(entry->name, "ReceiveMessagePort") == 0) ||
@@ -849,12 +730,35 @@ _FX NTSTATUS Syscall_Api_Invoke(PROCESS *proc, ULONG64 *parms)
                 // these 2 APIs will generate a lot of output if we don't check status
                 ((status != STATUS_SUCCESS) && ((strcmp(entry->name, "AlpcSendWaitReceivePort") == 0) || (strcmp(entry->name, "RequestWaitReplyPort") == 0))) )
             {
-                HANDLE  hConnection = (HANDLE*)user_args[0];
-                DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "SBIE [syscall] p=%06d t=%06d - %s, status = 0x%X, handle = %X\n",
-                    PsGetCurrentProcessId(), PsGetCurrentThreadId(),
-                    entry->name,
-                    status, hConnection);
+                hConnection = (HANDLE*)user_args[0];
+
+                //DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "SBIE [syscall] p=%06d t=%06d - %s, status = 0x%X, handle = %X\n",
+                //    PsGetCurrentProcessId(), PsGetCurrentThreadId(),
+                //    entry->name,
+                //    status, hConnection);
             }
+
+            if (hConnection)
+            {
+                WCHAR trace_str[128];
+                RtlStringCbPrintfW(trace_str, sizeof(trace_str), L"[syscall] %.*S, status = 0x%X, handle = %X; ", //59 chars + entry->name
+                    max(strlen(entry->name), 64), entry->name,
+                    status, hConnection);
+                const WCHAR* strings[3] = { trace_str, puStr ? puStr->Buffer : NULL, NULL };
+                ULONG lengths[3] = { wcslen(trace_str), puStr ? puStr->Length / 2 : 0, 0 };
+                Session_MonitorPutEx(MONITOR_IPC | MONITOR_TRACE, strings, lengths, PsGetCurrentProcessId(), PsGetCurrentThreadId());
+                traced = TRUE;
+            }
+        }
+
+        if (!traced && ((proc->call_trace & TRACE_ALLOW) || ((status != STATUS_SUCCESS) && (proc->call_trace & TRACE_DENY))))
+        {
+            WCHAR trace_str[128];
+            RtlStringCbPrintfW(trace_str, sizeof(trace_str), L"[syscall] %.*S, status = 0x%X", //59 chars + entry->name
+                max(strlen(entry->name), 64), entry->name,
+                status);
+            const WCHAR* strings[2] = { trace_str, NULL };
+            Session_MonitorPutEx(MONITOR_SYSCALL | MONITOR_TRACE, strings, NULL, PsGetCurrentProcessId(), PsGetCurrentThreadId());
         }
 
 #ifdef _WIN64
@@ -882,7 +786,7 @@ _FX NTSTATUS Syscall_Api_Invoke(PROCESS *proc, ULONG64 *parms)
 
     if (proc->terminated) {
 
-        Process_CancelProcess(proc);
+        Process_TerminateProcess(proc);
         return STATUS_PROCESS_IS_TERMINATING;
     }
 
@@ -902,9 +806,7 @@ _FX NTSTATUS Syscall_Api_Invoke(PROCESS *proc, ULONG64 *parms)
 
     } else {
 
-        if (!bContinueEx) {
-            Thread_ClearThreadToken();
-        }
+        Thread_ClearThreadToken();
     }
 
     /*if (! NT_SUCCESS(status)) {
@@ -927,6 +829,17 @@ _FX NTSTATUS Syscall_Api_Query(PROCESS *proc, ULONG64 *parms)
     ULONG *ptr;
     SYSCALL_ENTRY *entry;
 
+#ifdef HOOK_WIN32K
+    if (parms[2] == 1) { // 1 - win32k
+        return Syscall_Api_Query32(proc, parms);
+    }
+    else if (parms[2] != 0) { // 0 - ntoskrnl
+        return STATUS_INVALID_PARAMETER;
+    }
+#endif
+
+    BOOLEAN add_names = parms[3] != 0;
+
     //
     // caller must be our service process
     //
@@ -941,7 +854,7 @@ _FX NTSTATUS Syscall_Api_Query(PROCESS *proc, ULONG64 *parms)
     buf_len = sizeof(ULONG)         // size of buffer
             + sizeof(ULONG)         // offset to extra data (for SbieSvc)
             + (32 * 4)              // saved code from ntdll
-            + List_Count(&Syscall_List) * sizeof(ULONG) * 2
+            + List_Count(&Syscall_List) * ((sizeof(ULONG) * 2) + (add_names ? 64 : 0))
             + sizeof(ULONG) * 2     // final terminator entry
             ;
 
@@ -984,6 +897,11 @@ _FX NTSTATUS Syscall_Api_Query(PROCESS *proc, ULONG64 *parms)
         ++ptr;
         *ptr = entry->ntdll_offset;
         ++ptr;
+        if (add_names) {
+            memcpy(ptr, entry->name, entry->name_len);
+            ((char*)ptr)[entry->name_len] = 0;
+            ptr += 16; // 16 * sizeog(ULONG) = 64
+        }
 
         entry = List_Next(entry);
     }

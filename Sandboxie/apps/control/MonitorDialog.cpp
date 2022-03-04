@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2021 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -42,7 +43,7 @@ CMonitorDialog::CMonitorDialog(CWnd *pParentWnd)
     m_username[255] = L'\0';
     m_username_len = wcslen(m_username);
 
-	m_last_entry_seq_num = 0;
+	//m_last_entry_seq_num = 0;
 }
 
 
@@ -96,13 +97,18 @@ BOOL CMonitorDialog::OnInitDialog()
 void CMonitorDialog::OnIdle()
 {
     static const WCHAR *_Unknown    = L"(Unk)    ";
+    static const WCHAR *_SysCall    = L"SysCall  ";
     static const WCHAR *_Pipe       = L"Pipe     ";
     static const WCHAR *_Ipc        = L"Ipc      ";
+    static const WCHAR *_Rpc        = L"Rpc      ";
     static const WCHAR *_WinClass   = L"WinCls   ";
     static const WCHAR *_Drive      = L"(Drive)  ";
     static const WCHAR *_Clsid      = L"Clsid    ";
     static const WCHAR *_Image      = L"Image    ";
-    static const WCHAR *_FileOrKey  = L"File/Key ";
+    static const WCHAR *_File       = L"File     ";
+    static const WCHAR *_Key        = L"Key      ";
+    static const WCHAR *_NetFw      = L"Socket   ";
+    static const WCHAR *_SCM        = L"SCM      "; // Service Control Manager
 	static const WCHAR *_Other      = L"Other    ";
     static const WCHAR *_Separator  = L"   -------------------------------";
 
@@ -111,16 +117,21 @@ void CMonitorDialog::OnIdle()
 
     while (1) {
 
-		ULONG seq_num = m_last_entry_seq_num;
-        USHORT type;
-		ULONG64 pid;
-        SbieApi_MonitorGetEx(&seq_num, &type, &pid, &name[12]);
-        if ((! type) || (! name[12]))
-            break;
+		//ULONG seq_num = m_last_entry_seq_num;
+        ULONG type;
+        ULONG pid;
+        ULONG tid;
+        //ULONG status = SbieApi_MonitorGetEx(&seq_num, &type, &pid, &tid, &name[12]);
+        ULONG status = SbieApi_MonitorGetEx(&type, &pid, &tid, &name[12]);
+		if (status != 0)
+			break; // error or no more entries
 
-		if(seq_num != m_last_entry_seq_num + 1)
-			SbieApi_Log(MSG_1242, L"Resource access logger overflow!"); // MSG_MONITOR_OVERFLOW
-		m_last_entry_seq_num = seq_num;
+		//if(seq_num != m_last_entry_seq_num + 1)
+		//	SbieApi_Log(MSG_1242, NULL); // MSG_MONITOR_OVERFLOW
+		//m_last_entry_seq_num = seq_num;
+
+		if ((!type) || (!name[12]))
+			break;
 
 		// privacy protection, hide username
         while (m_username_len) {
@@ -139,13 +150,17 @@ void CMonitorDialog::OnIdle()
         } else if (type & MONITOR_DENY) {
             name[9] = L'X';
         }
-		type &= 0x0FFF;
+		type &= MONITOR_TYPE_MASK;
 
         const WCHAR *PrefixPtr = _Unknown;
-        if (type == MONITOR_PIPE)
+        if (type == MONITOR_SYSCALL)
+            PrefixPtr = _SysCall;
+        else if (type == MONITOR_PIPE)
             PrefixPtr = _Pipe;
         else if (type == MONITOR_IPC)
             PrefixPtr = _Ipc;
+        else if (type == MONITOR_RPC)
+            PrefixPtr = _Rpc;
         else if (type == MONITOR_WINCLASS)
             PrefixPtr = _WinClass;
         else if (type == MONITOR_DRIVE)
@@ -154,13 +169,19 @@ void CMonitorDialog::OnIdle()
             PrefixPtr = _Clsid;
         else if (type == MONITOR_IMAGE)
             PrefixPtr = _Image;
-        else if (type == MONITOR_FILE_OR_KEY)
-            PrefixPtr = _FileOrKey;
-        else if (type == MONITOR_OTHER)
+        else if (type == MONITOR_FILE)
+            PrefixPtr = _File;
+        else if (type == MONITOR_KEY)
+            PrefixPtr = _Key;
+        else if (type == MONITOR_NETFW)
+            PrefixPtr = _NetFw;
+        else if (type == MONITOR_SCM)
+            PrefixPtr = _SCM;
+        else //if (type == MONITOR_OTHER)
             PrefixPtr = _Other;
         wcsncpy(name, PrefixPtr, 9);
 
-		wsprintf(&name[wcslen(name)], L"; PID: %I64u", pid);
+		wsprintf(&name[wcslen(name)], L"; PID: %d", pid);
 
         int index = listbox->AddString(name);
 
@@ -185,7 +206,11 @@ void CMonitorDialog::OnIdle()
             wcscat(name, _Separator);
             listbox->AddString(name);
 
-            wcscpy(name, _FileOrKey);
+            wcscpy(name, _File);
+            wcscat(name, _Separator);
+            listbox->AddString(name);
+
+            wcscpy(name, _Key);
             wcscat(name, _Separator);
             listbox->AddString(name);
 

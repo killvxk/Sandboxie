@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2021 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -35,8 +36,8 @@ typedef long NTSTATUS;
 #include "common/defines.h"
 #include "common/list.h"
 
-extern __declspec(dllexport) int __CRTDECL Sbie_swprintf(wchar_t *_Buffer, const wchar_t * const _Format, ...);
-extern __declspec(dllexport) int __CRTDECL Sbie_sprintf(char *_Buffer, const char * const _Format, ...);
+extern __declspec(dllexport) int __CRTDECL Sbie_snwprintf(wchar_t *_Buffer, size_t Count, const wchar_t * const _Format, ...);
+extern __declspec(dllexport) int __CRTDECL Sbie_snprintf(char *_Buffer, size_t Count, const char * const _Format, ...);
 
 
 //---------------------------------------------------------------------------
@@ -48,7 +49,7 @@ extern __declspec(dllexport) int __CRTDECL Sbie_sprintf(char *_Buffer, const cha
 #define COPY_NAME_BUFFER        1
 #define TMPL_NAME_BUFFER        2
 #define NAME_BUFFER_COUNT       3
-#define NAME_BUFFER_DEPTH       12
+#define NAME_BUFFER_DEPTH       24
 
 
 #ifdef _WIN64
@@ -87,6 +88,7 @@ enum {
     DLL_IMAGE_SANDBOXIE_WUAU,
     DLL_IMAGE_SANDBOXIE_BITS,
     DLL_IMAGE_SANDBOXIE_SBIESVC,
+    DLL_IMAGE_MSI_INSTALLER,
     DLL_IMAGE_TRUSTED_INSTALLER,
     DLL_IMAGE_WUAUCLT,
     DLL_IMAGE_SHELL_EXPLORER,
@@ -108,6 +110,9 @@ enum {
     DLL_IMAGE_OFFICE_EXCEL,
     DLL_IMAGE_FLASH_PLAYER_SANDBOX,
     DLL_IMAGE_PLUGIN_CONTAINER,
+    DLL_IMAGE_OTHER_WEB_BROWSER,
+    DLL_IMAGE_OTHER_MAIL_CLIENT,
+    DLL_IMAGE_MOZILLA_THUNDERBIRD,
     DLL_IMAGE_LAST
 };
 
@@ -178,6 +183,12 @@ typedef struct _THREAD_DATA {
     ULONG file_dont_strip_write_access;
 
     //
+    // misc modules
+    //
+
+    HANDLE  scm_last_own_token;
+
+    //
     // proc module:  image path for a child process being started
     //
 
@@ -204,6 +215,8 @@ typedef struct _THREAD_DATA {
 
     ULONG           gui_create_window;
 
+    BOOLEAN         gui_hooks_installed;
+
     BOOL            gui_should_suppress_msgbox;
 
     //
@@ -215,6 +228,11 @@ typedef struct _THREAD_DATA {
     ULONG           SizeofPortMsg;
     BOOLEAN         bOperaFileDlgThread;
 
+    //
+    // rpc module
+    //
+
+    ULONG_PTR       rpc_caller;
 
 } THREAD_DATA;
 
@@ -236,6 +254,11 @@ extern const WCHAR *Dll_BoxName;
 extern const WCHAR *Dll_ImageName;
 extern const WCHAR *Dll_SidString;
 
+extern const WCHAR *Dll_HomeNtPath;
+extern ULONG Dll_HomeNtPathLen;
+extern const WCHAR *Dll_HomeDosPath;
+//extern ULONG Dll_HomeDosPathLen;
+
 extern const WCHAR *Dll_BoxFilePath;
 extern const WCHAR *Dll_BoxKeyPath;
 extern const WCHAR *Dll_BoxIpcPath;
@@ -256,6 +279,7 @@ extern BOOLEAN Dll_InitComplete;
 extern BOOLEAN Dll_RestrictedToken;
 extern BOOLEAN Dll_ChromeSandbox;
 extern BOOLEAN Dll_FirstProcessInBox;
+extern BOOLEAN Dll_CompartmentMode;
 
 extern ULONG Dll_ImageType;
 
@@ -272,6 +296,8 @@ extern WCHAR *Ldr_ImageTruePath;
 extern BOOLEAN Ipc_OpenCOM;
 
 extern const WCHAR *Scm_CryptSvc;
+
+extern BOOLEAN Dll_SbieTrace;
 
 
 //---------------------------------------------------------------------------
@@ -337,6 +363,11 @@ ULONG SbieDll_MatchPath(WCHAR path_code, const WCHAR *path);
 
 ULONG SbieDll_MatchPath2(WCHAR path_code, const WCHAR *path, BOOLEAN bCheckObjectExists, BOOLEAN bMonitorLog);
 
+void SbieDll_GetReadablePaths(WCHAR path_code, LIST **lists);
+void SbieDll_ReleaseFilePathLock();
+
+BOOLEAN SbieDll_HasReadableSubPath(WCHAR path_code, const WCHAR* TruePath);
+
 #define PATH_OPEN_FLAG      0x10
 #define PATH_CLOSED_FLAG    0x20
 #define PATH_WRITE_FLAG     0x40
@@ -358,6 +389,8 @@ ULONG SbieDll_MatchPath2(WCHAR path_code, const WCHAR *path, BOOLEAN bCheckObjec
 
 void Dll_InitExeEntry(void);
 
+ULONG Dll_GetImageType(const WCHAR* ImageName);
+
 int Dll_NlsStrCmp(const WCHAR *s1, const WCHAR *s2, ULONG len);
 
 void *Dll_SidStringToSid(const WCHAR *SidString);
@@ -369,6 +402,8 @@ NTSTATUS Dll_GetCurrentSidString(UNICODE_STRING *SidString);
 // Functions (dllhook)
 //---------------------------------------------------------------------------
 
+NTSTATUS Dll_GetSettingsForImageName(
+    const WCHAR* setting, WCHAR* value, ULONG value_size, const WCHAR* deftext);
 
 BOOLEAN Dll_SkipHook(const WCHAR *HookName);
 
@@ -442,6 +477,9 @@ BOOLEAN File_IsBlockedNetParam(const WCHAR *BoxName);
 
 void File_GetSetDeviceMap(WCHAR *DeviceMap96);
 
+typedef void(*P_CloseHandler)(HANDLE handle);
+BOOLEAN File_RegisterCloseHandler(HANDLE FileHandle, P_CloseHandler CloseHandler);
+BOOLEAN File_UnRegisterCloseHandler(HANDLE FileHandle, P_CloseHandler CloseHandler);
 
 //---------------------------------------------------------------------------
 // Functions (key)
@@ -468,6 +506,8 @@ NTSTATUS Key_OpenOrCreateIfBoxed(
 void Key_DeleteValueFromCLSID(
     const WCHAR *Xxxid, const WCHAR *Guid, const WCHAR *ValueName);
 
+void Key_CreateBaseKeys();
+//void Key_CreateBaseFolders();
 
 //---------------------------------------------------------------------------
 // Functions (sxs)
@@ -477,6 +517,9 @@ void Key_DeleteValueFromCLSID(
 void Sxs_ActivateDefaultManifest(void *ImageBase);
 
 ULONG Sxs_CheckManifestForCreateProcess(const WCHAR *DosPath);
+
+ULONG Sxs_CheckManifestForElevation(const WCHAR* DosPath,
+    BOOLEAN* pAsInvoker, BOOLEAN* pRequireAdministrator, BOOLEAN* pHighestAvailable);
 
 BOOLEAN Sxs_KeyCallback(const WCHAR *path, HANDLE *out_handle);
 
@@ -562,11 +605,14 @@ BOOL Proc_ImpersonateSelf(BOOLEAN Enable);
 
 BOOLEAN Taskbar_SHCore_Init(HMODULE hmodule);
 
+BOOLEAN Win32_Init(HMODULE hmodule);
+
 
 //---------------------------------------------------------------------------
 // Functions (init for DllMain)
 //---------------------------------------------------------------------------
 
+BOOLEAN File_InitHandles(void);
 
 BOOLEAN Key_Init(void);
 
@@ -639,6 +685,7 @@ BOOLEAN Ole_Init(HMODULE);
 BOOLEAN Pst_Init(HMODULE);
 
 BOOLEAN Lsa_Init_Secur32(HMODULE);
+
 BOOLEAN Lsa_Init_SspiCli(HMODULE);
 
 BOOLEAN Setup_Init_SetupApi(HMODULE);
@@ -683,9 +730,9 @@ BOOLEAN Com_Init_Ole32(HMODULE);
 
 BOOLEAN RpcRt_Init(HMODULE);
 
-BOOLEAN Secure_Init_Elevation(HMODULE);
-
 BOOLEAN UserEnv_Init(HMODULE);
+
+BOOLEAN UserEnv_InitVer(HMODULE);
 
 BOOLEAN Scm_OsppcDll(HMODULE);
 
@@ -699,15 +746,11 @@ BOOLEAN Proc_Init_AdvPack(HMODULE);
 
 BOOLEAN Custom_SilverlightAgCore(HMODULE);
 
-BOOLEAN Custom_MsgPlusLive(HMODULE);
-
 BOOLEAN Custom_OsppcDll(HMODULE);
 
 BOOLEAN Custom_InternetDownloadManager(HMODULE);
 
 BOOLEAN Custom_Avast_SnxHk(HMODULE);
-
-BOOLEAN Custom_EMET_DLL(HMODULE hmodule);
 
 BOOLEAN Custom_SYSFER_DLL(HMODULE hmodule);
 
@@ -715,7 +758,7 @@ BOOLEAN MsCorEE_Init(HMODULE hmodule);
 
 void Custom_ComServer(void);
 
-void Custom_Load_UxTheme(void);
+//void Custom_Load_UxTheme(void);
 
 NTSTATUS StopTailCallOptimization(NTSTATUS status);
 
@@ -730,6 +773,29 @@ BOOLEAN Acscmonitor_Init(HMODULE);
 BOOLEAN DigitalGuardian_Init(HMODULE);
 
 BOOLEAN ComDlg32_Init(HMODULE);
+
+
+//---------------------------------------------------------------------------
+// Functions (Config)
+//---------------------------------------------------------------------------
+
+BOOLEAN Config_MatchImageGroup(
+    const WCHAR* group, ULONG group_len, const WCHAR* test_str,
+    ULONG depth);
+
+BOOLEAN Config_MatchImage(
+    const WCHAR* pat_str, ULONG pat_len, const WCHAR* test_str,
+    ULONG depth);
+
+WCHAR* Config_MatchImageAndGetValue(WCHAR* value, const WCHAR* ImageName, ULONG* pMode);
+
+BOOLEAN Config_InitPatternList(const WCHAR* boxname, const WCHAR* setting, LIST* list);
+
+VOID Config_FreePatternList(LIST* list);
+
+BOOLEAN Config_String2Bool(const WCHAR* value, BOOLEAN defval);
+
+BOOLEAN Config_GetSettingsForImageName_bool(const WCHAR* setting, BOOLEAN defval);
 
 //---------------------------------------------------------------------------
 

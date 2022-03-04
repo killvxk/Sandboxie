@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -31,7 +32,7 @@
 #include "common/my_version.h"
 #include "core/dll/sbiedll.h"
 #include "core/drv/api_defs.h"
-
+#include "sbieiniserver.h"
 
 //---------------------------------------------------------------------------
 // Variables
@@ -89,6 +90,7 @@ bool DriverAssist::Initialize()
 
     hThread = CreateThread(NULL, 0,
         (LPTHREAD_START_ROUTINE)StartDriverAsync, m_instance, 0, &tid);
+	CloseHandle(hThread);
 
     return true;
 }
@@ -286,7 +288,17 @@ void DriverAssist::MsgWorkerThread(void *MyMsg)
         LogMessage();
 
     }
-    else if (msgid == SVC_RESTART_HOST_INJECTED_SVCS) {
+    else if (msgid == SVC_CONFIG_UPDATED) {
+
+#ifdef NEW_INI_MODE
+
+        //
+        // in case the ini was edited externaly, i.e. by notepad.exe 
+        // we update the ini cache each time the deriver reloads the ini file
+        //
+
+        SbieIniServer::NotifyConfigReloaded();
+#endif
 
         RestartHostInjectedSvcs();
     }
@@ -309,6 +321,7 @@ DWORD DriverAssist::MsgWorkerThreadStub(void *MyMsg)
 void DriverAssist::Thread()
 {
     NTSTATUS status;
+	HANDLE hThread;
     DWORD threadId;
     MSG_DATA *MsgData;
 
@@ -329,7 +342,11 @@ void DriverAssist::Thread()
         }
 
         MsgData->ClassContext = this;
-        CreateThread(NULL, 0, MsgWorkerThreadStub, (void *)MsgData, 0, &threadId);
+		hThread = CreateThread(NULL, 0, MsgWorkerThreadStub, (void *)MsgData, 0, &threadId);
+		if (hThread)
+			CloseHandle(hThread);
+		else
+			VirtualFree(MsgData, 0, MEM_RELEASE);
     }
 }
 
@@ -449,10 +466,10 @@ void DriverAssist::CancelProcess(void *_msg)
         CloseHandle(hProcess);
     }
 
-    if (msg->reason != 0)
-        SbieApi_LogEx(msg->session_id, 2314, L"%S [%d / %d]", msg->process_name, msg->process_id, msg->reason);
-    else
+    if (msg->reason == 0)
         SbieApi_LogEx(msg->session_id, 2314, msg->process_name);
+	else if (msg->reason != -1) // in this case we have SBIE1308 and dont want any other messages
+		SbieApi_LogEx(msg->session_id, 2314, L"%S [%d / %d]", msg->process_name, msg->process_id, msg->reason);
 }
 
 
@@ -519,25 +536,20 @@ void DriverAssist::UnmountHive(void *_msg)
 
     bool ShouldUnmount = false;
 
-    ULONG *pids = (ULONG *)HeapAlloc(GetProcessHeap(), 0, PAGE_SIZE);
+    for (retries = 0; retries < 20; ++retries) {
 
-    if (pids) {
+        ULONG count = 0;
+        rc = SbieApi_EnumProcessEx(
+                            msg->boxname, FALSE, msg->session_id, NULL, &count);
+        if (rc == 0 && count == 0) {
 
-        for (retries = 0; retries < 20; ++retries) {
-
-            rc = SbieApi_EnumProcessEx(
-                                msg->boxname, FALSE, msg->session_id, pids);
-            if (rc == 0 && *pids == 0) {
-
-                ShouldUnmount = true;
-                break;
-            }
-
-            Sleep(100);
+            ShouldUnmount = true;
+            break;
         }
 
-        HeapFree(GetProcessHeap(), 0, pids);
+        Sleep(100);
     }
+
 
     //
     // unmount.  on Windows 2000, the process may appear to disappear

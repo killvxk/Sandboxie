@@ -91,8 +91,7 @@ _FX BOOLEAN Conf_Init_User(void)
 {
     List_Init(&Conf_Users);
 
-    Conf_Users_Event =
-        ExAllocatePoolWithTag(NonPagedPool, sizeof(KEVENT), tzuk);
+    Conf_Users_Event = ExAllocatePoolWithTag(NonPagedPool, sizeof(KEVENT), tzuk);
     if (! Conf_Users_Event) {
         Log_Msg0(MSG_1104);
         return FALSE;
@@ -284,6 +283,8 @@ _FX BOOLEAN Conf_GetGroupsForSid(WCHAR *PageSizeBuffer, ULONG SessionId)
             if (bufptr - PageSizeBuffer > 1024)
                 break;
         }
+
+        ExFreePool(groups);
 
         //
         // on Windows Vista, check for UAC split token

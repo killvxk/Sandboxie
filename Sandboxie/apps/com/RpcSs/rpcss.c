@@ -399,8 +399,6 @@ _FX int __stdcall WinMain(
         return STATUS_LICENSE_QUOTA_EXCEEDED;
     }
 
-    SetupExceptionHandler();
-
     if (1) {
         ULONG idThread;
         HANDLE hThread = CreateThread(
@@ -466,12 +464,12 @@ _FX int __stdcall WinMain(
         }
     }
 
-    /*if (1) {
+    if (1) {
         MSG_HEADER req;
         req.length = sizeof(req);
         req.msgid = MSGID_SBIE_INI_RUN_SBIE_CTRL;
         SbieDll_CallServer(&req);
-    }*/
+    }
 
     return DoLingerLeader();
 }

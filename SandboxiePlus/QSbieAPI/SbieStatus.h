@@ -5,6 +5,49 @@
 #define OP_CONFIRM (3)
 #define OP_CANCELED (4)
 
+#include "qsbieapi_global.h"
+
+QString QSBIEAPI_EXPORT CSbieAPI__FormatNtStatus(long nsCode);
+
+enum ESbieMsgCodes
+{
+	SB_Generic = 0,
+	SB_Message,
+	SB_NeedAdmin,
+	SB_ExecFail,
+	SB_DriverFail,
+	SB_ServiceFail,
+	SB_Incompatible,
+	SB_PathFail,
+	SB_FailedCopyConf,
+	SB_AlreadyExists,
+	SB_DeleteFailed,
+	SB_NameLenLimit,
+	SB_BadNameDev,
+	SB_BadNameChar,
+	SB_FailedKillAll,
+	SB_DeleteProtect,
+	SB_DeleteNotEmpty,
+	SB_DeleteError,
+	//SB_RemNotEmpty,
+	SB_DelNotEmpty,
+	SB_FailedMoveDir,
+	SB_SnapMkDirFail,
+	SB_SnapCopyDatFail,
+	SB_SnapNotFound,
+	SB_SnapMergeFail,
+	SB_SnapRmDirFail,
+	SB_SnapIsShared,
+	SB_SnapIsRunning,
+	SB_SnapDelDatFail,
+	SB_NotAuthorized,
+	SB_ConfigFailed,
+	SB_SnapIsEmpty,
+	SB_NameExists,
+	SB_PasswordBad,
+	SB_Canceled,
+};
+
 class CSbieStatus
 {
 public:
@@ -12,14 +55,18 @@ public:
 	{
 		m = NULL;
 	}
-	CSbieStatus(const QString& Error, long Status = 0xC0000001 /*STATUS_UNSUCCESSFUL*/) : CSbieStatus()
+	CSbieStatus(ESbieMsgCodes MsgCode, const QVariantList& Args = QVariantList(), long Status = 0xC0000001 /*STATUS_UNSUCCESSFUL*/) : CSbieStatus()
 	{
 		SFlexError* p = new SFlexError();
-		p->Error = Error;
+		p->MsgCode = MsgCode;
+		p->Args = Args;
 		p->Status = Status;
 		Attach(p);
 	}
-	CSbieStatus(long Status) : CSbieStatus(QObject::tr("Error Code: %1").arg(Status), Status)
+	CSbieStatus(ESbieMsgCodes MsgCode, long Status) : CSbieStatus(MsgCode, QVariantList(), Status)
+	{
+	}
+	CSbieStatus(long Status) : CSbieStatus(SB_Generic, QVariantList() << CSbieAPI__FormatNtStatus(Status), Status)
 	{
 	}
 	CSbieStatus(const CSbieStatus& other) : CSbieStatus()
@@ -40,14 +87,17 @@ public:
 
 	__inline bool IsError() const { return m != NULL; }
 	__inline long GetStatus() const { return m ? m->Status : 0; }
-	__inline QString GetText() const { return m ? m->Error: ""; }
+	__inline long GetMsgCode() const { return m ? m->MsgCode : 0; }
+	__inline QVariantList GetArgs() const { return m ? m->Args : QVariantList(); }
+	//__inline QString GetText() const { return m ? m->Text: ""; }
 
 	operator bool() const				{return !IsError();}
 
 protected:
 	struct SFlexError
 	{
-		QString Error;
+		ESbieMsgCodes MsgCode;
+		QVariantList Args;
 		long Status;
 
 		mutable atomic<int> aRefCnt;
@@ -80,6 +130,7 @@ protected:
 	}
 };
 
+
 typedef CSbieStatus SB_STATUS;
 #define SB_OK SB_STATUS()
 #define SB_ERR SB_STATUS
@@ -100,7 +151,7 @@ public:
 	{
 		Attach(&other);
 	}
-	CSbieResult(const CSbieResult& other) : CSbieResult(other)
+	CSbieResult(const CSbieResult& other) : CSbieStatus(other)
 	{
 		v = other.v;
 	}
@@ -124,22 +175,21 @@ class QSBIEAPI_EXPORT CSbieProgress : public QObject
 public:
 	CSbieProgress() : m_Status(OP_ASYNC), m_Canceled(false) {}
 
-	void Cancel() { m_Canceled = true; }
-	bool IsCancel() { return m_Canceled; }
+	void Cancel() { m_Canceled = true; emit Canceled(); }
+	bool IsCanceled() { return m_Canceled; }
 
-	void ShowMessage(const QString& text) { emit Message(text);
-#ifdef _DEBUG
-		QThread::sleep(3);
-#endif
-	}
+	void ShowMessage(const QString& text) { emit Message(text);}
+	void SetProgress(int value) { emit Progress(value); }
 	void Finish(SB_STATUS status) { m_Status = m_Canceled ? SB_ERR(OP_CANCELED) : status; emit Finished(); }
 
-	long GetStatus() { return m_Status.GetStatus(); }
-	bool IsFinished() { return GetStatus() != OP_ASYNC; }
+	SB_STATUS GetStatus() { return m_Status; }
+	bool IsFinished() { return m_Status.GetStatus() != OP_ASYNC; }
 
 signals:
 	//void Progress(int procent);
 	void Message(const QString& text);
+	void Progress(int value);
+	void Canceled();
 	void Finished();
 
 protected:

@@ -4,49 +4,108 @@
 #include "../QSbieAPI/SbieAPI.h"
 #include "../QtSingleApp/src/qtsingleapplication.h"
 #include "../QSbieAPI/SbieUtils.h"
-#include "../MiscHelpers/Common/qRC4.h"
+//#include "../MiscHelpers/Common/qRC4.h"
 #include "../MiscHelpers/Common/Common.h"
 #include <windows.h>
+#include "./Windows/SettingsWindow.h"
 
 CSettings* theConf = NULL;
 
-void PackDriver();
-void UnPackDrivers();
+QString g_PendingMessage;
 
 int main(int argc, char *argv[])
 {
 #ifdef Q_OS_WIN
-	SetProcessDPIAware();
+	//SetProcessDPIAware();
 #endif // Q_OS_WIN 
-
-	//QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling); 
+	QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling); 
 	//QCoreApplication::setAttribute(Qt::AA_DisableHighDpiScaling);
 
 	QtSingleApplication app(argc, argv);
+	app.setQuitOnLastWindowClosed(false);
 
 	//InitConsole(false);
-	if (app.arguments().contains("-rc4"))
-	{
-		PackDriver();
-		return 0;
+
+	bool IsBoxed = GetModuleHandle(L"SbieDll.dll") != NULL;
+
+	if (!IsBoxed) {
+		SB_STATUS Status = CSbieUtils::DoAssist();
+		if (Status.GetStatus()) {
+			if (Status.GetStatus() != ERROR_OK)
+				return Status.GetStatus();
+			return 0;
+		}
 	}
 
-	SB_STATUS Status = CSbieUtils::DoAssist();
-	if (Status.GetStatus()) {
-		app.sendMessage("Status:" + Status.GetText());
-		return 0;
-	}
+	QStringList Args = QCoreApplication::arguments();
 	
-	if (app.sendMessage("ShowWnd"))
+	int CmdPos = Args.indexOf("-open_reg", Qt::CaseInsensitive);
+	if (CmdPos != -1) {
+		if (Args.count() > CmdPos + 2) {
+			QProcess::startDetached(Args.at(CmdPos + 2));
+			QThread::msleep(1000);
+		}
+		ShellOpenRegKey(Args.at(CmdPos + 1));
+		return 0;
+	}
+
+	CmdPos = Args.indexOf("-op", Qt::CaseInsensitive);
+	if (CmdPos != -1) {
+		QString Op;
+		if (Args.count() > CmdPos)
+			Op = Args.at(CmdPos + 1);
+		g_PendingMessage = "Op:" + Op;
+	}
+
+	CmdPos = Args.indexOf("/box:__ask__", Qt::CaseInsensitive);
+	if (CmdPos != -1) {
+		// Note: a escaped command ending with \" will fail and unescape "
+		//QString CommandLine;
+		//for (int i = CmdPos + 1; i < Args.count(); i++)
+		//	CommandLine += "\"" + Args[i] + "\" ";
+		//g_PendingMessage = "Run:" + CommandLine.trimmed();
+		LPWSTR ChildCmdLine = wcsstr(GetCommandLineW(), L"/box:__ask__") + 13;
+
+		if (IsBoxed) {
+			ShellExecute(NULL, L"open", ChildCmdLine, NULL, NULL, SW_SHOWNORMAL);
+			return 0;
+		}
+
+		g_PendingMessage = "Run:" + QString::fromWCharArray(ChildCmdLine);
+		g_PendingMessage += "\nFrom:" + QDir::currentPath();
+	}
+
+	if (IsBoxed) {
+		QMessageBox::critical(NULL, "Sandboxie-Plus", CSandMan::tr("Sandboxie Manager can not be run sandboxed!"));
+		return -1;
+	}
+
+	if (!g_PendingMessage.isEmpty()) {
+		if(app.sendMessage(g_PendingMessage))
+			return 0;
+		app.disableSingleApp(); // we start to do one job and exit, don't interfear with starting a regular instance
+	}
+	else if (app.sendMessage("ShowWnd"))
 		return 0;
 
-	theConf = new CSettings("Sandboxie-Plus");
 
-	UnPackDrivers();
+	if (QFile::exists(QCoreApplication::applicationDirPath() + "\\Certificate.dat")) {
+		CSettingsWindow::LoadCertificate();
+		g_CertInfo.business = GetArguments(g_Certificate, L'\n', L':').value("TYPE").toUpper().contains("BUSINESS");
+	}
+
+	// use a shared setting location when used in a business environment for easier administration
+	theConf = new CSettings("Sandboxie-Plus", g_CertInfo.business);
+
+#ifndef _DEBUG
+	InitMiniDumpWriter(QString("SandMan-v%1").arg(CSandMan::GetVersion()).toStdWString().c_str() , QString(theConf->GetConfigDir()).replace("/", "\\").toStdWString().c_str());
+#endif
 
 	//QThreadPool::globalInstance()->setMaxThreadCount(theConf->GetInt("Options/MaxThreadPool", 10));
 
+
 	CSandMan* pWnd = new CSandMan();
+
 	QObject::connect(&app, SIGNAL(messageReceived(const QString&)), pWnd, SLOT(OnMessage(const QString&)));
 
 	int ret =  app.exec();
@@ -59,117 +118,10 @@ int main(int argc, char *argv[])
 	return ret;
 }
 
-bool TransformFile(const QString& InName, const QString& OutName, const QString& Key = "default_key")
-{
-	QFile InFile(InName);
-	QFile OutFile(OutName);
-	if (InFile.open(QIODevice::ReadOnly))
-	{
-		if (OutFile.open(QIODevice::WriteOnly))
-		{
-			rc4_sbox_s sbox;
-			rc4_init(&sbox, Key.toLatin1());
-			OutFile.write(rc4_transform(&sbox, InFile.readAll()));
-			OutFile.flush();
-			return true;
-		}
-	}
-	return false;
-}
+/*HANDLE hServerPipe = CreateFileW(L"\\\\.\\pipe\\qtsingleapp-sandma-ca4a-1", GENERIC_ALL, 0, NULL, OPEN_EXISTING, 0, NULL);
+if (hServerPipe != INVALID_HANDLE_VALUE) {
+	DWORD lenWritten;
+    WriteFile(hServerPipe, "test", 4, &lenWritten, NULL)
 
-bool TestFile(const QString& OutName)
-{
-	QThread::sleep(3);
-	return QFile::exists(OutName);
-}
-
-void PackDriver()
-{
-	int pos = QCoreApplication::arguments().indexOf("-rc4");
-	QString InName = QCoreApplication::arguments().at(pos + 1);
-	QString OutName = InName;
-	if (OutName.right(4) == ".rc4")
-		OutName.truncate(OutName.length() - 4);
-	else
-		OutName.append(".rc4");
-
-	if (TransformFile(InName, OutName))
-		printf("success\r\n");
-	else
-		printf("failed\r\n");
-}
-
-bool NotifyCert()
-{
-	QString Caption = QObject::tr(
-		"<h3>Important Notie</h3>"
-	);
-	QString Text = QObject::tr(
-		"<p>Sandboxie requires a driver to operate (SbieDrv.sys), Windows however denies loading a driver file that has not been digitally signed using an expensive <b>EV-Code Signing Certificate</b>. "
-		"Such certificates cost upwards of 1000$ per year!</p>"
-		"<p>Luckily brave hackers have Leaked a few of these Certificates over the years, one of them was found by the author of this software and put to good use.</p>"
-		"<p>Unfortunately, such certificates have been abused by malware authors resulting in many Anti Malware Fools being Lazy and flagging Everything signed with them Wrongfully as Malware. "
-		"This Prejudice is Damaging the Open Source Ecosystem as most nonprofit developers can't afford to waste this kind of money every year only to pay that <u>Windows Kernel \"Tax\"</u>.</p>"
-		"<p>Therefore, the required driver is provided in an obfuscated form and before use must be unpacked. "
-		"<font color='red'>When doing so said said Anti Viruses will complain and attempt to destroy the freshly created file.</font> "
-		"Please be aware that this is a <u>false positive</u> caused by the necessary use of a compromitted certificate. "
-		"If this happens you will be notified and offered the option to repeat the unpacking operation, for the operation to succeed you will need to <u>configure an aproproate exemption</u>.</p>"
-
-		"<p></p>"
-		"<p><b>If you want the project to obtain a genuine EV-Code Signing Certificate please visit the <a href=\"https://xanasoft.com/\">Homepage</a> <font color='red'>and please donate</font></b>.</p>"
-		"<p></p>"
-
-		"<p>If you want to proceed with the unpacking of the driver pres YES.</p>"
-	);
-	QMessageBox *msgBox = new QMessageBox(NULL);
-	msgBox->setAttribute(Qt::WA_DeleteOnClose);
-	msgBox->setWindowTitle("Sandboxie-Plus");
-	msgBox->setText(Caption);
-	msgBox->setInformativeText(Text);
-	msgBox->setStandardButtons(QMessageBox::Yes);
-	msgBox->addButton(QMessageBox::No);
-	msgBox->setDefaultButton(QMessageBox::Yes);
-
-	QIcon ico(QLatin1String(":/SandMan.png"));
-	msgBox->setIconPixmap(ico.pixmap(64, 64));
-
-	return msgBox->exec() == QMessageBox::Yes;
-}
-
-void UnPackDrivers()
-{
-	bool notifyNotOk = false;
-	QDir appDir(QApplication::applicationDirPath());
-	foreach(const QString& FileName, appDir.entryList(QStringList("*.sys.rc4"), QDir::Files))
-	{
-		QString InName = QApplication::applicationDirPath() + "/" + FileName;
-		QString OutName = InName.mid(0, InName.length() - 4);
-
-		QFileInfo InInfo(InName);
-		QFileInfo OutInfo(OutName);
-		if (InInfo.size() != OutInfo.size() /*|| InInfo.lastModified() > OutInfo.lastModified()*/)
-		{
-			if (theConf->GetBool("Options/NotifyUnPack", true)) {
-				if (!NotifyCert()) {
-					notifyNotOk = true;
-					break;
-				}
-				theConf->SetValue("Options/NotifyUnPack", false);
-			}
-
-		retry:
-			if (!TransformFile(InName, OutName))
-				QMessageBox::warning(NULL, "Sandboxie-Plus", QObject::tr("Failed to decrypt %1 ensure app directory is writable.").arg(FileName));
-			else if (!TestFile(OutName))
-			{
-				if (QMessageBox("Sandboxie-Plus",
-					QObject::tr("The decrypted file %1 seam to have been removed. Retry file extraction?").arg(FileName),
-					QMessageBox::Information, QMessageBox::Yes | QMessageBox::Default, QMessageBox::Cancel, QMessageBox::NoButton).exec() == QMessageBox::Yes)
-					goto retry;
-				notifyNotOk = true;
-			}
-		}
-	}
-	if (notifyNotOk)
-		QMessageBox::warning(NULL, "Sandboxie-Plus", QObject::tr("Without the Driver Sandboxie-Plus wont be able to run properly."));
-}
+    CloseHandle(hServerPipe);
+}*/

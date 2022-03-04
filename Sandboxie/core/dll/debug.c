@@ -198,6 +198,8 @@ _FX int Debug_Init(void)
 
 #endif
 
+#if 0
+
     //
     // break
     //
@@ -231,6 +233,8 @@ _FX int Debug_Init(void)
         __debugbreak();
     }
 
+#endif
+
     return TRUE;
 }
 
@@ -246,7 +250,7 @@ ALIGNED void Debug_RtlSetLastWin32Error(ULONG err)
     if (err) {
         if (InterlockedIncrement(&InError) == 1) {
             WCHAR txt[64];
-            Sbie_swprintf(txt, L"SetErr %d\n", err);
+            Sbie_snwprintf(txt, 64, L"SetErr %d\n", err);
             OutputDebugString(txt);
             InterlockedDecrement(&InError);
         }
@@ -300,7 +304,7 @@ ALIGNED BOOL Debug_DebugActiveProcess(ULONG dwProcessId)
     ULONG err;
 
     WCHAR txt[128];
-    Sbie_swprintf(txt, L"Debug Active Process Id %d\n", dwProcessId);
+    Sbie_snwprintf(txt, 128, L"Debug Active Process Id %d\n", dwProcessId);
     OutputDebugString(txt);
     Debug_dwProcessId = dwProcessId;
 
@@ -329,7 +333,7 @@ ALIGNED BOOL Debug_WaitForDebugEvent(
     ok = __sys_WaitForDebugEvent(lpDebugEvent, dwMilliseconds);
     err = GetLastError();
 
-    Sbie_swprintf(txt, L"Debug Event %d on Process Id %d\n",
+    Sbie_snwprintf(txt, 256, L"Debug Event %d on Process Id %d\n",
         ok ? lpDebugEvent->dwDebugEventCode : 0,
         ok ? lpDebugEvent->dwProcessId : 0);
     OutputDebugString(txt);
@@ -390,6 +394,53 @@ _FX NTSTATUS Debug_LdrGetDllHandle(
     return status;
 }
 #endif
+
+
+
+//---------------------------------------------------------------------------
+// DbgPrint
+//---------------------------------------------------------------------------
+
+
+void DbgPrint(const char* format, ...)
+{
+    va_list va_args;
+    va_start(va_args, format);
+    
+    char tmp1[510];
+
+    extern int(*P_vsnprintf)(char *_Buffer, size_t Count, const char * const, va_list Args);
+    P_vsnprintf(tmp1, 510, format, va_args);
+
+    OutputDebugStringA(tmp1);
+
+    va_end(va_args);
+}
+
+
+
+//---------------------------------------------------------------------------
+// DbgPrint
+//---------------------------------------------------------------------------
+
+
+void DbgTrace(const char* format, ...)
+{
+    va_list va_args;
+    va_start(va_args, format);
+    
+    char tmp1[510];
+    WCHAR tmp2[510];
+
+    extern int(*P_vsnprintf)(char *_Buffer, size_t Count, const char * const, va_list Args);
+    P_vsnprintf(tmp1, 510, format, va_args);
+
+    Sbie_snwprintf((WCHAR *)tmp2, 510, L"%S", tmp1);
+
+    SbieApi_MonitorPut2(MONITOR_OTHER | MONITOR_TRACE, tmp2, FALSE);
+
+    va_end(va_args);
+}
 
 
 //---------------------------------------------------------------------------

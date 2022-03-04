@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -115,8 +116,6 @@ static ULONG_PTR Gui_HighestAddress = 0;
 BOOLEAN Gui_RenameClasses = TRUE;
 BOOLEAN Gui_OpenAllWinClasses = FALSE;
 
-BOOLEAN Gui_EMET_DLL_Loaded = FALSE;
-
 
 //---------------------------------------------------------------------------
 // Gui_InitClass
@@ -137,7 +136,7 @@ _FX BOOLEAN Gui_InitClass(void)
     len = (wcslen(Sandbox) + 1 + wcslen(Dll_BoxName) + 1 + 1)
         * sizeof(WCHAR);
     Gui_BoxPrefixW = Dll_Alloc(len);
-    Sbie_swprintf(Gui_BoxPrefixW, L"%s:%s:", Sandbox, Dll_BoxName);
+    Sbie_snwprintf(Gui_BoxPrefixW, len / sizeof(WCHAR), L"%s:%s:", Sandbox, Dll_BoxName);
     Gui_BoxPrefix_Len = wcslen(Gui_BoxPrefixW);
 
     len = Gui_BoxPrefix_Len + 1;
@@ -282,9 +281,6 @@ _FX void Gui_Hook_CREATESTRUCT_Handler(void)
     //
 
     if (! Gui_RenameClasses)
-        return;
-
-    if (Gui_EMET_DLL_Loaded)
         return;
 
     GetSystemInfo(&sysinfo);
@@ -730,7 +726,7 @@ _FX int Gui_GetClassNameW(
     err = GetLastError();
     clsnm = Dll_Alloc(sizeof(WCHAR) * 1024);
     n = __sys_GetClassNameW(hWnd, clsnm, 1023);
-    if (! n) {
+    if (Gui_UseProxyService && ! n) {
         SetLastError(err);
         n = Gui_GetClassName2(hWnd, clsnm, 1023, TRUE);
     }
@@ -746,8 +742,10 @@ _FX int Gui_GetClassNameW(
             n -= (ULONG)(clsnm_ptr - clsnm);
             if (n > nMaxCount - 1)
                 n = nMaxCount - 1;
-            wmemcpy(lpClassName, clsnm_ptr, n);
-            lpClassName[n] = L'\0';
+            if (lpClassName) {
+                wmemcpy(lpClassName, clsnm_ptr, n);
+                lpClassName[n] = L'\0';
+            }
         } else
             n = 0;
     } else
@@ -758,8 +756,10 @@ _FX int Gui_GetClassNameW(
             n = nMaxCount - 1;
         else
             n = n0;
-        wmemcpy(lpClassName, clsnm, n);
-        lpClassName[n] = L'\0';
+        if (lpClassName) {
+            wmemcpy(lpClassName, clsnm, n);
+            lpClassName[n] = L'\0';
+        }
     }
 
     Dll_Free(clsnm);
@@ -784,7 +784,7 @@ _FX int Gui_GetClassNameA(
     err = GetLastError();
     clsnm = Dll_Alloc(sizeof(UCHAR) * 1024);
     n = __sys_GetClassNameA(hWnd, clsnm, 1023);
-    if (! n) {
+    if (Gui_UseProxyService && ! n) {
         SetLastError(err);
         n = Gui_GetClassName2(hWnd, clsnm, 1023, FALSE);
     }
@@ -800,8 +800,10 @@ _FX int Gui_GetClassNameA(
             n -= (ULONG)(clsnm_ptr - clsnm);
             if (n > nMaxCount - 1)
                 n = nMaxCount - 1;
-            memcpy(lpClassName, clsnm_ptr, n);
-            lpClassName[n] = '\0';
+            if (lpClassName) {
+                memcpy(lpClassName, clsnm_ptr, n);
+                lpClassName[n] = '\0';
+            }
         } else
             n = 0;
     } else
@@ -812,8 +814,10 @@ _FX int Gui_GetClassNameA(
             n = nMaxCount - 1;
         else
             n = n0;
-        memcpy(lpClassName, clsnm, n);
-        lpClassName[n] = L'\0';
+        if (lpClassName) {
+            memcpy(lpClassName, clsnm, n);
+            lpClassName[n] = L'\0';
+        }
     }
 
     Dll_Free(clsnm);
@@ -1127,13 +1131,7 @@ _FX BOOLEAN Gui_IsWindowAccessible(HWND hWnd)
         if ((! allow) && idProcess) {
 
             NTSTATUS status;
-            HANDLE hProcess = OpenProcess(
-                PROCESS_QUERY_INFORMATION, FALSE, (ULONG)idProcess);
-            if (! hProcess) {
-                status = SbieApi_OpenProcess(&hProcess, (HANDLE)idProcess);
-                if (! NT_SUCCESS(status))
-                    hProcess = NULL;
-            }
+            HANDLE hProcess = SbieDll_OpenProcess(PROCESS_QUERY_INFORMATION, (HANDLE)idProcess);
             if (hProcess) {
 
                 ULONG len;

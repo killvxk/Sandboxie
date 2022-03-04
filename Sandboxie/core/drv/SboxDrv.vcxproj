@@ -21,28 +21,46 @@
   <PropertyGroup Label="Globals">
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{4019C5EB-8D1E-40E4-B7D1-5601B4B27288}</ProjectGuid>
-    <WindowsTargetPlatformVersion>8.1</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>Driver</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <TargetVersion>Windows7</TargetVersion>
+    <DriverType>WDM</DriverType>
+    <Driver_SpectreMitigation>false</Driver_SpectreMitigation>
+    <ALLOW_DATE_TIME>1</ALLOW_DATE_TIME>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>Driver</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <TargetVersion>Windows7</TargetVersion>
+    <DriverType>WDM</DriverType>
+    <Driver_SpectreMitigation>false</Driver_SpectreMitigation>
+    <ALLOW_DATE_TIME>1</ALLOW_DATE_TIME>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>Driver</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <DriverTargetPlatform>
+    </DriverTargetPlatform>
+    <DriverType>WDM</DriverType>
+    <TargetVersion>Windows7</TargetVersion>
+    <Driver_SpectreMitigation>false</Driver_SpectreMitigation>
+    <ALLOW_DATE_TIME>1</ALLOW_DATE_TIME>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>Driver</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <TargetVersion>Windows7</TargetVersion>
+    <DriverType>WDM</DriverType>
+    <Driver_SpectreMitigation>false</Driver_SpectreMitigation>
+    <ALLOW_DATE_TIME>1</ALLOW_DATE_TIME>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -69,32 +87,24 @@
     <GenerateManifest>false</GenerateManifest>
     <PostBuildEventUseInBuild>false</PostBuildEventUseInBuild>
     <TargetName>SbieDrv</TargetName>
-    <IncludePath>C:\WinDDK\7600.16385.1\inc\ddk;C:\WinDDK\7600.16385.1\inc\crt;C:\WinDDK\7600.16385.1\inc\api;$(IncludePath)</IncludePath>
-    <LibraryPath>C:\WinDDK\7600.16385.1\lib\wnet\i386;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">
     <TargetExt>.sys</TargetExt>
     <GenerateManifest>false</GenerateManifest>
     <PostBuildEventUseInBuild>false</PostBuildEventUseInBuild>
     <TargetName>SbieDrv</TargetName>
-    <IncludePath>C:\WinDDK\7600.16385.1\inc\ddk;C:\WinDDK\7600.16385.1\inc\crt;C:\WinDDK\7600.16385.1\inc\api;$(IncludePath)</IncludePath>
-    <LibraryPath>C:\WinDDK\7600.16385.1\lib\wnet\amd64;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">
     <TargetExt>.sys</TargetExt>
     <GenerateManifest>false</GenerateManifest>
     <PostBuildEventUseInBuild>false</PostBuildEventUseInBuild>
     <TargetName>SbieDrv</TargetName>
-    <IncludePath>C:\WinDDK\7600.16385.1\inc\ddk;C:\WinDDK\7600.16385.1\inc\crt;C:\WinDDK\7600.16385.1\inc\api;$(IncludePath)</IncludePath>
-    <LibraryPath>C:\WinDDK\7600.16385.1\lib\wnet\i386;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">
     <TargetExt>.sys</TargetExt>
     <GenerateManifest>false</GenerateManifest>
     <PostBuildEventUseInBuild>false</PostBuildEventUseInBuild>
     <TargetName>SbieDrv</TargetName>
-    <IncludePath>C:\WinDDK\7600.16385.1\inc\ddk;C:\WinDDK\7600.16385.1\inc\crt;C:\WinDDK\7600.16385.1\inc\api;$(IncludePath)</IncludePath>
-    <LibraryPath>C:\WinDDK\7600.16385.1\lib\wnet\amd64;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">
     <ClCompile>
@@ -102,10 +112,13 @@
       <AdditionalOptions>/Wv:18 %(AdditionalOptions)</AdditionalOptions>
       <DisableSpecificWarnings>
       </DisableSpecificWarnings>
+      <PreprocessorDefinitions>POOL_NX_OPTIN=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <IntrinsicFunctions>false</IntrinsicFunctions>
     </ClCompile>
     <Link>
       <SubSystem>Native</SubSystem>
-      <AdditionalDependencies>ntoskrnl.lib;hal.lib;wmilib.lib;fltmgr.lib;Ksecdd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ntoskrnl.lib;hal.lib;wmilib.lib;fltmgr.lib;Ksecdd.lib;Fwpkclnt.lib;ntstrsafe.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EntryPointSymbol>DriverEntry</EntryPointSymbol>
       <RandomizedBaseAddress>
       </RandomizedBaseAddress>
@@ -118,6 +131,9 @@
       <OptimizeReferences>false</OptimizeReferences>
       <EnableCOMDATFolding>false</EnableCOMDATFolding>
     </Link>
+    <DriverSign>
+      <FileDigestAlgorithm>SHA256</FileDigestAlgorithm>
+    </DriverSign>
     <PostBuildEvent>
       <Command>
       </Command>
@@ -132,10 +148,12 @@
       <DisableSpecificWarnings>
       </DisableSpecificWarnings>
       <AdditionalOptions>/Wv:18 %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>POOL_NX_OPTIN=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Native</SubSystem>
-      <AdditionalDependencies>ntoskrnl.lib;hal.lib;wmilib.lib;fltmgr.lib;Ksecdd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ntoskrnl.lib;hal.lib;wmilib.lib;fltmgr.lib;Ksecdd.lib;Fwpkclnt.lib;ntstrsafe.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EntryPointSymbol>DriverEntry</EntryPointSymbol>
       <RandomizedBaseAddress>
       </RandomizedBaseAddress>
@@ -158,6 +176,9 @@
       <OptimizeReferences>false</OptimizeReferences>
       <EnableCOMDATFolding>false</EnableCOMDATFolding>
     </Link>
+    <DriverSign>
+      <FileDigestAlgorithm>SHA256</FileDigestAlgorithm>
+    </DriverSign>
     <PostBuildEvent>
       <Command>
       </Command>
@@ -170,10 +191,12 @@
     <ClCompile>
       <DisableSpecificWarnings>
       </DisableSpecificWarnings>
+      <PreprocessorDefinitions>POOL_NX_OPTIN=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Native</SubSystem>
-      <AdditionalDependencies>ntoskrnl.lib;hal.lib;wmilib.lib;fltmgr.lib;Ksecdd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ntoskrnl.lib;hal.lib;wmilib.lib;fltmgr.lib;Ksecdd.lib;Fwpkclnt.lib;ntstrsafe.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EntryPointSymbol>DriverEntry</EntryPointSymbol>
       <RandomizedBaseAddress>
       </RandomizedBaseAddress>
@@ -186,6 +209,9 @@
       <OptimizeReferences>false</OptimizeReferences>
       <EnableCOMDATFolding>false</EnableCOMDATFolding>
     </Link>
+    <DriverSign>
+      <FileDigestAlgorithm>SHA256</FileDigestAlgorithm>
+    </DriverSign>
     <PostBuildEvent>
       <Command>
       </Command>
@@ -198,10 +224,12 @@
     <ClCompile>
       <DisableSpecificWarnings>
       </DisableSpecificWarnings>
+      <PreprocessorDefinitions>POOL_NX_OPTIN=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Native</SubSystem>
-      <AdditionalDependencies>ntoskrnl.lib;hal.lib;wmilib.lib;fltmgr.lib;Ksecdd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ntoskrnl.lib;hal.lib;wmilib.lib;fltmgr.lib;Ksecdd.lib;Fwpkclnt.lib;ntstrsafe.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EntryPointSymbol>DriverEntry</EntryPointSymbol>
       <RandomizedBaseAddress>
       </RandomizedBaseAddress>
@@ -224,6 +252,9 @@
       <OptimizeReferences>false</OptimizeReferences>
       <EnableCOMDATFolding>false</EnableCOMDATFolding>
     </Link>
+    <DriverSign>
+      <FileDigestAlgorithm>SHA256</FileDigestAlgorithm>
+    </DriverSign>
     <PostBuildEvent>
       <Command>
       </Command>
@@ -233,7 +264,62 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\common\base64.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="..\..\common\list.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="..\..\common\map.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="..\..\common\netfw.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="..\..\common\pattern.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="..\..\common\pool.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="..\..\common\rbtree.c" />
+    <ClCompile Include="..\..\common\stream.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="..\..\common\str_util.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="..\dll\hook_inst.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="..\dll\hook_tramp.c">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
@@ -247,6 +333,12 @@
     <ClCompile Include="dll.c" />
     <ClCompile Include="driver.c" />
     <ClCompile Include="file.c" />
+    <ClCompile Include="file_ctrl.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="file_flt.c">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
@@ -268,13 +360,23 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="hook.c" />
-    <ClCompile Include="hook_32.c" />
-    <ClCompile Include="hook_64.c" />
-    <ClCompile Include="hook_inst.c" />
-    <ClCompile Include="hook_tramp.c" />
+    <ClCompile Include="hook_32.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="hook_64.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="includes.c" />
     <ClCompile Include="ipc.c" />
+    <ClCompile Include="ipc_lsa.c" />
     <ClCompile Include="ipc_port.c" />
+    <ClCompile Include="ipc_sam.c" />
     <ClCompile Include="ipc_spl.c" />
     <ClCompile Include="key.c" />
     <ClCompile Include="key_flt.c">
@@ -290,8 +392,16 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="log.c" />
-    <ClCompile Include="mem.c" />
+    <ClCompile Include="mem.c">
+      <Optimization Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">Disabled</Optimization>
+    </ClCompile>
     <ClCompile Include="obj.c" />
+    <ClCompile Include="obj_flt.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="obj_xp.c">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
@@ -301,7 +411,12 @@
     <ClCompile Include="process.c" />
     <ClCompile Include="process_api.c" />
     <ClCompile Include="process_force.c" />
-    <ClCompile Include="process_hook.c" />
+    <ClCompile Include="process_hook.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="process_low.c" />
     <ClCompile Include="process_util.c" />
     <ClCompile Include="log_buff.c" />
@@ -325,6 +440,18 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="syscall_util.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="syscall_win32.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="thread.c" />
     <ClCompile Include="thread_token.c">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
@@ -334,6 +461,8 @@
     </ClCompile>
     <ClCompile Include="token.c" />
     <ClCompile Include="util.c" />
+    <ClCompile Include="verify.c" />
+    <ClCompile Include="wfp.c" />
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="aulldvrm.asm">
@@ -360,7 +489,16 @@
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\..\common\pattern.h">
+    <ClInclude Include="..\..\common\list.h" />
+    <ClInclude Include="..\..\common\map.h" />
+    <ClInclude Include="..\..\common\my_version.h" />
+    <ClInclude Include="..\..\common\netfw.h" />
+    <ClInclude Include="..\..\common\pattern.h" />
+    <ClInclude Include="..\..\common\pool.h" />
+    <ClInclude Include="..\..\common\rbtree.h" />
+    <ClInclude Include="..\..\common\stream.h" />
+    <ClInclude Include="..\..\common\str_util.h" />
+    <ClInclude Include="..\dll\hook.h">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|Win32'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieDebug|Win32'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='SbieRelease|x64'">true</ExcludedFromBuild>
@@ -391,6 +529,7 @@
     <ClInclude Include="thread.h" />
     <ClInclude Include="token.h" />
     <ClInclude Include="util.h" />
+    <ClInclude Include="wfp.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resource.rc" />

@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2021 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -36,7 +37,7 @@ static HANDLE Syscall_RestoreTargetHandle(
 
 static NTSTATUS Syscall_CheckObject(
     PROCESS *proc, SYSCALL_ENTRY *syscall_entry,
-    void *OpenedObject, OBJECT_HANDLE_INFORMATION *HandleInfo);
+    void *OpenedObject, OBJECT_HANDLE_INFORMATION *HandleInfo, PUNICODE_STRING puName);
 
 static NTSTATUS Syscall_DuplicateHandle_2(
     HANDLE TargetProcessHandle, HANDLE TargetHandle,
@@ -177,7 +178,7 @@ _FX HANDLE Syscall_RestoreTargetHandle(
 
 _FX NTSTATUS Syscall_CheckObject(
     PROCESS *proc, SYSCALL_ENTRY *syscall_entry,
-    void *OpenedObject, OBJECT_HANDLE_INFORMATION *HandleInfo)
+    void *OpenedObject, OBJECT_HANDLE_INFORMATION *HandleInfo, PUNICODE_STRING puName)
 {
     OBJECT_NAME_INFORMATION *Name;
     ULONG NameLength;
@@ -193,9 +194,12 @@ _FX NTSTATUS Syscall_CheckObject(
         if ((status != STATUS_SUCCESS)
                             && (status != STATUS_BAD_INITIAL_PC)) {
 
+            if (puName == NULL && Name != NULL && Name->Name.Length != 0)
+                puName = &Name->Name;
+
             WCHAR msg[256];
-            swprintf(msg, L"%S (%08X) access=%08X initialized=%d", syscall_entry->name, status, HandleInfo->GrantedAccess, proc->initialized);
-			Log_Msg_Process(MSG_2101, msg, Name != NULL ? Name->Name.Buffer : L"Unnamed object", -1, proc->pid);
+            RtlStringCbPrintfW(msg, sizeof(msg), L"%S (%08X) access=%08X initialized=%d", syscall_entry->name, status, HandleInfo->GrantedAccess, proc->initialized);
+			Log_Msg_Process(MSG_2101, msg, puName != NULL ? puName->Buffer : L"Unnamed object", -1, proc->pid);
         }
 
         if (Name != &Obj_Unnamed)
@@ -240,6 +244,51 @@ _FX NTSTATUS Syscall_OpenHandle(
         }
     }
 
+    PUNICODE_STRING puName = NULL;
+    __try {
+
+        if ((strcmp(syscall_entry->name, "ConnectPort") == 0) ||
+            (strcmp(syscall_entry->name, "AlpcConnectPort") == 0))
+        {
+            puName = (UNICODE_STRING*)user_args[1];
+        }
+        else if ((strcmp(syscall_entry->name, "CreateFile") == 0) ||
+            (strcmp(syscall_entry->name, "OpenFile") == 0))
+        {
+            POBJECT_ATTRIBUTES pObj = (POBJECT_ATTRIBUTES)user_args[2];
+            if (pObj && pObj->ObjectName)
+            {
+                puName = pObj->ObjectName;
+
+                ACCESS_MASK DesiredAccess = (ACCESS_MASK)user_args[1];
+                if (puName->Buffer != NULL && puName->Length > (4 * sizeof(WCHAR)) && wcsncmp(puName->Buffer, L"\\??\\", 4) == 0
+                    && (DesiredAccess & ~(SYNCHRONIZE | READ_CONTROL | FILE_READ_EA | FILE_READ_ATTRIBUTES)) != 0)
+                {
+                    if (!Conf_Get_Boolean(proc->box->name, L"AllowRawDiskRead", 0, FALSE))
+                    if ((puName->Length == (6 * sizeof(WCHAR)) && puName->Buffer[5] == L':') // \??\C:
+                        || wcsncmp(&puName->Buffer[4], L"PhysicalDrive", 13) == 0 // \??\PhysicalDrive1
+                        || wcsncmp(&puName->Buffer[4], L"Volume", 6) == 0) // \??\Volume{2b985816-4b6f-11ea-bd33-48a4725d5bbe}
+                    {
+                        WCHAR access_str[24];
+                        RtlStringCbPrintfW(access_str, sizeof(access_str), L"(DD) %08X", DesiredAccess);
+                        Log_Debug_Msg(MONITOR_DRIVE | MONITOR_DENY, access_str, puName->Buffer);
+
+                        if (proc->file_warn_direct_access) {
+
+                            //Log_MsgP1(MSG_BLOCKED_DIRECT_DISK_ACCESS, proc->image_name, proc->pid);
+                            Process_LogMessage(proc, MSG_BLOCKED_DIRECT_DISK_ACCESS);
+                        }
+
+                        return STATUS_ACCESS_DENIED;
+                    }
+                }
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+
+
     //
     // replace the address of the handle in the user stack
     //
@@ -268,6 +317,10 @@ _FX NTSTATUS Syscall_OpenHandle(
 
     if (! NewHandle) {
 
+        //WCHAR trace_str[128];
+        //RtlStringCbPrintfW(trace_str, sizeof(trace_str), L"Syscall %.*S security violation terminating process", max(strlen(syscall_entry->name), 64), syscall_entry->name);
+        //Session_MonitorPut(MONITOR_OTHER, trace_str, PsGetCurrentProcessId());
+
         Process_SetTerminated(proc, 6);
         status = STATUS_PROCESS_IS_TERMINATING;
     }
@@ -286,16 +339,19 @@ _FX NTSTATUS Syscall_OpenHandle(
     status = ObReferenceObjectByHandle(
                 NewHandle, 0, NULL, UserMode, &OpenedObject, &HandleInfo);
 
-    if (NT_SUCCESS(status)) {
+    if (NT_SUCCESS(status)) {        
 
         //
         // check the access that was granted to the object
         //
 
         status = Syscall_CheckObject(
-                    proc, syscall_entry, OpenedObject, &HandleInfo);
+                    proc, syscall_entry, OpenedObject, &HandleInfo, puName);
 
         ObDereferenceObject(OpenedObject);
+
+        if (!NT_SUCCESS(status))
+            NtClose(NewHandle);
 
         if (status == STATUS_BAD_INITIAL_PC) {
 
@@ -326,8 +382,14 @@ _FX NTSTATUS Syscall_OpenHandle(
         }
     }
 
-    if (! NT_SUCCESS(status))
-        Process_SetTerminated(proc, 7);
+    //if (!NT_SUCCESS(status)) {
+    //
+    //    //WCHAR trace_str[128];
+    //    //RtlStringCbPrintfW(trace_str, sizeof(trace_str), L"Syscall %.*S security violation, status = 0x%X, terminating process", max(strlen(syscall_entry->name), 64), syscall_entry->name, status);
+    //    //Session_MonitorPut(MONITOR_OTHER, trace_str, PsGetCurrentProcessId());
+    //
+    //    Process_SetTerminated(proc, 7);
+    //}
 
     return status;
 }
@@ -348,39 +410,9 @@ _FX NTSTATUS Syscall_GetNextProcess(
 // Syscall_DeviceIoControlFile
 //---------------------------------------------------------------------------
 
-#define FUNCTION_FROM_CTL_CODE(ctrlCode)     (((ULONG)(ctrlCode & 0x3f)) >> 2)
 
-_FX NTSTATUS Syscall_DeviceIoControlFile(
-    PROCESS *proc, SYSCALL_ENTRY *syscall_entry, ULONG_PTR *user_args)
-{
-    // filter out dangerous driver calls
+#include "file_ctrl.c"
 
-    if (DEVICE_TYPE_FROM_CTL_CODE(user_args[5]) == 0x6d)    //MOUNTMGRCONTROLTYPE 'm'   \Device\MountPointManager
-    {
-        ULONG function;
-        function = FUNCTION_FROM_CTL_CODE(user_args[5]);
-        //DbgPrint("DeviceIoContoleFile, func = %d, p=%06d t=%06d, %S\n", function, PsGetCurrentProcessId(), PsGetCurrentThreadId(), proc->image_name);
-        if (function == 0 ||        // IOCTL_MOUNTMGR_CREATE_POINT
-            function == 1 ||        // IOCTL_MOUNTMGR_DELETE_POINTS (DeleteVolumeMountPoint())
-            function == 3 ||        // IOCTL_MOUNTMGR_DELETE_POINTS_DBONLY
-            function == 6 ||        // IOCTL_MOUNTMGR_VOLUME_MOUNT_POINT_CREATED
-            function == 7 ||        // IOCTL_MOUNTMGR_VOLUME_MOUNT_POINT_DELETED
-            function == 9)          // IOCTL_MOUNTMGR_KEEP_LINKS_WHEN_OFFLINE
-            return STATUS_ACCESS_DENIED;
-    }
-
-    return NtDeviceIoControlFile(
-        (HANDLE)user_args[0],       // FileHandle
-        (HANDLE)user_args[1],       // Event
-        (PIO_APC_ROUTINE)user_args[2],  // ApcRoutine
-        (PVOID)user_args[3],        // ApcContext
-        (PIO_STATUS_BLOCK)user_args[4], // IoStatusBlock
-        (ULONG)user_args[5],        // IoControlCode
-        (PVOID)user_args[6],        // InputBuffer
-        (ULONG)user_args[7],        // InputBufferLength
-        (PVOID)user_args[8],        // OutBuffer
-        (ULONG)user_args[9]);       // OutputBufferLength
-}
 
 //---------------------------------------------------------------------------
 // Syscall_DuplicateHandle
@@ -397,7 +429,6 @@ _FX NTSTATUS Syscall_DuplicateHandle(
     HANDLE TlsValue;
     HANDLE NewHandle;
     void *TargetProcessObject;
-
 
     //
     // if there is a target process handle, keep a record of the
@@ -445,6 +476,10 @@ _FX NTSTATUS Syscall_DuplicateHandle(
                                 TlsPtr, TlsValue);
 
     if (! NewHandle) {
+
+        //WCHAR trace_str[128];
+        //RtlStringCbPrintfW(trace_str, sizeof(trace_str), L"Syscall %.*S security violation terminating process", max(strlen(syscall_entry->name), 64), syscall_entry->name);
+        //Session_MonitorPut(MONITOR_OTHER, trace_str, PsGetCurrentProcessId());
 
         Process_SetTerminated(proc, 8);
         status = STATUS_PROCESS_IS_TERMINATING;
@@ -504,8 +539,13 @@ _FX NTSTATUS Syscall_DuplicateHandle(
     //  if (! NT_SUCCESS(status)) {
     //      if(!wcsicmp(proc->image_name,L"SandboxieBITS.exe") && status == STATUS_ACCESS_DENIED) { 
     //          return status;
-    //  }
-    //  Process_SetTerminated(proc, 9);
+    //      }
+    //
+    //    //WCHAR trace_str[128];
+    //    //RtlStringCbPrintfW(trace_str, sizeof(trace_str), L"Syscall %.*S security violation terminating process", max(strlen(syscall_entry->name), 64), syscall_entry->name);
+    //    //Session_MonitorPut(MONITOR_OTHER, trace_str, PsGetCurrentProcessId());
+    //
+    //    Process_SetTerminated(proc, 9);
     //}
 
     return status;
@@ -585,7 +625,9 @@ _FX NTSTATUS Syscall_DuplicateHandle_2(
         TypeLength = ObjectType->Name.Length;
         TypeBuffer = ObjectType->Name.Buffer;
 
-    } else {
+    } 
+#ifdef XP_SUPPORT
+    else {
 
         OBJECT_HEADER *ObjectHeader = OBJECT_TO_OBJECT_HEADER(OpenedObject);
 
@@ -605,6 +647,7 @@ _FX NTSTATUS Syscall_DuplicateHandle_2(
             TypeBuffer = ObjectType->Name.Buffer;
         }
     }
+#endif
 
     //DbgPrint("Object %08X TypeBuffer %*.*S (%d)\n", OpenedObject, TypeLength/sizeof(WCHAR), TypeLength/sizeof(WCHAR), TypeBuffer, TypeLength);
 
@@ -632,7 +675,7 @@ _FX NTSTATUS Syscall_DuplicateHandle_2(
         //
 
         status = Syscall_CheckObject(
-                    proc, syscall_entry, OpenedObject, &HandleInfo);
+                    proc, syscall_entry, OpenedObject, &HandleInfo, NULL);
 
     } else if (    TypeLength == 5 * sizeof(WCHAR)
                 && wmemcmp(TypeBuffer, L"Token", 5) == 0) {
@@ -644,9 +687,6 @@ _FX NTSTATUS Syscall_DuplicateHandle_2(
         // thread_token.c has a function for this specific case.
         //
 
-		// OpenToken BEGIN
-		if (!(Conf_Get_Boolean(proc->box->name, L"OpenToken", 0, FALSE) || Conf_Get_Boolean(proc->box->name, L"UnfilteredToken", 0, FALSE)))
-		// OpenToken END
         status = Thread_CheckTokenObject(
                     proc, OpenedObject, HandleInfo.GrantedAccess);
     }
@@ -666,6 +706,7 @@ _FX SYSCALL_ENTRY *Syscall_DuplicateHandle_3(
     USHORT TypeLength, WCHAR *TypeBuffer)
 {
     static const WCHAR *_Port = L"Port";
+    static const WCHAR *_Job = L"Job";
     SYSCALL_ENTRY *entry;
     ULONG name_len;
     UCHAR SyscallName[32];
@@ -685,6 +726,10 @@ _FX SYSCALL_ENTRY *Syscall_DuplicateHandle_3(
         (TypeLength == 9 && wmemcmp(TypeBuffer + 5, _Port, 4) == 0)) {
 
         strcpy(SyscallName, "ConnectPort");
+
+    } else if (TypeLength == 3 && wmemcmp(TypeBuffer, _Job, 3) == 0) {
+
+        strcpy(SyscallName, "OpenJobObject");
 
     } else if (TypeLength <= 24) {
 

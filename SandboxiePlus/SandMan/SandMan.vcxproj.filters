@@ -41,6 +41,11 @@
     <Filter Include="Windows">
       <UniqueIdentifier>{d0068730-c9fb-49ef-90ec-8ecd2131ae47}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Translation Files">
+      <UniqueIdentifier>{639EADAA-A684-42e4-A9AD-28FC9BCB8F7C}</UniqueIdentifier>
+      <Extensions>ts</Extensions>
+      <ParseFiles>false</ParseFiles>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -58,20 +63,11 @@
     <ClCompile Include="Views\SbieView.cpp">
       <Filter>Views</Filter>
     </ClCompile>
-    <ClCompile Include="Models\ResMonModel.cpp">
-      <Filter>Models</Filter>
-    </ClCompile>
-    <ClCompile Include="ApiLog.cpp">
-      <Filter>SandMan</Filter>
-    </ClCompile>
     <ClCompile Include="Dialogs\MultiErrorDialog.cpp">
       <Filter>Dialogs</Filter>
     </ClCompile>
     <ClCompile Include="SbiePlusAPI.cpp">
       <Filter>SandMan</Filter>
-    </ClCompile>
-    <ClCompile Include="Models\ApiMonModel.cpp">
-      <Filter>Models</Filter>
     </ClCompile>
     <ClCompile Include="Helpers\WinAdmin.cpp">
       <Filter>Helpers</Filter>
@@ -85,16 +81,82 @@
     <ClCompile Include="Windows\SnapshotsWindow.cpp">
       <Filter>Windows</Filter>
     </ClCompile>
+    <ClCompile Include="Windows\PopUpWindow.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\RecoveryWindow.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\NewBoxWindow.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Helpers\FindTool.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="Helpers\WindowFromPointEx.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="Models\TraceModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="Views\TraceView.cpp">
+      <Filter>Views</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\SelectBoxWindow.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\OptionsAccess.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\OptionsAdvanced.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\OptionsForce.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\OptionsGeneral.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\OptionsGrouping.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\OptionsNetwork.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\OptionsRecovery.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\OptionsStart.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\OptionsStop.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\OptionsTemplates.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="Windows\FileBrowserWindow.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="BoxJob.cpp">
+      <Filter>SandMan</Filter>
+    </ClCompile>
+    <ClCompile Include="SbieProcess.cpp">
+      <Filter>SandMan</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="stdafx.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Resources\resource.h">
-      <Filter>Resource Files</Filter>
-    </ClInclude>
     <ClInclude Include="Helpers\WinAdmin.h">
       <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="Helpers\FindTool.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="resource.h">
+      <Filter>Resource Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -107,20 +169,11 @@
     <QtMoc Include="Views\SbieView.h">
       <Filter>Views</Filter>
     </QtMoc>
-    <QtMoc Include="Models\ResMonModel.h">
-      <Filter>Models</Filter>
-    </QtMoc>
-    <QtMoc Include="ApiLog.h">
-      <Filter>SandMan</Filter>
-    </QtMoc>
     <QtMoc Include="Dialogs\MultiErrorDialog.h">
       <Filter>Dialogs</Filter>
     </QtMoc>
     <QtMoc Include="SbiePlusAPI.h">
       <Filter>SandMan</Filter>
-    </QtMoc>
-    <QtMoc Include="Models\ApiMonModel.h">
-      <Filter>Models</Filter>
     </QtMoc>
     <QtMoc Include="Windows\OptionsWindow.h">
       <Filter>Windows</Filter>
@@ -131,6 +184,33 @@
     <QtMoc Include="Windows\SnapshotsWindow.h">
       <Filter>Windows</Filter>
     </QtMoc>
+    <QtMoc Include="Windows\PopUpWindow.h">
+      <Filter>Windows</Filter>
+    </QtMoc>
+    <QtMoc Include="Windows\RecoveryWindow.h">
+      <Filter>Windows</Filter>
+    </QtMoc>
+    <QtMoc Include="Windows\NewBoxWindow.h">
+      <Filter>Windows</Filter>
+    </QtMoc>
+    <QtMoc Include="Models\TraceModel.h">
+      <Filter>Models</Filter>
+    </QtMoc>
+    <QtMoc Include="Views\TraceView.h">
+      <Filter>Views</Filter>
+    </QtMoc>
+    <QtMoc Include="Windows\SelectBoxWindow.h">
+      <Filter>Windows</Filter>
+    </QtMoc>
+    <QtMoc Include="Windows\FileBrowserWindow.h">
+      <Filter>Windows</Filter>
+    </QtMoc>
+    <QtMoc Include="BoxJob.h">
+      <Filter>SandMan</Filter>
+    </QtMoc>
+    <QtMoc Include="SbieProcess.h">
+      <Filter>SandMan</Filter>
+    </QtMoc>
   </ItemGroup>
   <ItemGroup>
     <QtRcc Include="Resources\SandMan.qrc">
@@ -138,12 +218,13 @@
     </QtRcc>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="Resources\SandMan.rc">
-      <Filter>Resource Files</Filter>
-    </ResourceCompile>
-  </ItemGroup>
-  <ItemGroup>
     <Image Include="Resources\SandMan.ico">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="Resources\finder-empty.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="Resources\finder-full.bmp">
       <Filter>Resource Files</Filter>
     </Image>
   </ItemGroup>
@@ -157,5 +238,75 @@
     <QtUic Include="Forms\SnapshotsWindow.ui">
       <Filter>Form Files</Filter>
     </QtUic>
+    <QtUic Include="Forms\PopUpWindow.ui">
+      <Filter>Form Files</Filter>
+    </QtUic>
+    <QtUic Include="Forms\RecoveryWindow.ui">
+      <Filter>Form Files</Filter>
+    </QtUic>
+    <QtUic Include="Forms\NewBoxWindow.ui">
+      <Filter>Form Files</Filter>
+    </QtUic>
+    <QtUic Include="Forms\SelectBoxWindow.ui">
+      <Filter>Form Files</Filter>
+    </QtUic>
+    <QtUic Include="Forms\FileBrowserWindow.ui">
+      <Filter>Form Files</Filter>
+    </QtUic>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="sandman_de.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_fr.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_pt_BR.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_pt_PT.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_ru.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="Resources\finder.cur">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="sandman_tr.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_zh_TW.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_pl.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_uk.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_zh_CN.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_es.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_it.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_nl.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_en.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+    <None Include="sandman_cs.ts">
+      <Filter>Translation Files</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="SandMan.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
   </ItemGroup>
 </Project>

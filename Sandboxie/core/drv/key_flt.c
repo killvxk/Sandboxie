@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2021 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -173,13 +174,14 @@ _FX NTSTATUS Key_Callback(void *Context, void *Arg1, void *Arg2)
                 REG_SET_VALUE_KEY_INFORMATION *pSetInfo = (REG_SET_VALUE_KEY_INFORMATION*)Arg2;
                 status = Key_StoreValue(proc, pSetInfo, spid);
             }
+            return status;
         }
-        return status;
     }
 
     //
-    // we only handle RegNtPreCreateKeyEx and RegNtPreOpenKeyEx events before windows 10 CU
+    // we only handle RegNtPreCreateKeyEx and RegNtPreOpenKeyEx events
     //
+
     if (NotifyEvent != RegNtPreCreateKeyEx &&
        NotifyEvent != RegNtPreOpenKeyEx) {
       return status;
@@ -194,6 +196,7 @@ _FX NTSTATUS Key_Callback(void *Context, void *Arg1, void *Arg2)
         if (proc == PROCESS_TERMINATED)
             return STATUS_PROCESS_IS_TERMINATING;
     }
+
     Info = (REG_OPEN_CREATE_KEY_INFORMATION_VISTA *)Arg2;
 
     // HACK ALERT! If you click a link in a Word doc, it will try to start an embedded IE, which cannot be forced into Sandboxie.
@@ -225,7 +228,7 @@ _FX NTSTATUS Key_Callback(void *Context, void *Arg1, void *Arg2)
     if (status != STATUS_SUCCESS)
         return status;
 
-    if (!proc || proc->bHostInject)
+    if (!proc || proc->bHostInject || proc->disable_key_flt)
         return STATUS_SUCCESS;
 
     //
@@ -269,6 +272,15 @@ _FX NTSTATUS Key_Callback(void *Context, void *Arg1, void *Arg2)
 
         RtlInitUnicodeString(&RemainingName, L"\\X");
         pRemainingName = &RemainingName;
+    }
+
+    //
+    // Store app container support
+    //
+
+    if (Driver_OsVersion >= DRIVER_WINDOWS_10) {
+        if (_wcsnicmp(pRemainingName->Buffer, proc->box->key_path + 9, (proc->box->key_path_len - (sizeof(WCHAR) * (9 + 1))) / sizeof(WCHAR)) == 0) // +9 skip \REGISTRY, +1 don't compare '\0'
+            return STATUS_SUCCESS;
     }
 
     //
@@ -486,13 +498,13 @@ WCHAR * Key_GetSandboxPath(ULONG spid, void *Object)
                 if (temp)
                 {
                     // Matches "\REGISTRY\USER\S-1-5-21*\"
-                    if (!wcsnicmp(&KeyName->Buffer[head_len], USERS, wcslen(USERS)))
+                    if (!_wcsnicmp(&KeyName->Buffer[head_len], USERS, wcslen(USERS)))
                     {
                         ULONG sidSize = (ULONG)temp - (ULONG)&KeyName->Buffer[head_len];
                         if (sidSize < MAX_USER_SID_SIZE)
                         {
                             // Matches "\REGISTRY\USER\S-1-5-21*_Classes\"
-                            if (!wcsnicmp(temp - wcslen(CLASSES), L"_Classes", wcslen(CLASSES)))
+                            if (!_wcsnicmp(temp - wcslen(CLASSES), L"_Classes", wcslen(CLASSES)))
                             {
                                 wcscpy(targetName + path_len, L"\\user\\current_classes");
                                 path_len += wcslen(L"\\user\\current_classes");
@@ -509,7 +521,7 @@ WCHAR * Key_GetSandboxPath(ULONG spid, void *Object)
                 }
             }
             // starts with "\REGISTRY\\MACHINE\"
-            else if (!wcsnicmp(KeyName->Buffer, HEADER_MACHINE, wcslen(HEADER_MACHINE)))
+            else if (!_wcsnicmp(KeyName->Buffer, HEADER_MACHINE, wcslen(HEADER_MACHINE)))
             {
                 wcscpy(targetName + path_len, KeyName->Buffer + 9);
                 targetFound = 1;

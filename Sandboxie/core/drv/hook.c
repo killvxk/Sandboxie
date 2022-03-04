@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -24,6 +25,10 @@
 #include "hook.h"
 #include "dll.h"
 
+#include "util.h"
+#define KERNEL_MODE
+#include "../dll/hook_inst.c"
+#include "../dll/hook_tramp.c"
 
 //---------------------------------------------------------------------------
 // Defines
@@ -352,3 +357,15 @@ _FX NTSTATUS Hook_Api_Tramp(PROCESS *proc, ULONG64 *parms)
 
     return status;
 }
+
+
+//---------------------------------------------------------------------------
+// 32-bit and 64-bit code
+//---------------------------------------------------------------------------
+
+
+#ifdef _WIN64
+#include "hook_64.c"
+#else ! _WIN64
+#include "hook_32.c"
+#endif _WIN64

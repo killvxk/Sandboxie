@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -149,8 +150,7 @@ driver_started:
     //
 
     if (ok) {
-        rc = SbieApi_CallOne(
-                API_SET_SERVICE_PORT, (ULONG_PTR)m_instance->m_PortHandle);
+        rc = SbieApi_Call(API_SET_SERVICE_PORT, 1, (ULONG_PTR)m_instance->m_PortHandle);
         if (rc != 0) {
             LogEvent(MSG_9234, 0x9361, rc);
             ok = false;
@@ -158,7 +158,7 @@ driver_started:
     }
 
     if (ok) {
-        rc = m_instance->InjectLow_InitSyscalls();
+        SbieDll_InjectLow_InitSyscalls(TRUE);
         if (rc != 0) {
             LogEvent(MSG_9234, 0x9362, rc);
             ok = false;
@@ -172,7 +172,7 @@ driver_started:
             InitClipboard();
         }
 
-        rc = SbieApi_CallZero(API_INIT_GUI);
+        rc = SbieApi_Call(API_INIT_GUI, 0);
 
         if (rc != 0) {
             LogEvent(MSG_9234, 0x9156, rc);
@@ -180,6 +180,7 @@ driver_started:
         }
     }
 
+#ifdef XP_SUPPORT
 #ifndef _WIN64
 
     if (ok) {
@@ -204,7 +205,7 @@ driver_started:
                     LsaHandle, &AuthPkgName, &AuthPkgNum);
 
                 if (rc == 0)
-                    SbieApi_CallOne(API_SET_LSA_AUTH_PKG, AuthPkgNum);
+                    SbieApi_Call(API_SET_LSA_AUTH_PKG, 1, (ULONG_PTR)AuthPkgNum);
 
                 LsaDeregisterLogonProcess(LsaHandle);
             }
@@ -213,6 +214,7 @@ driver_started:
 
 
 #endif ! _WIN64
+#endif
 
     if (ok) {
 
@@ -224,6 +226,22 @@ driver_started:
         m_instance->LogMessage();
 
         m_instance->m_DriverReady = true;
+
+        //
+        // check if there are boxes configured to be run in bSession0 
+        // at system boot and run them on service start
+        //
+
+        WCHAR boxname[64];
+        for (ULONG i = 0; ; ++i) {
+
+            rc = SbieApi_QueryConfAsIs(
+                NULL, L"StartSystemBox", i, boxname, sizeof(WCHAR) * 64);
+            if (rc != 0)
+                break;
+
+            SbieDll_RunStartExe(L"auto_run", boxname);
+        }
     }
 
     if (! ok) {
@@ -285,7 +303,7 @@ void DriverAssist::InitClipboard()
                 SetClipboardData(0x333333, hGlobal2);
                 SetClipboardData(0x444444, hGlobal2);
 
-                SbieApi_CallOne(API_GUI_CLIPBOARD, -1);
+                SbieApi_Call(API_GUI_CLIPBOARD, 1, (ULONG_PTR)-1);
 
                 EmptyClipboard();
                 CloseClipboard();

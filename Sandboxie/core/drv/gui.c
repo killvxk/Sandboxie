@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -51,9 +52,11 @@ static NTSTATUS Gui_Api_Clipboard(PROCESS *proc, ULONG64 *parms);
 //---------------------------------------------------------------------------
 
 
+#ifdef XP_SUPPORT
 #ifndef _WIN64
 #include "gui_xp.c"
 #endif _WIN64
+#endif
 
 
 //---------------------------------------------------------------------------
@@ -71,6 +74,7 @@ static const WCHAR *Gui_OpenClass_Name = L"OpenWinClass";
 
 _FX BOOLEAN Gui_Init(void)
 {
+#ifdef XP_SUPPORT
 #ifndef _WIN64
 
     if (Driver_OsVersion < DRIVER_WINDOWS_VISTA) {
@@ -92,6 +96,7 @@ _FX BOOLEAN Gui_Init(void)
     }
 
 #endif ! _WIN64
+#endif
 
     Api_SetFunction(API_INIT_GUI,       Gui_Api_Init);
     Api_SetFunction(API_GUI_CLIPBOARD,  Gui_Api_Clipboard);
@@ -109,6 +114,7 @@ _FX NTSTATUS Gui_Api_Init(PROCESS *proc, ULONG64 *parms)
 {
     NTSTATUS status = STATUS_SUCCESS;
 
+#ifdef XP_SUPPORT
 #ifndef _WIN64
 
     if (Driver_OsVersion < DRIVER_WINDOWS_VISTA) {
@@ -117,6 +123,7 @@ _FX NTSTATUS Gui_Api_Init(PROCESS *proc, ULONG64 *parms)
     }
 
 #endif ! _WIN64
+#endif
 
     if (NT_SUCCESS(status) && (! Process_ReadyToSandbox)) {
 
@@ -127,6 +134,7 @@ _FX NTSTATUS Gui_Api_Init(PROCESS *proc, ULONG64 *parms)
 }
 
 
+#ifdef XP_SUPPORT
 //---------------------------------------------------------------------------
 // Gui_Unload
 //---------------------------------------------------------------------------
@@ -143,6 +151,7 @@ _FX void Gui_Unload(void)
 
 #endif ! _WIN64
 }
+#endif
 
 
 //---------------------------------------------------------------------------
@@ -202,7 +211,7 @@ _FX BOOLEAN Gui_InitProcess(PROCESS *proc)
                     proc, &proc->open_win_classes, NULL,
                     TRUE, L"Sandbox:*:ConsoleWindowClass", FALSE);
             AddMSTaskSwWClass = TRUE;
-        } else if ((! proc->image_copy) &&
+        } else if ((! proc->image_from_box) &&
                 (  _wcsicmp(proc->image_name, L"excel.exe")    == 0
                 || _wcsicmp(proc->image_name, L"powerpnt.exe") == 0))
             AddMSTaskSwWClass = TRUE;
@@ -312,6 +321,8 @@ _FX GUI_CLIPBOARD *Gui_GetClipboard(void)
     // In windows 10 find the offset in win32kfull!FindClipFormat
 
     ULONG Clipboard_Offset = 0;
+
+    // Hard Offset Dependency
 
 #ifdef _WIN64
     if (Driver_OsVersion <= DRIVER_WINDOWS_7) {

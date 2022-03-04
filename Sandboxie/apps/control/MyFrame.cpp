@@ -45,7 +45,8 @@
 #include "apps/common/RunBrowser.h"
 #include "apps/common/BoxOrder.h"
 #include "common/my_version.h"
-
+#include "Updater.h"
+#include "UpdateDialog.h"
 
 //---------------------------------------------------------------------------
 // Defines
@@ -86,6 +87,9 @@ static const WCHAR *_HideWindowNotify           = L"HideWindowNotify";
        const WCHAR *_ShortcutNotify             = L"ShortcutNotify";
        const WCHAR *_UpdateCheckNotify          = L"UpdateCheckNotify";
 static const WCHAR *_ShouldDeleteNotify         = L"ShouldDeleteNotify";
+static const WCHAR *_ResMonNotify               = L"ResMonNotify";
+
+	   const WCHAR *_NextUpdateCheck            = L"NextUpdateCheck";
 
 BOOL CMyFrame::m_inTimer   = FALSE;
 BOOL CMyFrame::m_destroyed = FALSE;
@@ -135,10 +139,15 @@ BEGIN_MESSAGE_MAP(CMyFrame, CFrameWnd)
     ON_COMMAND(ID_CONF_EDIT,                    OnCmdConfEdit)
     ON_COMMAND(ID_CONF_RELOAD,                  OnCmdConfReload)
 
+	ON_COMMAND(ID_HELP_SUPPORT,                 OnCmdHelpSupport)
     ON_COMMAND(ID_HELP_TOPICS,                  OnCmdHelpTopics)
     ON_COMMAND(ID_HELP_TUTORIAL,                OnCmdHelpTutorial)
     ON_COMMAND(ID_HELP_FORUM,                   OnCmdHelpForum)
+	ON_COMMAND(ID_HELP_UPDATE,                  OnCmdHelpUpdate)
+    ON_COMMAND(ID_HELP_UPGRADE,                 OnCmdHelpUpgrade)
     ON_COMMAND(ID_HELP_ABOUT,                   OnCmdHelpAbout)
+
+	//ON_MESSAGE(WM_UPDATERESULT,					OnUpdateResult)
 
     ON_COMMAND(ID_PROCESS_TERMINATE,            OnCmdTerminateProcess)
 
@@ -223,7 +232,7 @@ CMyFrame::CMyFrame(BOOL ForceVisible, BOOL ForceSync)
     AdjustSizePosition(left, top, width, height);
 
     ULONG exStyle = (CMyApp::m_LayoutRTL) ? WS_EX_LAYOUTRTL : 0;
-	CString strTitle = CMyApp::m_appTitle + " - xanasoft.com";
+	CString strTitle = CMyApp::m_appTitle + " v" MY_VERSION_STRING " - " MY_COMPANY_NAME_STRING;
     CreateEx(   exStyle, (LPCTSTR)CMyApp::m_atom, strTitle,
                 WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_SYSMENU,
                 left, top, width, height,
@@ -913,7 +922,7 @@ UINT AFX_CDECL CMyFrame::OnCmdConfEditThread(LPVOID parm)
 
 void CMyFrame::OnCmdConfReload()
 {
-    if (SbieApi_ReloadConf(-1) == 0) {
+    if (SbieApi_ReloadConf(-1, 0) == 0) {
 
         CBoxes::GetInstance().ReloadBoxes();
         CBoxes::GetInstance().RefreshProcesses();
@@ -963,6 +972,17 @@ void CMyFrame::OnCmdConfReload()
 
 
 //---------------------------------------------------------------------------
+// OnCmdHelpSupport
+//---------------------------------------------------------------------------
+
+
+void CMyFrame::OnCmdHelpSupport()
+{
+	CRunBrowser x(this, L"https://sandboxie-plus.com/go.php?to=donate");
+}
+
+
+//---------------------------------------------------------------------------
 // OnCmdHelpTopics
 //---------------------------------------------------------------------------
 
@@ -997,7 +1017,26 @@ void CMyFrame::OnCmdHelpForum()
     CRunBrowser::OpenForum(this);
 }
 
+//---------------------------------------------------------------------------
+// OnCmdHelpUpdate
+//---------------------------------------------------------------------------
 
+
+void CMyFrame::OnCmdHelpUpdate()
+{
+	CUpdateDialog dlg(this);
+	dlg.DoModal();
+}
+
+//---------------------------------------------------------------------------
+// OnCmdHelpUpgrade
+//---------------------------------------------------------------------------
+
+
+void CMyFrame::OnCmdHelpUpgrade()
+{
+	CRunBrowser x(this, L"https://sandboxie-plus.com/go.php?to=sbie-plus&tip=upgrade");
+}
 
 //---------------------------------------------------------------------------
 // OnCmdHelpAbout
@@ -1063,6 +1102,22 @@ void CMyFrame::OnCmdResourceMonitor()
 {
     if (m_mondlg)
         return;
+
+    CUserSettings &settings = CUserSettings::GetInstance();
+    BOOL tip;
+    settings.GetBool(_ResMonNotify, tip, TRUE);
+    if (tip) {
+        int rv = CMyApp::MsgCheckBox(this, MSG_6001, 0, MB_YESNO);
+        if (rv < 0) {
+            rv = -rv;
+            settings.SetBool(_ResMonNotify, FALSE);
+        }
+        if (rv == IDYES) {
+            CRunBrowser x(this, L"https://sandboxie-plus.com/go.php?to=sbie-plus&tip=res_mon");
+            return;
+        }
+    }
+
     m_mondlg = new CMonitorDialog(this);
 
     m_mondlg->DoModal();
@@ -1618,7 +1673,7 @@ void CMyFrame::InitSandboxMenu2(CMenu *model, CMenu *child, UINT BaseId)
 
         } else if (id == 0) {
 
-            child->AppendMenu(MF_SEPARATOR, 0, title);
+            child->AppendMenu(MF_SEPARATOR, 0, (LPCTSTR)nullptr);
 
         } else {
 
@@ -2007,6 +2062,39 @@ void CMyFrame::OnTimer(UINT_PTR nIDEvent)
         if ((_counter % 600) == 0)
             SaveSettings();
 
+		//
+		// update check
+		//
+
+		if (! m_hidden)
+		{
+			__int64 NextUpdateCheck;
+			CUserSettings::GetInstance().GetNum64(_NextUpdateCheck, NextUpdateCheck, 0);
+			if(NextUpdateCheck == 0)
+				CUserSettings::GetInstance().SetNum64(_NextUpdateCheck, time(NULL) + 7 * 24 * 60 * 60);
+			else if(NextUpdateCheck != -1 && time(NULL) >= NextUpdateCheck)
+			{
+				BOOL UpdateCheckNotify;
+				CUserSettings::GetInstance().GetBool(_UpdateCheckNotify, UpdateCheckNotify, TRUE);
+				if (UpdateCheckNotify)
+				{
+					static BOOLEAN update_dlg_open = FALSE;
+					if (!update_dlg_open) {
+						update_dlg_open = TRUE;
+						CUpdateDialog dlg(this);
+						if(dlg.DoModal() == 0)
+							CUserSettings::GetInstance().SetNum64(_NextUpdateCheck, time(NULL) + 1 * 24 * 60 * 60);
+						update_dlg_open = FALSE;
+					}
+				}
+				else
+				{
+					CUserSettings::GetInstance().SetNum64(_NextUpdateCheck, time(NULL) + 1 * 24 * 60 * 60);
+					CUpdater::GetInstance().CheckUpdates(this, false);
+				}
+			}
+		}
+
         //
         // refresh processes
         //
@@ -2331,3 +2419,9 @@ void CMyFrame::CheckShouldDelete(CBox &box)
         }
     }
 }
+
+/*LRESULT CMyFrame::OnUpdateResult(WPARAM wParam, LPARAM lParam)
+{
+
+	return 0;
+}*/

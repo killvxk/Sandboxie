@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -94,7 +95,7 @@ static NTSTATUS Thread_SetInformationThread_ImpersonationToken(
 
 static NTSTATUS Thread_CheckTokenForImpersonation(
     void *TokenObject, BOOLEAN CheckTokenType,
-    BOOLEAN DropRights, ULONG SessionId);
+	PROCESS *proc);
 
 static NTSTATUS Thread_SetInformationThread_ChangeNotifyToken(PROCESS *proc);
 
@@ -105,7 +106,7 @@ static NTSTATUS Thread_ImpersonateAnonymousToken(
 //---------------------------------------------------------------------------
 
 
-static NTSTATUS Thread_GetKernelHandleForUserHandle(
+NTSTATUS Thread_GetKernelHandleForUserHandle(
     HANDLE *OutKernelHandle, HANDLE InUserHandle);
 
 
@@ -634,6 +635,16 @@ _FX void *Thread_SetInformationProcess_PrimaryToken_3(
 
     if (proc->image_sbie &&
             _wcsicmp(proc->image_name, SANDBOXIE L"DcomLaunch.exe") == 0) {
+
+        return TokenObject2;
+    }
+
+    //
+    // special allowance for MSIServer running without system privileges
+    //
+
+    if (!proc->image_from_box &&
+            _wcsicmp(proc->image_name, L"msiexec.exe") == 0) {
 
         return TokenObject2;
     }
@@ -1171,7 +1182,7 @@ _FX NTSTATUS Thread_SetInformationThread_ImpersonationToken(
     void *ProcessObject;
     PROCESS *proc2;
     THREAD *thrd2;
-    HANDLE MyTokenHandle;
+    HANDLE MyTokenHandle = NULL;
     NTSTATUS status;
     SECURITY_IMPERSONATION_LEVEL ImpersonationLevel;
     BOOLEAN MustCreateThread;
@@ -1243,13 +1254,9 @@ _FX NTSTATUS Thread_SetInformationThread_ImpersonationToken(
                     MyTokenHandle, TOKEN_IMPERSONATE,
                     *SeTokenObjectType, UserMode, &TokenObject, NULL);
 
-		// OpenToken BEGIN
-		if (!(Conf_Get_Boolean(proc->box->name, L"OpenToken", 0, FALSE) || Conf_Get_Boolean(proc->box->name, L"UnfilteredToken", 0, FALSE)))
-		// OpenToken END
         if (NT_SUCCESS(status)) {
 
-            status = Thread_CheckTokenForImpersonation(
-                TokenObject, TRUE, proc->drop_rights, proc->box->session_id);
+            status = Thread_CheckTokenForImpersonation(TokenObject, TRUE, proc);
 
             if (! NT_SUCCESS(status))
                 ObDereferenceObject(TokenObject);
@@ -1344,9 +1351,21 @@ _FX NTSTATUS Thread_SetInformationThread_ImpersonationToken(
 
 _FX NTSTATUS Thread_CheckTokenForImpersonation(
     void *TokenObject, BOOLEAN CheckTokenType,
-    BOOLEAN DropRights, ULONG SessionId)
+	PROCESS *proc)
 {
     NTSTATUS status;
+
+    // OriginalToken BEGIN
+	if (proc->bAppCompartment || Conf_Get_Boolean(proc->box->name, L"OriginalToken", 0, FALSE))
+		return STATUS_SUCCESS;
+	// OriginalToken END
+	// UnfilteredToken BEGIN
+	if (Conf_Get_Boolean(proc->box->name, L"UnfilteredToken", 0, FALSE))
+		return STATUS_SUCCESS;
+	// UnfilteredToken END
+
+	BOOLEAN DropRights = proc->drop_rights;
+	ULONG SessionId = proc->box->session_id;
 
     //
     // make sure this is an impersonation token
@@ -1588,8 +1607,7 @@ _FX NTSTATUS Thread_CheckTokenObject(
     // by a process in a sandbox
     //
 
-    return Thread_CheckTokenForImpersonation(
-                Object, FALSE, proc->drop_rights, proc->box->session_id);
+    return Thread_CheckTokenForImpersonation(Object, FALSE, proc);
 }
 
 

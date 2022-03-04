@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -54,6 +55,10 @@ extern const ULONG tzuk;
 #include "common/pattern.c"
 #undef  Pool_Alloc
 
+/* map */
+
+#include "common/map.c"
+
 /* CRC */
 
 //#define CRC_WITH_ADLERTZUK64
@@ -61,5 +66,13 @@ extern const ULONG tzuk;
 
 /* BigNum */
 
-#define BIGNUM_WITH_FROM_STRING
-#include "common/bignum.c"
+//#define BIGNUM_WITH_FROM_STRING
+//#include "common/bignum.c"
+
+/* NetFw */
+
+#include "common/netfw.c"
+
+/* StrUtil */
+
+#include "common/str_util.c"

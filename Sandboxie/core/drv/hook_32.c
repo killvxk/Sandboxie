@@ -112,7 +112,7 @@ _FX void *Hook_GetZwServiceInternal(ULONG ServiceIndex)
         subcode = Hook_Find_ZwRoutine_2(ServiceIndex, &routine);
     if (subcode != 0) {
         WCHAR err[8];
-        swprintf(err, L"0x%X", subcode);
+        RtlStringCbPrintfW(err, sizeof(err), L"0x%X", subcode);
         Log_Msg1(MSG_HOOK_ZW_SERVICE, err);
         routine = NULL;
     }
@@ -250,7 +250,7 @@ skip_padding_bytes:
 
 _FX ULONG Hook_Find_ZwRoutine_2(ULONG ServiceNum, void **out_routine)
 {
-    UCHAR *addr;
+    UCHAR *addr = NULL;
     BOOLEAN found = FALSE;
     ULONG subcode = 0;
     int i;

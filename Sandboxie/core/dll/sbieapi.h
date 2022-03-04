@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -46,18 +47,11 @@ extern "C" {
 // Sandboxie API Calls
 //---------------------------------------------------------------------------
 
+SBIEAPI_EXPORT
+long SbieApi_Ioctl(ULONG64* parms);
 
 SBIEAPI_EXPORT
-LONG SbieApi_CallZero(ULONG api_code);
-
-SBIEAPI_EXPORT
-LONG SbieApi_CallOne(ULONG api_code, ULONG_PTR arg);
-
-SBIEAPI_EXPORT
-LONG SbieApi_CallTwo(ULONG api_code, ULONG_PTR arg1, ULONG_PTR arg2);
-
-SBIEAPI_EXPORT
-    LONG SbieApi_CallThree(ULONG api_code, ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3);
+LONG SbieApi_Call(ULONG api_code, LONG arg_num, ...);
 
 SBIEAPI_EXPORT LONG SbieApi_GetVersion(
     WCHAR *version_string);         // WCHAR [16]
@@ -69,7 +63,7 @@ LONG SbieApi_GetWork(
     ULONG *Length);*/
 
 SBIEAPI_EXPORT 
-LONG SbieApi_GetMessage(
+ULONG SbieApi_GetMessage(
 	ULONG* MessageNum,
 	ULONG SessionId,
 	ULONG *MessageId,
@@ -86,12 +80,17 @@ SBIEAPI_EXPORT LONG SbieApi_LogEx(
 SBIEAPI_EXPORT LONG SbieApi_vLogEx(
     ULONG session_id, ULONG msgid, const WCHAR *format, va_list va_args);
 
-LONG SbieApi_Log2199(const WCHAR *path);
+SBIEAPI_EXPORT LONG SbieApi_LogMsgEx(
+	ULONG session_id, ULONG msgid, const WCHAR* msg_data, USHORT msg_len);
+
+SBIEAPI_EXPORT LONG SbieApi_LogMsgExt(
+	ULONG msgid, const WCHAR** strings);
 
 SBIEAPI_EXPORT
 LONG SbieApi_GetHomePath(
     WCHAR *NtPath, ULONG NtPathMaxLen,
     WCHAR *DosPath, ULONG DosPathMaxLen);
+
 
 
 //---------------------------------------------------------------------------
@@ -130,6 +129,12 @@ ULONG64 SbieApi_QueryProcessInfo(
     ULONG info_type);
 
 SBIEAPI_EXPORT
+ULONG64 SbieApi_QueryProcessInfoEx(
+    HANDLE ProcessId,
+    ULONG info_type,
+    ULONG64 ext_data);
+
+SBIEAPI_EXPORT
 LONG SbieApi_QueryBoxPath(
     const WCHAR *box_name,              // WCHAR [34]
     WCHAR *out_file_path,
@@ -154,17 +159,19 @@ LONG SbieApi_QueryPathList(
     ULONG path_code,
     ULONG *path_len,
     WCHAR *path_str,
-    HANDLE process_id);
+    HANDLE process_id,
+    BOOLEAN prepend_level);
 
 SBIEAPI_EXPORT
 LONG SbieApi_EnumProcessEx(
-    const WCHAR *box_name,          // WCHAR [34]
+    const WCHAR* box_name,          // WCHAR [34]
     BOOLEAN all_sessions,
     ULONG which_session,            // -1 for current session
-    ULONG *boxed_pids);             // ULONG [512]
+    ULONG* boxed_pids,             // ULONG [512]
+    ULONG* boxed_count);
 
 #define SbieApi_EnumProcess(box_name,boxed_pids) \
-    SbieApi_EnumProcessEx(box_name,FALSE,-1,boxed_pids)
+    SbieApi_EnumProcessEx(box_name,FALSE,-1,boxed_pids, NULL)
 
 
 //---------------------------------------------------------------------------
@@ -191,25 +198,25 @@ LONG SbieApi_MonitorControl(
 
 SBIEAPI_EXPORT
     LONG SbieApi_MonitorPut(
-    USHORT Type,
+    ULONG Type,
     const WCHAR *Name);
 
 SBIEAPI_EXPORT
 LONG SbieApi_MonitorPut2(
-    USHORT Type,
+    ULONG Type,
     const WCHAR *Name,
     BOOLEAN bCheckObjectExists);
 
-SBIEAPI_EXPORT
-LONG SbieApi_MonitorGet(
-    USHORT *Type,
-    WCHAR *Name);                   // WCHAR [256]
+//SBIEAPI_EXPORT
+//LONG SbieApi_MonitorGet(
+//    ULONG *Type,
+//    WCHAR *Name);                   // WCHAR [256]
 
 SBIEAPI_EXPORT
 LONG SbieApi_MonitorGetEx(
-	ULONG *SeqNum,
-	USHORT *Type,
-	ULONG64 *Pid,
+	ULONG *Type,
+    ULONG *Pid,
+    ULONG *Tid,
 	WCHAR *Name);                   // WCHAR [256]
 
 
@@ -246,7 +253,7 @@ LONG SbieApi_CheckInternetAccess(
     const WCHAR *DeviceName32,
     BOOLEAN IssueMessage);
 
-//SBIEAPI_EXPORT
+SBIEAPI_EXPORT
 LONG SbieApi_GetBlockedDll(
     WCHAR *DllNameBuf,
     ULONG DllNameLen);
@@ -302,7 +309,7 @@ LONG SbieApi_QuerySymbolicLink(
 
 
 SBIEAPI_EXPORT
-LONG SbieApi_ReloadConf(ULONG session_id);
+LONG SbieApi_ReloadConf(ULONG session_id, ULONG flags);
 
 
 SBIEAPI_EXPORT
@@ -353,6 +360,24 @@ LONG SbieApi_GetUnmountHive(
 
 //---------------------------------------------------------------------------
 
+SBIEAPI_EXPORT
+LONG SbieApi_ProcessExemptionControl(
+	HANDLE process_id,
+	ULONG action_id,
+	ULONG *NewState,
+	ULONG *OldState);
+
+//---------------------------------------------------------------------------
+
+
+SBIEAPI_EXPORT 
+void* SbieDll_GetSysFunction(
+    const WCHAR* name);
+
+SBIEAPI_EXPORT 
+BOOL SbieDll_RunStartExe(
+    const WCHAR* cmd, 
+    const wchar_t* boxname);
 
 #ifdef __cplusplus
 }

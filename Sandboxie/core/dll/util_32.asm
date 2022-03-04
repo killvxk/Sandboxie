@@ -96,17 +96,17 @@ PUBLIC _ProtectCall4@20
 
 
 ;----------------------------------------------------------------------------
-; Secure_NdrAsyncClientCall
+; RpcRt_NdrAsyncClientCall
 ;----------------------------------------------------------------------------
 
 
-EXTERN C Secure_CheckElevation    : PROC
+EXTERN C RpcRt_NdrAsyncClientCall_x86 : PROC
 EXTERN C Secure_HandleElevation   : PROC
 EXTERN C __sys_NdrAsyncClientCall : DWORD
 
-Secure_NdrAsyncClientCall   PROC C PUBLIC
+RpcRt_NdrAsyncClientCall   PROC C PUBLIC
 
-        call Secure_CheckElevation
+        call RpcRt_NdrAsyncClientCall_x86
         test al,al
         jnz WeHandleElevation
     
@@ -116,9 +116,9 @@ WeHandleElevation:
 
         jmp Secure_HandleElevation
 
-Secure_NdrAsyncClientCall   ENDP
+RpcRt_NdrAsyncClientCall   ENDP
 
-PUBLIC C Secure_NdrAsyncClientCall
+PUBLIC C RpcRt_NdrAsyncClientCall
 
 
 ;----------------------------------------------------------------------------
@@ -222,3 +222,58 @@ l04:    dec esp
 Gui_MsgWaitForMultipleObjects@20    ENDP
 
 PUBLIC C Gui_MsgWaitForMultipleObjects@20
+
+
+;----------------------------------------------------------------------------
+; RpcRt_NdrClientCall
+;----------------------------------------------------------------------------
+
+
+EXTERN C RpcRt_NdrClientCall_x86    : PROC
+;EXTERN C RpcRt_NdrClientCall_...   : PROC
+EXTERN C __sys_NdrClientCall : DWORD
+
+RpcRt_NdrClientCall   PROC C PUBLIC
+
+        call RpcRt_NdrClientCall_x86
+        test al,al
+        jnz CancelCall
+    
+        jmp dword ptr [__sys_NdrClientCall]
+
+CancelCall:
+
+;        jmp RpcRt_NdrClientCall_...
+		ret
+
+RpcRt_NdrClientCall   ENDP
+
+PUBLIC C RpcRt_NdrClientCall
+
+
+;----------------------------------------------------------------------------
+; RpcRt_NdrClientCall2
+;----------------------------------------------------------------------------
+
+
+EXTERN C RpcRt_NdrClientCall2_x86    : PROC
+;EXTERN C RpcRt_NdrClientCall2_...   : PROC
+EXTERN C __sys_NdrClientCall2 : DWORD
+
+RpcRt_NdrClientCall2   PROC C PUBLIC
+
+        call RpcRt_NdrClientCall2_x86
+        test al,al
+        jnz CancelCall2
+    
+        jmp dword ptr [__sys_NdrClientCall2]
+
+CancelCall2:
+
+;        jmp RpcRt_NdrClientCall2_...
+		ret
+
+RpcRt_NdrClientCall2   ENDP
+
+PUBLIC C RpcRt_NdrClientCall2
+

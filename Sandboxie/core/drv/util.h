@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -91,7 +92,27 @@ BOOLEAN DoesRegValueExist(ULONG RelativeTo, WCHAR *Path, WCHAR *ValueName);
 BOOLEAN GetRegString(ULONG RelativeTo, WCHAR *Path, WCHAR *ValueName, UNICODE_STRING* pData);
 void *memmem(const void *pSearchBuf, size_t nBufSize, const void *pPattern, size_t nPatternSize);
 
+
+
+//
+// return TRUE if current process has a valid custom signature
+//
+
+BOOLEAN MyIsCallerSigned(void);
+
+
+NTSTATUS MyValidateCertificate(void);
+
+//
+// misc helpers
+//
+
+HANDLE Util_GetProcessPidByName(const WCHAR* name);
+
+
 //---------------------------------------------------------------------------
 
+
+extern BOOLEAN Driver_Certified;
 
 #endif // _MY_UTIL_H

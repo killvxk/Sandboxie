@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2021 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -153,8 +154,17 @@ static void Com_Trace(
     const WCHAR *TraceType, REFCLSID rclsid, REFIID riid,
     ULONG ProcNum, HRESULT hr);
 
-static void Com_Monitor(REFCLSID rclsid, USHORT monflag);
+static void Com_Trace2(
+    const WCHAR* TraceType, const WCHAR* pszName, REFCLSID rclsid, REFIID riid,
+    ULONG ProcNum, ULONG clsctx, HRESULT hr, ULONG monflag);
 
+static void Com_Monitor(REFCLSID rclsid, ULONG monflag);
+
+#define HSTRING void*
+static HRESULT Com_RoGetActivationFactory(HSTRING activatableClassId, REFIID  iid, void** factory);
+
+//static HRESULT Com_IClassFactoryEx_New(
+//    REFCLSID rclsid, const WCHAR* StringGUID, void** ppv);
 
 //---------------------------------------------------------------------------
 
@@ -209,6 +219,9 @@ typedef HRESULT (*P_CreateStubFromTypeInfo)(
 
 typedef void *(*P_CoTaskMemAlloc)(ULONG cb);
 
+typedef HRESULT (*P_RoGetActivationFactory)(HSTRING activatableClassId, REFIID  iid, void** factory);
+
+typedef const wchar_t* (*P_WindowsGetStringRawBuffer)(HSTRING string, unsigned int* length);
 
 //---------------------------------------------------------------------------
 
@@ -234,14 +247,22 @@ P_CreateStubFromTypeInfo    __sys_CreateStubFromTypeInfo    = NULL;
 P_CoTaskMemAlloc            __sys_CoTaskMemAlloc            = NULL;
 P_IIDFromString             __sys_IIDFromString             = NULL;
 
+P_RoGetActivationFactory    __sys_RoGetActivationFactory    = NULL;
+P_WindowsGetStringRawBuffer __sys_WindowsGetStringRawBuffer = NULL;
 
 //---------------------------------------------------------------------------
 // Variables
 //---------------------------------------------------------------------------
 
+BOOLEAN Ipc_OpenCOM = FALSE;
 
 static ULONG Com_NumOpenClsids = -1;
 static GUID *Com_OpenClsids = NULL;
+
+static ULONG Com_NumClosedClsids = -1;
+static GUID *Com_ClosedClsids = NULL;
+
+static WCHAR* Com_ClosedRT = NULL;
 
 static BOOLEAN Com_TraceFlag = FALSE;
 
@@ -271,6 +292,119 @@ static const GUID IID_INetFwRule = {
     0xAF230D27, 0xBABA, 0x4E42,
         { 0xAC, 0xED, 0xF5, 0x24, 0xF2, 0x2C, 0xFC, 0xE2 } };
 
+//static const GUID IID_VirtualDesktopManager = {
+//    0xAA509086, 0x5CA9, 0x4C25,
+//        { 0x8F, 0x95, 0x58, 0x9D, 0x3C, 0x07, 0xB4, 0x8A } };
+
+
+//---------------------------------------------------------------------------
+// Com_LoadClsidList
+//---------------------------------------------------------------------------
+
+
+_FX void Com_LoadClsidList(const WCHAR* setting, GUID** pClsids, ULONG* pNumClsids, const WCHAR* BoxName)
+{
+    //
+    // for SbieSvc, re-create the list every time, in case
+    // the configuration was reloaded
+    //
+    if (BoxName) {
+        if (*pClsids) {
+
+            Com_Free(*pClsids);
+            *pClsids = NULL;
+        }
+
+        *pNumClsids = -1;
+    }
+
+
+    if (*pNumClsids != -1)
+        return; // already done
+
+    ULONG index;
+    ULONG counter;
+    GUID* guid;
+    NTSTATUS status;
+    WCHAR wbuf[196];
+    WCHAR* buf = wbuf;
+    const WCHAR* ImageName = NULL;
+    if (BoxName == NULL) // sandboxed process not in service
+        ImageName = Dll_ImageName;
+
+    counter = 0;
+    for (index = 0; ; ++index) {
+        status = SbieApi_QueryConfAsIs(
+            BoxName, setting, index, buf, 190 * sizeof(WCHAR));
+        if (!NT_SUCCESS(status))
+            break;
+
+        WCHAR* ptr = wcschr(buf, L',');
+        if (ptr) {
+            *ptr = L'\0';
+            if (ImageName && !SbieDll_MatchImage(buf, ImageName, BoxName))
+                continue;
+            buf = ptr + 1;
+        }
+
+        if (*buf != L'{') continue;
+
+        ++counter;
+    }
+
+    if (counter) {
+
+        *pClsids = Com_Alloc(sizeof(GUID) * counter);
+        if (!*pClsids)
+            counter = 0;
+    }
+
+    *pNumClsids = counter;
+
+    if (counter) {
+
+        for (index = 0; counter > 0; ++index) {
+
+            status = SbieApi_QueryConfAsIs(
+                BoxName, setting, index, buf, 190 * sizeof(WCHAR));
+            if (!NT_SUCCESS(status))
+                break;
+
+            WCHAR* ptr = wcschr(buf, L',');
+            if (ptr) {
+                *ptr = L'\0';
+                if (ImageName && !SbieDll_MatchImage(buf, ImageName, BoxName))
+                    continue;
+                buf = ptr + 1;
+            }
+
+            if (*buf != L'{') continue;
+
+            --counter;
+
+            WCHAR* space = wcschr(buf, L' ');
+            if (space)
+                *space = L'\0';
+
+            guid = &(*pClsids)[index];
+
+            if (!__sys_IIDFromString) {
+                // if called from SbieSvc
+                HMODULE module =
+                    GetModuleHandle(DllName_ole32_or_combase);
+                GETPROCADDR_SYS(IIDFromString);
+            }
+
+            if ((!__sys_IIDFromString) ||
+                __sys_IIDFromString(buf, guid) != 0) {
+
+                memzero(guid, sizeof(GUID));
+            }
+        }
+    }
+  
+}
+
 
 //---------------------------------------------------------------------------
 // SbieDll_IsOpenClsid
@@ -296,6 +430,14 @@ _FX BOOLEAN SbieDll_IsOpenClsid(
         0x0358B920, 0x0AC7, 0x461F,
                         { 0x98, 0xF4, 0x58, 0xE3, 0x2C, 0xD8, 0x91, 0x48 } };
 
+    //
+    // open the null clsid to open all
+    //
+
+    //static const GUID CLSID_Null = {
+    //    0x00000000, 0x0000, 0x0000,
+    //                    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } };
+
     if (clsctx & CLSCTX_LOCAL_SERVER) {
 
         ULONG index;
@@ -305,7 +447,6 @@ _FX BOOLEAN SbieDll_IsOpenClsid(
         // check against list of built-in CLSID exclusions
         //
 
-		if (SbieApi_QueryConfBool(BoxName, L"OpenDefaultClsid", TRUE))
         if (memcmp(rclsid, &CLSID_WinMgmt,              sizeof(GUID)) == 0 ||
             memcmp(rclsid, &CLSID_NetworkListManager,   sizeof(GUID)) == 0 ||
             memcmp(rclsid, &CLSID_ShellServiceHostBrokerProvider, sizeof(GUID)) == 0 ||
@@ -319,84 +460,8 @@ _FX BOOLEAN SbieDll_IsOpenClsid(
         // initialize list of user-configured CLSID exclusions
         //
 
-        if (BoxName) {
-
-            //
-            // for SbieSvc, re-create the list every time, in case
-            // the configuration was reloaded
-            //
-
-            if (Com_OpenClsids) {
-
-                Com_Free(Com_OpenClsids);
-                Com_OpenClsids = NULL;
-            }
-
-            Com_NumOpenClsids = -1;
-        }
-
-        if (Com_NumOpenClsids == -1) {
-
-            static const WCHAR *setting = L"OpenClsid";
-            NTSTATUS status;
-            WCHAR buf[96];
-
-            if (Dll_BoxName) {
-
-                status = SbieApi_QueryConfAsIs(
-                        NULL, L"ClsidTrace", 0, buf, 90 * sizeof(WCHAR));
-                if (buf[0] && buf[0] != L'.')
-                    Com_TraceFlag = TRUE;
-            }
-
-            index = 0;
-            while (1) {
-                status = SbieApi_QueryConfAsIs(
-                        BoxName, setting, index, buf, 90 * sizeof(WCHAR));
-                if (! NT_SUCCESS(status))
-                    break;
-                ++index;
-            }
-
-            if (index) {
-
-                Com_OpenClsids = Com_Alloc(sizeof(GUID) * index);
-                if (! Com_OpenClsids)
-                    index = 0;
-            }
-
-            Com_NumOpenClsids = index;
-
-            if (Com_NumOpenClsids) {
-
-                for (index = 0; index < Com_NumOpenClsids; ++index) {
-
-                    status = SbieApi_QueryConfAsIs(
-                        BoxName, setting, index, buf, 90 * sizeof(WCHAR));
-                    if (NT_SUCCESS(status)) {
-
-                        WCHAR *space = wcschr(buf, L' ');
-                        if (space)
-                            *space = L'\0';
-
-                        guid = &Com_OpenClsids[index];
-
-                        if (! __sys_IIDFromString) {
-                            // if called from SbieSvc
-                            HMODULE module =
-                                GetModuleHandle(DllName_ole32_or_combase);
-                            GETPROCADDR_SYS(IIDFromString);
-                        }
-
-                        if ((! __sys_IIDFromString) ||
-                                        __sys_IIDFromString(buf, guid) != 0) {
-
-                            memzero(guid, sizeof(GUID));
-                        }
-                    }
-                }
-            }
-        }
+        static const WCHAR* setting = L"OpenClsid";
+        Com_LoadClsidList(setting , &Com_OpenClsids, &Com_NumOpenClsids, BoxName);
 
         //
         // check against list of user-configured CLSID exclusions
@@ -404,12 +469,11 @@ _FX BOOLEAN SbieDll_IsOpenClsid(
 
         for (index = 0; index < Com_NumOpenClsids; ++index) {
             guid = &Com_OpenClsids[index];
-            if (memcmp(guid, rclsid, sizeof(GUID)) == 0)
+            if (memcmp(guid, rclsid, sizeof(GUID)) == 0 /*|| memcmp(guid, &CLSID_Null, sizeof(GUID)) == 0*/)
                 return TRUE;
         }
     }
 
-	if (SbieApi_QueryConfBool(BoxName, L"OpenDefaultClsid", TRUE))
     if (Com_IsFirewallClsid(rclsid, BoxName))
         return TRUE;
 
@@ -479,11 +543,39 @@ _FX BOOLEAN Com_IsClosedClsid(REFCLSID rclsid)
         0x66, 0xf7, 0xe1, 0x1b, 0x36, 0x55, 0xd1, 0x11,
         0xb7, 0x26, 0x00, 0xc0, 0x4f, 0xb9, 0x26, 0xaf };
 
-    if (memcmp(rclsid, EventSystem, 16)      == 0)
-        return TRUE;
+    // moved to templates.ini
+    //static const UCHAR PinToStartScreen[16] = { // {470C0EBD-5D73-4D58-9CED-E91E22E23282} 
+    //    0xbd, 0x0e, 0x0c, 0x47, 0x73, 0x5d, 0x58, 0x4d, 
+    //    0x9c, 0xed, 0xe9, 0x1e, 0x22, 0xe2, 0x32, 0x82
+    //};
 
-    if (memcmp(rclsid, EventSystemTier2, 16) == 0)
-        return TRUE;
+    static const UCHAR* ClosedIDs[] = { EventSystem, EventSystemTier2/*, PinToStartScreen*/ };
+
+    ULONG index;
+    GUID* guid;
+
+    for (index = 0; index < ARRAYSIZE(ClosedIDs); ++index) {
+        if (memcmp(rclsid, ClosedIDs[index], 16) == 0)
+            return TRUE;
+    }
+
+    //
+    // initialize list of user-configured CLSID blocks
+    // Note: the service threads everythign not explicitly open as closed anyways
+    //
+
+    static const WCHAR* setting = L"ClosedClsid";
+    Com_LoadClsidList(setting, &Com_ClosedClsids, &Com_NumClosedClsids, NULL);
+
+    //
+    // check against list of user-configured CLSID blocks
+    //
+
+    for (index = 0; index < Com_NumClosedClsids; ++index) {
+        guid = &Com_ClosedClsids[index];
+        if (memcmp(guid, rclsid, sizeof(GUID)) == 0)
+            return TRUE;
+    }
 
     return FALSE;
 }
@@ -500,7 +592,7 @@ _FX HRESULT Com_CoGetClassObject(
 {
     static const WCHAR *TraceType = L"GETCLS";
     HRESULT hr;
-    USHORT monflag = 0;
+    ULONG monflag = 0;
 
     // debug tip. You can stop the debugger on a COM object load (instantiation) by uncommenting lines below.
 
@@ -510,10 +602,12 @@ _FX HRESULT Com_CoGetClassObject(
 
     if (Com_IsClosedClsid(rclsid)) {
         *ppv = NULL;
+        Com_Trace2(TraceType, NULL, rclsid, riid, 0, clsctx, 0, MONITOR_DENY);
+        if (!Com_TraceFlag) Com_Monitor(rclsid, MONITOR_DENY);
         return E_ACCESSDENIED;
     }
 
-    if ((! pServerInfo) && SbieDll_IsOpenClsid(rclsid, clsctx, NULL)) {
+    if (!Ipc_OpenCOM && (! pServerInfo) && SbieDll_IsOpenClsid(rclsid, clsctx, NULL)) {
 
         hr = Com_IClassFactory_New(rclsid, NULL, ppv);
 
@@ -529,9 +623,9 @@ _FX HRESULT Com_CoGetClassObject(
         hr = __sys_CoGetClassObject(rclsid, clsctx, pServerInfo, riid, ppv);
     }
 
-    if (clsctx & CLSCTX_LOCAL_SERVER) {
-        Com_Trace(TraceType, rclsid, riid, 0, hr);
-        Com_Monitor(rclsid, monflag);
+    Com_Trace2(TraceType, NULL, rclsid, riid, 0, clsctx, hr, monflag);
+    if ((clsctx & CLSCTX_LOCAL_SERVER) != 0 || monflag) {
+        if(!Com_TraceFlag) Com_Monitor(rclsid, monflag);
     }
 
     return hr;
@@ -550,13 +644,15 @@ _FX HRESULT Com_CoGetObject(
     GUID clsid;
     HRESULT hr;
     IClassFactory *pFactory;
-    USHORT monflag = 0;
+    ULONG monflag = 0;
     BOOLEAN IsOpenClsid = FALSE;
 
-    if (_wcsnicmp(pszName, L"Elevation:Administrator!new:", 28) == 0) {
-        if (__sys_IIDFromString(pszName + 28, &clsid) == 0) {
-            if (SbieDll_IsOpenClsid(&clsid, CLSCTX_LOCAL_SERVER, NULL))
-                IsOpenClsid = TRUE;
+    if (!Ipc_OpenCOM) {
+        if (_wcsnicmp(pszName, L"Elevation:Administrator!new:", 28) == 0) {
+            if (__sys_IIDFromString(pszName + 28, &clsid) == 0) {
+                if (SbieDll_IsOpenClsid(&clsid, CLSCTX_LOCAL_SERVER, NULL))
+                    IsOpenClsid = TRUE;
+            }
         }
     }
 
@@ -576,13 +672,13 @@ _FX HRESULT Com_CoGetObject(
         else
             monflag |= MONITOR_DENY;
 
-        Com_Trace(TraceType, &clsid, riid, 0, hr);
-        Com_Monitor(&clsid, monflag);
-
     } else {
 
         hr = __sys_CoGetObject(pszName, pBindOptions, riid, ppv);
     }
+
+    Com_Trace2(TraceType, pszName, NULL, riid, 0, 0, hr, monflag);
+    if (!Com_TraceFlag) Com_Monitor(&clsid, monflag);
 
     return hr;
 }
@@ -599,14 +695,28 @@ _FX HRESULT Com_CoCreateInstance(
     static const WCHAR *TraceType = L"CRE-IN";
     HRESULT hr;
     IClassFactory *pFactory;
-    USHORT monflag = 0;
+    ULONG monflag = 0;
 
     if (Com_IsClosedClsid(rclsid)) {
         *ppv = NULL;
+        Com_Trace2(TraceType, NULL, rclsid, riid, 0, clsctx, 0, MONITOR_DENY);
+        if (!Com_TraceFlag) Com_Monitor(rclsid, MONITOR_DENY);
         return E_ACCESSDENIED;
     }
 
-    if (SbieDll_IsOpenClsid(rclsid, clsctx, NULL)) {
+    /*if (memcmp(rclsid, &IID_VirtualDesktopManager, 16) == 0) {
+
+        hr = Com_IClassFactoryEx_New(rclsid, NULL, (void **)&pFactory);
+
+        if (SUCCEEDED(hr)) {
+
+            hr = IClassFactory_CreateInstance(
+                                        pFactory, pUnkOuter, riid, ppv);
+
+            IClassFactory_Release(pFactory);
+        }
+
+    } else*/ if (!Ipc_OpenCOM && SbieDll_IsOpenClsid(rclsid, clsctx, NULL)) {
 
         hr = Com_IClassFactory_New(rclsid, NULL, (void **)&pFactory);
 
@@ -628,9 +738,9 @@ _FX HRESULT Com_CoCreateInstance(
         hr = __sys_CoCreateInstance(rclsid, pUnkOuter, clsctx, riid, ppv);
     }
 
-    if (clsctx & CLSCTX_LOCAL_SERVER) {
-        Com_Trace(TraceType, rclsid, riid, 0, hr);
-        Com_Monitor(rclsid, monflag);
+    Com_Trace2(TraceType, NULL, rclsid, riid, 0, clsctx, hr, monflag);
+    if ((clsctx & CLSCTX_LOCAL_SERVER) != 0 || monflag) {
+        if (!Com_TraceFlag) Com_Monitor(rclsid, monflag);
     }
 
     //
@@ -668,14 +778,17 @@ _FX HRESULT Com_CoCreateInstanceEx(
     HRESULT hr;
     IClassFactory *pFactory;
     ULONG i;
-    USHORT monflag = 0;
+    ULONG monflag = 0;
 
     //
     // special cases
     //
 
-    if (Com_IsClosedClsid(rclsid))
+    if (Com_IsClosedClsid(rclsid)) {
+        Com_Trace2(TraceType, NULL, rclsid, NULL, 0, clsctx, 0, MONITOR_DENY);
+        if (!Com_TraceFlag) Com_Monitor(rclsid, MONITOR_DENY);
         return E_ACCESSDENIED;
+    }
 
     if (Dll_ImageType == DLL_IMAGE_WINDOWS_LIVE_MAIL) {
 
@@ -692,7 +805,7 @@ _FX HRESULT Com_CoCreateInstanceEx(
     // otherwise normal processing
     //
 
-    if (SbieDll_IsOpenClsid(rclsid, clsctx, NULL)) {
+    if (!Ipc_OpenCOM && SbieDll_IsOpenClsid(rclsid, clsctx, NULL)) {
 
         hr = Com_IClassFactory_New(rclsid, NULL, (void **)&pFactory);
         if (SUCCEEDED(hr)) {
@@ -735,12 +848,12 @@ _FX HRESULT Com_CoCreateInstanceEx(
                             rclsid, pUnkOuter, clsctx, pServerInfo, cmq, pmqs);
     }
 
-    if (clsctx & CLSCTX_LOCAL_SERVER) {
-
-        for (i = 0; i < cmq; ++i) {
-            MULTI_QI *mqi = &pmqs[i];
-            Com_Trace(TraceType, rclsid, mqi->pIID, 0, mqi->hr);
-            Com_Monitor(rclsid, monflag);
+    
+    for (i = 0; i < cmq; ++i) {
+        MULTI_QI *mqi = &pmqs[i];
+        Com_Trace2(TraceType, NULL, rclsid, mqi->pIID, 0, clsctx, mqi->hr, monflag);
+        if ((clsctx & CLSCTX_LOCAL_SERVER) != 0 || monflag) {
+            if (!Com_TraceFlag) Com_Monitor(rclsid, monflag);
         }
     }
 
@@ -1270,17 +1383,23 @@ _FX BOOLEAN Com_Init_ComBase(HMODULE module)
     GETPROCADDR_SYS(CoTaskMemAlloc);
     GETPROCADDR_SYS(IIDFromString);
 
-    if (!SbieDll_IsOpenCOM()) {
+    if (SbieDll_IsOpenCOM()
+    // DisableComProxy BEGIN
+    || SbieApi_QueryConfBool(NULL, L"DisableComProxy", FALSE))
+    // DisableComProxy END
+        Ipc_OpenCOM = TRUE;
+    
+    
+    SBIEDLL_HOOK(Com_, CoGetClassObject);
+    if (!Dll_SkipHook(L"cocreate")) {
+        SBIEDLL_HOOK(Com_, CoCreateInstance);
+        SBIEDLL_HOOK(Com_, CoCreateInstanceEx);
+    }
 
-        SBIEDLL_HOOK(Com_, CoGetClassObject);
-        if (!Dll_SkipHook(L"cocreate")) {
-            SBIEDLL_HOOK(Com_, CoCreateInstance);
-            SBIEDLL_HOOK(Com_, CoCreateInstanceEx);
-        }
-
+    if (!Ipc_OpenCOM) {
         if (Dll_OsBuild >= 8400) {
             if (!Com_Hook_CoUnmarshalInterface_W8(
-                (UCHAR *)CoUnmarshalInterface))
+                (UCHAR*)CoUnmarshalInterface))
                 return FALSE;
         }
         else {
@@ -1288,8 +1407,22 @@ _FX BOOLEAN Com_Init_ComBase(HMODULE module)
         }
 
         SBIEDLL_HOOK(Com_, CoMarshalInterface);
-        SbieDll_IsOpenClsid(&IID_IUnknown, CLSCTX_LOCAL_SERVER, NULL);
+        SbieDll_IsOpenClsid(&IID_IUnknown, CLSCTX_LOCAL_SERVER, NULL); // trigger list loading
     }
+
+    if (Dll_OsBuild >= 8400) { // win8 and above
+        __sys_WindowsGetStringRawBuffer = (P_WindowsGetStringRawBuffer)GetProcAddress(module, "WindowsGetStringRawBuffer");
+        P_RoGetActivationFactory RoGetActivationFactory = (P_RoGetActivationFactory)GetProcAddress(module, "RoGetActivationFactory");
+        if (RoGetActivationFactory) {
+            SBIEDLL_HOOK(Com_, RoGetActivationFactory);
+        }
+    }
+
+    // If there are any ClsidTrace options set, then output this debug string
+    WCHAR wsTraceOptions[4];
+    if (SbieApi_QueryConf(NULL, L"ClsidTrace", 0, wsTraceOptions, sizeof(wsTraceOptions)) == STATUS_SUCCESS && wsTraceOptions[0] != L'\0')
+        Com_TraceFlag = TRUE;
+
     return TRUE;
 }
 
@@ -1319,10 +1452,7 @@ _FX BOOLEAN Com_Init_Ole32(HMODULE module)
     // other functions are still in ole32, even on Windows 8
     //
 
-    if (! SbieDll_IsOpenCOM()) {
-
-        SBIEDLL_HOOK(Com_,CoGetObject);
-    }
+    SBIEDLL_HOOK(Com_,CoGetObject);
 
     return TRUE;
 }
@@ -3111,7 +3241,7 @@ _FX void *Com_Alloc(ULONG len)
 
     /*if (Com_Mem_Trace) {
         WCHAR txt[128];
-        Sbie_swprintf(txt, L"ALLOC <%s> AT <%08X>\n", Com_Mem_Trace, ptr);
+        Sbie_snwprintf(txt, 128, L"ALLOC <%s> AT <%08X>\n", Com_Mem_Trace, ptr);
         OutputDebugString(txt);
         Com_Mem_Trace = NULL;
     }*/
@@ -3129,7 +3259,7 @@ _FX void Com_Free(void *ptr)
 {
     /*if (Com_Mem_Trace) {
         WCHAR txt[128];
-        Sbie_swprintf(txt, L"FREE  <%s> AT <%08X>\n", Com_Mem_Trace, ptr);
+        Sbie_snwprintf(txt, 128, L"FREE  <%s> AT <%08X>\n", Com_Mem_Trace, ptr);
         OutputDebugString(txt);
         Com_Mem_Trace = NULL;
     }*/
@@ -3207,8 +3337,7 @@ _FX void Com_Trace_Guid(
     }
 
     if (rc != 0) {
-        ptr[0] = L'?';
-        ptr[1] = L'\0';
+        wcscpy(ptr, L"IUnknown");
     }
 }
 
@@ -3219,8 +3348,15 @@ _FX void Com_Trace_Guid(
 
 
 _FX void Com_Trace(
-    const WCHAR *TraceType, REFCLSID rclsid, REFIID riid,
+    const WCHAR* TraceType, REFCLSID rclsid, REFIID riid,
     ULONG ProcNum, HRESULT hr)
+{
+    Com_Trace2(TraceType, NULL, rclsid, riid, ProcNum, 0, hr, MONITOR_TRACE);
+}
+
+_FX void Com_Trace2(
+    const WCHAR* TraceType, const WCHAR* pszName, REFCLSID rclsid, REFIID riid,
+    ULONG ProcNum, ULONG clsctx, HRESULT hr, ULONG monflag)
 {
     WCHAR *text;
     WCHAR *ptr;
@@ -3229,18 +3365,29 @@ _FX void Com_Trace(
         return;
 
     text = Com_Alloc(1024 * sizeof(WCHAR));
-    ptr = text + Sbie_swprintf(text, L"SBIE %s <%08X> ", TraceType, hr);
+    ptr = text + Sbie_snwprintf(text, 1024, L"COM <%08X> %s <%08X> ", clsctx, TraceType, hr);
+
+    if (pszName) {
+        wcscpy(ptr, L"NAME: ");
+        ptr += 6; // wcslen(ptr);
+        wcscpy(ptr, pszName);
+        ptr += wcslen(ptr);
+    }
 
     if (rclsid) {
+        wcscpy(ptr, L"CLSID: ");
+        ptr += 7; // wcslen(ptr);
         Com_Trace_Guid(ptr, rclsid, L"CLSID");
         ptr += wcslen(ptr);
     }
 
     if (riid) {
         if (rclsid) {
-            *ptr = L' ';
-            ++ptr;
+            *ptr++ = L';';
+            *ptr++ = L' ';
         }
+        wcscpy(ptr, L"Interface: ");
+        ptr += 11; // wcslen(ptr);
         Com_Trace_Guid(ptr, riid, L"Interface");
         ptr += wcslen(ptr);
 
@@ -3252,9 +3399,11 @@ _FX void Com_Trace(
         }
     }
 
-    ptr[0] = L'\n';
-    ptr[1] = L'\0';
-    OutputDebugString(text);
+    //ptr[0] = L'\n';
+    //ptr[1] = L'\0';
+    //OutputDebugString(text);
+    *ptr = L'\0';
+    SbieApi_MonitorPut(MONITOR_COMCLASS | monflag, text);
 
     Com_Free(text);
 }
@@ -3265,7 +3414,7 @@ _FX void Com_Trace(
 //---------------------------------------------------------------------------
 
 
-_FX void Com_Monitor(REFCLSID rclsid, USHORT monflag)
+_FX void Com_Monitor(REFCLSID rclsid, ULONG monflag)
 {
     if (Dll_BoxName) {
 
@@ -3274,3 +3423,232 @@ _FX void Com_Monitor(REFCLSID rclsid, USHORT monflag)
         SbieApi_MonitorPut(MONITOR_COMCLASS | monflag, text);
     }
 }
+
+
+//---------------------------------------------------------------------------
+// Com_LoadRTList
+//---------------------------------------------------------------------------
+
+
+_FX void Com_LoadRTList(const WCHAR* setting, WCHAR** pNames)
+{
+    if (*pNames != NULL)
+        return; // already done
+
+    ULONG index;
+    ULONG total_len;
+    ULONG cur_pos;
+    NTSTATUS status;
+    WCHAR wbuf[196];
+    WCHAR* buf = wbuf;
+    const WCHAR* ImageName = Dll_ImageName;
+
+    total_len = 1;
+    for (index = 0; ; ++index) {
+        status = SbieApi_QueryConfAsIs(
+            NULL, setting, index, buf, 190 * sizeof(WCHAR));
+        if (!NT_SUCCESS(status))
+            break;
+
+        WCHAR* ptr = wcschr(buf, L',');
+        if (ptr) {
+            *ptr = L'\0';
+            if (ImageName && !SbieDll_MatchImage(buf, ImageName, NULL))
+                continue;
+            buf = ptr + 1;
+        }
+
+        if (*buf != L'\0') continue;
+
+        total_len += wcslen(buf) + 1;
+    }
+
+    //
+    // We store the data as a list of \0 separated strings the first empty string indicated the end
+    //
+
+    *pNames = Com_Alloc(sizeof(WCHAR) * total_len);
+    if (!*pNames)
+        return;
+    
+    cur_pos = 0;
+    for (index = 0; total_len > cur_pos; ++index) {
+
+        status = SbieApi_QueryConfAsIs(
+            NULL, setting, index, buf, 190 * sizeof(WCHAR));
+        if (!NT_SUCCESS(status))
+            break;
+
+        WCHAR* ptr = wcschr(buf, L',');
+        if (ptr) {
+            *ptr = L'\0';
+            if (ImageName && !SbieDll_MatchImage(buf, ImageName, NULL))
+                continue;
+            buf = ptr + 1;
+        }
+
+        if (*buf != L'\0') continue;
+
+        wcscpy((*pNames) + cur_pos, buf);
+
+        cur_pos += wcslen(buf) + 1;
+    }
+
+    (*pNames)[total_len - 1] = L'\0'; // indicated the end of data
+}
+
+
+//---------------------------------------------------------------------------
+// Com_IsClosedRT
+//---------------------------------------------------------------------------
+
+
+_FX BOOLEAN Com_IsClosedRT(const wchar_t* strClassId)
+{
+    //
+    // Even in compartment mode thes things don't work only incombination with open COM its functional
+    //
+
+    if (!(Ipc_OpenCOM && Dll_CompartmentMode) && !SbieApi_QueryConfBool(NULL, L"DisableRTBlacklist", FALSE)) {
+
+        //
+        // Chrome uses the FindAppUriHandlersAsync, which fails returning a NULL value when we don't have com open and more rights
+        // than we should have. Chrome does not check for this failure mode and dereferences it, resulting in a fatal crash.
+        // Since we don't support modern app features anyways, the simplest workaround is to block this interface.
+        //
+
+        if (Dll_ImageType == DLL_IMAGE_GOOGLE_CHROME) {
+
+            if (wcscmp(strClassId, L"Windows.System.Launcher") == 0)
+                return TRUE;
+        }
+
+        //
+        // ToastNotificationManager requirers open com and original token, with boxed com this causes in a dead lock
+        //
+
+        if (wcscmp(strClassId, L"Windows.UI.Notifications.ToastNotificationManager") == 0)
+            return TRUE;
+    }
+
+    static const WCHAR* setting = L"ClosedRT";
+    Com_LoadRTList(setting, &Com_ClosedRT);
+
+    for (const WCHAR* pName = Com_ClosedRT; pName && *pName; pName += wcslen(pName) + 1) {
+
+        if (wcscmp(strClassId, pName) == 0 || wcscmp(pName, L"*") == 0)
+            return TRUE; 
+    }
+
+    return FALSE;
+}
+
+
+//---------------------------------------------------------------------------
+// Com_RoGetActivationFactory
+//---------------------------------------------------------------------------
+
+
+_FX HRESULT Com_RoGetActivationFactory(HSTRING activatableClassId, REFIID  iid, void** factory)
+{
+    if (__sys_WindowsGetStringRawBuffer == NULL)
+        return E_NOTIMPL; // if we can't inspect this modern RT stuff just fail.
+
+    const wchar_t* strClassId = __sys_WindowsGetStringRawBuffer(activatableClassId, NULL);
+
+    if (Com_IsClosedRT(strClassId)) {
+        SbieApi_MonitorPut(MONITOR_RTCLASS | MONITOR_DENY, strClassId);
+        return E_ACCESSDENIED;
+    }
+
+    SbieApi_MonitorPut(MONITOR_RTCLASS, strClassId);
+    return __sys_RoGetActivationFactory(activatableClassId, iid, factory);
+}
+
+
+/*
+//---------------------------------------------------------------------------
+// Com_IClassFactoryEx_CreateInstance
+//---------------------------------------------------------------------------
+
+_FX HRESULT Com_OuterIUnknown_QueryInterface_NotImpl(
+    COM_IUNKNOWN* This, REFIID riid, void** ppv)
+{
+    SbieApi_Log(2205, L"IUnknown::QueryInterface");
+    return E_NOTIMPL;
+}
+
+_FX HRESULT Com_IsWindowOnCurrentVirtualDesktop(COM_IUNKNOWN* This, __RPC__in HWND topLevelWindow, __RPC__out BOOL* onCurrentDesktop) {
+    return E_NOTIMPL;
+}
+_FX HRESULT Com_GetWindowDesktopId(COM_IUNKNOWN* This, __RPC__in HWND topLevelWindow, __RPC__out GUID *desktopId) {
+    return E_NOTIMPL;
+}
+_FX HRESULT Com_MoveWindowToDesktop(COM_IUNKNOWN* This, __RPC__in HWND topLevelWindow, __RPC__in REFGUID desktopId) {
+    return E_NOTIMPL;
+}
+
+void* Com_VirtualDesktopManager_vtbl[] = { Com_IsWindowOnCurrentVirtualDesktop,Com_GetWindowDesktopId,Com_MoveWindowToDesktop };
+
+typedef struct _COM_ITF {
+    const GUID* Guid;
+    void** vtbl;
+    int vtblCnt;
+} COM_ITF;
+
+COM_ITF Com_Interfaces[] = { {&IID_VirtualDesktopManager, Com_VirtualDesktopManager_vtbl, ARRAYSIZE(Com_VirtualDesktopManager_vtbl)} };
+
+
+_FX HRESULT Com_IClassFactoryEx_CreateInstance(
+    COM_IUNKNOWN *This, IUnknown *pUnkOuter, REFIID riid, void **ppv)
+{
+    ULONG hr;
+    COM_IUNKNOWN *pUnknown;
+
+    if (pUnkOuter)
+        SbieApi_Log(2205, L"IClassFactory::CreateInstance");
+
+    for (ULONG i = 0; i < ARRAYSIZE(Com_Interfaces); i++) {
+
+        if (memcmp(&This->Guid, Com_Interfaces[i].Guid, 16) == 0) {
+
+            hr = Com_IUnknown_New(-1, 3, FLAG_REMOTE_REF | FLAG_PPROXY_AT_VTBL3, &pUnknown);
+            if (SUCCEEDED(hr)) {
+
+                pUnknown->Vtbl[0] = Com_OuterIUnknown_QueryInterface_NotImpl;
+                memcpy(&pUnknown->Vtbl[3], Com_Interfaces[i].vtbl, sizeof(void*) * Com_Interfaces[i].vtblCnt);
+                memcpy(&pUnknown->Guid, riid, sizeof(GUID));
+
+                *ppv = pUnknown;
+            }
+            return hr;
+        }
+    }
+
+    return E_NOTIMPL;
+}
+
+
+//---------------------------------------------------------------------------
+// Com_IClassFactoryEx_New
+//---------------------------------------------------------------------------
+
+
+_FX HRESULT Com_IClassFactoryEx_New(
+    REFCLSID rclsid, const WCHAR* StringGUID, void** ppv)
+{
+    HRESULT hr;
+    COM_IUNKNOWN *This;
+    hr = Com_IUnknown_New(-1, 2, FLAG_REMOTE_REF, &This);
+    if (SUCCEEDED(hr)) {
+
+        This->Vtbl[0] = Com_IClassFactory_QueryInterface;
+        This->Vtbl[3] = Com_IClassFactoryEx_CreateInstance;
+        This->Vtbl[4] = Com_IClassFactory_LockServer;
+        memcpy(&This->Guid, rclsid, sizeof(GUID));
+
+        *ppv = This;
+    }
+    return hr;
+}
+*/

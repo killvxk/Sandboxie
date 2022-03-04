@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2021 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -230,33 +231,12 @@ BOOLEAN UnicodeStringEndsWith(PCUNICODE_STRING pString1, PWCHAR pString2, BOOLEA
     return (RtlCompareUnicodeString(&usStr, &usSearch, boolCaseInSensitive) == 0);
 }
 
-
 BOOLEAN DoesRegValueExist(ULONG RelativeTo, WCHAR *Path, WCHAR *ValueName)
 {
-    NTSTATUS status;
-    RTL_QUERY_REGISTRY_TABLE qrt[2];
-    UNICODE_STRING uni;
-
-    // we don't care about the value, but we have to give it a NULL object
-    uni.Length = 0;
-    uni.MaximumLength = 0;
-    uni.Buffer = NULL;
-
-    memzero(qrt, sizeof(qrt));
-    qrt[0].Flags = RTL_QUERY_REGISTRY_REQUIRED |
-        RTL_QUERY_REGISTRY_DIRECT |
-        RTL_QUERY_REGISTRY_NOVALUE |
-        RTL_QUERY_REGISTRY_NOEXPAND;
-    qrt[0].Name = ValueName;
-    qrt[0].EntryContext = &uni;
-    qrt[0].DefaultType = REG_NONE;
-
-    status = RtlQueryRegistryValues(
-        RelativeTo, Path, qrt, NULL, NULL);
-
-    return (status == STATUS_SUCCESS);
+    WCHAR DummyBuffer[1] = {0}; // if we provide a NULL buffer this wil cause a memory pool leak someware in the kernel
+    UNICODE_STRING Dummy = { 0, sizeof(DummyBuffer), DummyBuffer };
+    return GetRegString(RelativeTo, Path, ValueName, &Dummy);
 }
-
 
 BOOLEAN GetRegString(ULONG RelativeTo, WCHAR *Path, WCHAR *ValueName, UNICODE_STRING* pData)
 {
@@ -297,4 +277,131 @@ void *memmem(const void *pSearchBuf,
     }
 
     return NULL;
+}
+
+
+//---------------------------------------------------------------------------
+// MyIsTestSigning
+//---------------------------------------------------------------------------
+
+typedef struct _SYSTEM_CODEINTEGRITY_INFORMATION
+{
+    ULONG Length;
+    ULONG CodeIntegrityOptions;
+} SYSTEM_CODEINTEGRITY_INFORMATION, *PSYSTEM_CODEINTEGRITY_INFORMATION;
+
+_FX BOOLEAN MyIsTestSigning(void)
+{
+    SYSTEM_CODEINTEGRITY_INFORMATION sci = {sizeof(SYSTEM_CODEINTEGRITY_INFORMATION)};
+	if(NT_SUCCESS(ZwQuerySystemInformation(/*SystemCodeIntegrityInformation*/ 103, &sci, sizeof(sci), NULL)))
+	{
+		//BOOLEAN bCodeIntegrityEnabled = !!(sci.CodeIntegrityOptions & /*CODEINTEGRITY_OPTION_ENABLED*/ 0x1);
+		BOOLEAN bTestSigningEnabled = !!(sci.CodeIntegrityOptions & /*CODEINTEGRITY_OPTION_TESTSIGN*/ 0x2);
+
+        //DbgPrint("Test Signing: %d; Code Integrity: %d\r\n", bTestSigningEnabled, bCodeIntegrityEnabled);
+
+        //if (bTestSigningEnabled || !bCodeIntegrityEnabled)
+        if (bTestSigningEnabled)
+            return TRUE;
+	}
+    return FALSE;
+}
+
+
+//---------------------------------------------------------------------------
+// MyIsCallerSigned
+//---------------------------------------------------------------------------
+
+NTSTATUS KphVerifyCurrentProcess();
+
+_FX BOOLEAN MyIsCallerSigned(void)
+{
+    NTSTATUS status;
+
+    // in test signing mode don't verify the signature
+    if (MyIsTestSigning())
+        return TRUE;
+
+    status = KphVerifyCurrentProcess();
+
+    //DbgPrint("Image Signature Verification result: 0x%08x\r\n", status);
+
+    if (!NT_SUCCESS(status)) {
+
+        //Log_Status(MSG_1330, 0, status);
+
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
+// MyValidateCertificate
+//---------------------------------------------------------------------------
+
+BOOLEAN Driver_Certified = FALSE;
+
+NTSTATUS KphValidateCertificate();
+
+_FX NTSTATUS MyValidateCertificate(void)
+{
+    NTSTATUS status = KphValidateCertificate();
+
+    Driver_Certified = NT_SUCCESS(status);
+
+    if (status == STATUS_ACCOUNT_EXPIRED)
+        status = STATUS_SUCCESS;
+
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// Util_GetProcessPidByName
+//---------------------------------------------------------------------------
+
+_FX HANDLE Util_GetProcessPidByName(const WCHAR* name) 
+{
+    HANDLE pid = (HANDLE)-1;
+    USHORT name_len = wcslen(name) * sizeof(WCHAR);
+    PVOID buffer = NULL;
+    ULONG buffer_size = 0x10000;
+    ULONG retry_count = 0;
+    NTSTATUS status;
+
+retry:
+    buffer = ExAllocatePoolWithTag(PagedPool, buffer_size, tzuk);
+    if (buffer){
+
+        status = ZwQuerySystemInformation(SystemProcessesAndThreadsInformation, buffer, buffer_size, &buffer_size);
+        if (status == STATUS_INFO_LENGTH_MISMATCH && retry_count++ < 100) {
+            ExFreePoolWithTag(buffer, tzuk);
+            buffer_size += 0x1000 * retry_count;
+            goto retry;
+        }
+
+        if (NT_SUCCESS(status)) {
+
+            SYSTEM_PROCESS_INFORMATION* processEntry = (SYSTEM_PROCESS_INFORMATION*)buffer;
+            for (;;) {
+
+                if (processEntry->ProcessName.Length == name_len && _wcsicmp(name, processEntry->ProcessName.Buffer) == 0) {
+
+                    pid = (HANDLE)processEntry->ProcessId;
+                    break;
+                }
+
+                if (!processEntry->NextEntryOffset)
+                    break;
+
+                processEntry = (SYSTEM_PROCESS_INFORMATION*)((UCHAR*)processEntry + processEntry->NextEntryOffset);
+            }
+        }
+
+        ExFreePoolWithTag(buffer, tzuk);
+    }
+
+    return pid;
 }

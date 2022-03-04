@@ -816,7 +816,10 @@ void CThirdPartyDialog::CollectTemplates()
     ini.GetTemplateNames(L"Desktop", names);
     ini.GetTemplateNames(L"Download", names);
     ini.GetTemplateNames(L"Misc", names);
-
+    ini.GetTemplateNames(L"WebBrowser", names);
+    ini.GetTemplateNames(L"MediaPlayer", names);
+    ini.GetTemplateNames(L"TorrentClient", names);
+    
     m_templates.RemoveAll();
     while (! names.IsEmpty()) {
         CString tmpl_name = names.RemoveHead();
@@ -923,7 +926,7 @@ BOOL CThirdPartyDialog::CheckTemplate(const CString &tmpl_name)
                 continue;
             }
 
-            PATTERN *pat = Pattern_Create(NULL, value, TRUE);
+            PATTERN *pat = Pattern_Create(NULL, value, TRUE, 0);
             BOOLEAN match = FALSE;
 
             POSITION pos = list->GetHeadPosition();

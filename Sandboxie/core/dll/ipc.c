@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2021 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -288,8 +289,9 @@ const WCHAR *Ipc_actkernel = L"\\RPC Control\\actkernel";
 
 extern const WCHAR *File_BQQB;
 
-WCHAR   *g_Ipc_DynamicPortNames[NUM_DYNAMIC_PORTS];
+LIST Ipc_DynamicPortNames;
 
+BOOLEAN RpcRt_IsDynamicPortOpen(const WCHAR* wszPortName);
 
 
 //---------------------------------------------------------------------------
@@ -341,8 +343,13 @@ _FX BOOLEAN Ipc_Init(void)
     SBIEDLL_HOOK_IF(NtAlpcQueryInformation);
     SBIEDLL_HOOK_IF(NtAlpcQueryInformationMessage);
 
-    SBIEDLL_HOOK(Ipc_,NtImpersonateClientOfPort);
-    SBIEDLL_HOOK_IF(NtAlpcImpersonateClientOfPort);
+    // OriginalToken BEGIN
+    if (!Dll_CompartmentMode && !SbieApi_QueryConfBool(NULL, L"OriginalToken", FALSE))
+    // OriginalToken END
+    {
+        SBIEDLL_HOOK(Ipc_, NtImpersonateClientOfPort);
+        SBIEDLL_HOOK_IF(NtAlpcImpersonateClientOfPort);
+    }
 
     SBIEDLL_HOOK(Ipc_,NtRequestWaitReplyPort);
     SBIEDLL_HOOK_IF(NtAlpcSendWaitReceivePort);
@@ -364,17 +371,17 @@ _FX BOOLEAN Ipc_Init(void)
     SBIEDLL_HOOK(Ipc_,NtCreateSection);
     SBIEDLL_HOOK(Ipc_,NtOpenSection);
 
-    SBIEDLL_HOOK(Ipc_,NtImpersonateAnonymousToken);
-    SBIEDLL_HOOK(Ipc_,NtImpersonateThread);
+    // OriginalToken BEGIN
+    if (!Dll_CompartmentMode && !SbieApi_QueryConfBool(NULL, L"OriginalToken", FALSE))
+    // OriginalToken END
+    {
+        SBIEDLL_HOOK(Ipc_, NtImpersonateAnonymousToken);
+        SBIEDLL_HOOK(Ipc_, NtImpersonateThread);
+    }
 
     Ipc_CreateObjects();
 
-    if (Dll_OsBuild >= 9600)
-        g_Ipc_DynamicPortNames[SPOOLER_PORT] = Dll_Alloc(DYNAMIC_PORT_NAME_CHARS * sizeof(WCHAR));
-
-    g_Ipc_DynamicPortNames[WPAD_PORT] = Dll_Alloc(DYNAMIC_PORT_NAME_CHARS * sizeof(WCHAR));
-    g_Ipc_DynamicPortNames[SMART_CARD_PORT] = Dll_Alloc(DYNAMIC_PORT_NAME_CHARS * sizeof(WCHAR));
-    g_Ipc_DynamicPortNames[GAME_CONFIG_STORE_PORT] = Dll_Alloc(DYNAMIC_PORT_NAME_CHARS * sizeof(WCHAR));
+    List_Init(&Ipc_DynamicPortNames);
 
     return TRUE;
 }
@@ -402,7 +409,7 @@ _FX void Ipc_CreateObjects(void)
     // the last path component (the dummy name itself)
     //
 
-    Sbie_swprintf(str, SBIE_BOXED_ L"DummyEvent_%d", Dll_ProcessId);
+    Sbie_snwprintf(str, 64, SBIE_BOXED_ L"DummyEvent_%d", Dll_ProcessId);
     handle = CreateEvent(NULL, FALSE, FALSE, str);
     if (! handle) {
         errlvl = 11;
@@ -564,7 +571,7 @@ _FX NTSTATUS Ipc_GetName(
 
         status = Obj_GetObjectName(RootDirectory, name, &length);
 
-        if (status == STATUS_BUFFER_OVERFLOW) {
+        if (status == STATUS_BUFFER_OVERFLOW || status == STATUS_BUFFER_TOO_SMALL || status == STATUS_INFO_LENGTH_MISMATCH) {
 
             name = Dll_GetTlsNameBuffer(
                         TlsData, TRUE_NAME_BUFFER, length + objname_len);
@@ -725,6 +732,11 @@ _FX BOOLEAN Ipc_GetName_AdjustSplWow64Path(WCHAR *TruePath, BOOLEAN adj)
     // Gdi_SplWow64 and GuiServer::SplWow64Slave help with making sure
     // a sandbox that wants to print has a corresponding SplWow64 process.
     //
+
+    // NoSbieDesk BEGIN
+    if (Dll_CompartmentMode || SbieApi_QueryConfBool(NULL, L"NoSandboxieDesktop", FALSE))
+        return TRUE;
+	// NoSbieDesk END
 
     WCHAR *nameStart = wcsrchr(TruePath, L'\\');
     if (nameStart && (0 == _wcsnicmp(nameStart + 1, L"SplWow64_", 9)
@@ -1026,7 +1038,7 @@ _FX NTSTATUS Ipc_NtCreatePort(
     // check if this is an open or closed path
     //
 
-    mp_flags = SbieDll_MatchPath(L'i', TruePath);
+    mp_flags = SbieDll_MatchPath2(L'i', TruePath, FALSE, TRUE); // SbieDll_MatchPath(L'i', TruePath);
 
     if (PATH_IS_CLOSED(mp_flags)) {
         status = STATUS_ACCESS_DENIED;
@@ -1141,6 +1153,8 @@ _FX NTSTATUS Ipc_NtConnectPort(
 
     if (status != STATUS_BAD_INITIAL_PC)
         __leave;
+    if (status == STATUS_BAD_INITIAL_STACK)
+        goto OpenTruePath;
 
     //
     // if trying to connect to a COM port, start our COM servers first
@@ -1267,6 +1281,8 @@ _FX NTSTATUS Ipc_NtSecureConnectPort(
 
     if (status != STATUS_BAD_INITIAL_PC)
         __leave;
+    if (status == STATUS_BAD_INITIAL_STACK)
+        goto OpenTruePath;
 
     //
     // if trying to connect to a COM port, start our COM servers first
@@ -1397,7 +1413,7 @@ _FX NTSTATUS Ipc_NtAlpcCreatePort(
     // check if this is an open or closed path
     //
 
-    mp_flags = SbieDll_MatchPath(L'i', TruePath);
+    mp_flags = SbieDll_MatchPath2(L'i', TruePath, FALSE, TRUE); // SbieDll_MatchPath(L'i', TruePath);
 
     if (PATH_IS_CLOSED(mp_flags)) {
         status = STATUS_ACCESS_DENIED;
@@ -1475,7 +1491,6 @@ _FX NTSTATUS Ipc_NtAlpcConnectPort(
     WCHAR *TruePath;
     WCHAR *CopyPath;
     ULONG mp_flags;
-    int i;
 
     Dll_PushTlsNameBuffer(TlsData);
 
@@ -1504,14 +1519,8 @@ _FX NTSTATUS Ipc_NtAlpcConnectPort(
         goto OpenTruePath;
 
     // Is this a dynamic RPC port that we need to open?
-    for (i = 0; i < NUM_DYNAMIC_PORTS; i++)
-    {
-        if ( g_Ipc_DynamicPortNames[i] && *g_Ipc_DynamicPortNames[i]
-        && (_wcsicmp(TruePath, g_Ipc_DynamicPortNames[i]) == 0) )
-            // see also RpcBindingFromStringBindingW in core/dll/rpcrt.c
-            // and core/drv/ipc_spl.c
-            goto OpenTruePath;
-    }
+    if(RpcRt_IsDynamicPortOpen(TruePath))
+        goto OpenTruePath;
 
     //
     // check for proxy LPC port
@@ -1524,6 +1533,8 @@ _FX NTSTATUS Ipc_NtAlpcConnectPort(
 
     if (status != STATUS_BAD_INITIAL_PC)
         __leave;
+    if (status == STATUS_BAD_INITIAL_STACK)
+        goto OpenTruePath;
 
     //
     // if trying to connect to a COM port, start our COM servers first
@@ -1648,7 +1659,6 @@ _FX NTSTATUS Ipc_NtAlpcConnectPortEx(
     WCHAR *TruePath;
     WCHAR *CopyPath;
     ULONG mp_flags;
-    int i;
 
     Dll_PushTlsNameBuffer(TlsData);
 
@@ -1685,14 +1695,8 @@ _FX NTSTATUS Ipc_NtAlpcConnectPortEx(
     // and Ipc_NtAlpcConnectPort can be merged to eliminate code duplication.
 
     // Is this a dynamic RPC port that we need to open?
-    for (i = 0; i < NUM_DYNAMIC_PORTS; i++)
-    {
-        if ( g_Ipc_DynamicPortNames[i] && *g_Ipc_DynamicPortNames[i]
-        && (_wcsicmp(TruePath, g_Ipc_DynamicPortNames[i]) == 0) )
-            // see also RpcBindingFromStringBindingW in core/dll/rpcrt.c
-            // and core/drv/ipc_spl.c
-            goto OpenTruePath;
-    }
+    if(RpcRt_IsDynamicPortOpen(TruePath))
+        goto OpenTruePath;
 
     //
     // check for proxy LPC port
@@ -1705,6 +1709,8 @@ _FX NTSTATUS Ipc_NtAlpcConnectPortEx(
 
     if (status != STATUS_BAD_INITIAL_PC)
         __leave;
+    if (status == STATUS_BAD_INITIAL_STACK)
+        goto OpenTruePath;
 
     //
     // if trying to connect to a COM port, start our COM servers first
@@ -2213,6 +2219,9 @@ _FX NTSTATUS Ipc_NtCreateEvent(
 
     if (! TruePath) {
 
+        if(ObjectAttributes->ObjectName->Buffer)
+            SbieApi_MonitorPut2(MONITOR_IPC, ObjectAttributes->ObjectName->Buffer, FALSE);
+
         status = __sys_NtCreateEvent(
             EventHandle, DesiredAccess, ObjectAttributes,
             EventType, InitialState);
@@ -2227,7 +2236,7 @@ _FX NTSTATUS Ipc_NtCreateEvent(
     // check if this is an open or closed path
     //
 
-    mp_flags = SbieDll_MatchPath(L'i', TruePath);
+    mp_flags = SbieDll_MatchPath2(L'i', TruePath, FALSE, TRUE); // SbieDll_MatchPath(L'i', TruePath);
 
     if (PATH_IS_CLOSED(mp_flags)) {
         status = STATUS_ACCESS_DENIED;
@@ -2437,6 +2446,9 @@ _FX NTSTATUS Ipc_NtCreateMutant(
 
     if (! TruePath) {
 
+        if(ObjectAttributes->ObjectName->Buffer)
+            SbieApi_MonitorPut2(MONITOR_IPC, ObjectAttributes->ObjectName->Buffer, FALSE);
+
         status = __sys_NtCreateMutant(
             MutantHandle, DesiredAccess, ObjectAttributes,
             InitialOwner);
@@ -2451,7 +2463,7 @@ _FX NTSTATUS Ipc_NtCreateMutant(
     // check if this is an open or closed path
     //
 
-    mp_flags = SbieDll_MatchPath(L'i', TruePath);
+    mp_flags = SbieDll_MatchPath2(L'i', TruePath, FALSE, TRUE); // SbieDll_MatchPath(L'i', TruePath);
 
     if (PATH_IS_CLOSED(mp_flags)) {
         status = STATUS_ACCESS_DENIED;
@@ -2662,6 +2674,9 @@ _FX NTSTATUS Ipc_NtCreateSemaphore(
 
     if (! TruePath) {
 
+        if(ObjectAttributes->ObjectName->Buffer)
+            SbieApi_MonitorPut2(MONITOR_IPC, ObjectAttributes->ObjectName->Buffer, FALSE);
+
         status = __sys_NtCreateSemaphore(
             SemaphoreHandle, DesiredAccess, ObjectAttributes,
             InitialCount, MaximumCount);
@@ -2676,7 +2691,7 @@ _FX NTSTATUS Ipc_NtCreateSemaphore(
     // check if this is an open or closed path
     //
 
-    mp_flags = SbieDll_MatchPath(L'i', TruePath);
+    mp_flags = SbieDll_MatchPath2(L'i', TruePath, FALSE, TRUE); // SbieDll_MatchPath(L'i', TruePath);
 
     if (PATH_IS_CLOSED(mp_flags)) {
         status = STATUS_ACCESS_DENIED;
@@ -2899,6 +2914,9 @@ _FX NTSTATUS Ipc_NtCreateSection(
 
     if (! TruePath) {
 
+        if(ObjectAttributes->ObjectName->Buffer)
+            SbieApi_MonitorPut2(MONITOR_IPC, ObjectAttributes->ObjectName->Buffer, FALSE);
+
         status = __sys_NtCreateSection(
             SectionHandle, DesiredAccess, ObjectAttributes,
             MaximumSize, PageAttributes, SectionAttributes, FileHandle);
@@ -2913,7 +2931,7 @@ _FX NTSTATUS Ipc_NtCreateSection(
     // check if this is an open or closed path
     //
 
-    mp_flags = SbieDll_MatchPath(L'i', TruePath);
+    mp_flags = SbieDll_MatchPath2(L'i', TruePath, FALSE, TRUE); // SbieDll_MatchPath(L'i', TruePath);
 
     if (PATH_IS_CLOSED(mp_flags)) {
         status = STATUS_ACCESS_DENIED;
@@ -3234,6 +3252,13 @@ _FX NTSTATUS Ipc_ConnectProxyPort(
     if (_wcsicmp(TruePath, L"\\RPC Control\\ntsvcs") != 0 &&
         _wcsicmp(TruePath, L"\\RPC Control\\plugplay") != 0)
         return STATUS_BAD_INITIAL_PC;
+
+    //
+    // check if we are in app mode in which case proxying is not needed, but we must indicate to open true path
+    //
+
+    if (Dll_CompartmentMode) // NoServiceAssist
+        return STATUS_BAD_INITIAL_STACK;
 
     status = STATUS_SUCCESS;
 

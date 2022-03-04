@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2022 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -77,6 +78,8 @@ typedef struct _FILE_PIPE_WAIT_FOR_BUFFER {
 static BOOLEAN File_IsPipeSuffix(const WCHAR *ptr);
 
 static ULONG File_IsNamedPipe(const WCHAR *path, const WCHAR **server);
+
+const BOOLEAN File_InternetBlockade_ManualBypass();
 
 static NTSTATUS File_NtCreateFilePipe(
     HANDLE *FileHandle,
@@ -251,11 +254,14 @@ _FX ULONG File_IsNamedPipe(const WCHAR *path, const WCHAR **server)
     // check if this is an Internet device matching a ClosedFilePath
     //
 
-    if (len >= 10 && _wcsnicmp(path, File_Mup, 8) == 0) {
+    if (len >= 10 && _wcsnicmp(path, File_Mup, 8) == 0) { // match \device\ only
 
-        if (SbieApi_CheckInternetAccess(NULL, path + 8, TRUE) ==
-                                                STATUS_ACCESS_DENIED)
-            return TYPE_NET_DEVICE;
+		BOOLEAN prompt = SbieApi_QueryConfBool(NULL, L"PromptForInternetAccess", FALSE);
+		if (SbieApi_CheckInternetAccess(0, path + 8, !prompt) == STATUS_ACCESS_DENIED
+			&& (!prompt || !File_InternetBlockade_ManualBypass())) {
+
+			return TYPE_NET_DEVICE;
+		}
     }
 
     //
@@ -263,6 +269,42 @@ _FX ULONG File_IsNamedPipe(const WCHAR *path, const WCHAR **server)
     //
 
     return 0;
+}
+
+
+//---------------------------------------------------------------------------
+// File_InternetBlockade_ManualBypass
+//---------------------------------------------------------------------------
+
+
+_FX const BOOLEAN File_InternetBlockade_ManualBypass()
+{
+	MAN_INET_BLOCKADE_REQ req;
+	MAN_INET_BLOCKADE_RPL *rpl = NULL;
+	BOOLEAN ok = FALSE;
+
+	req.msgid = MAN_INET_BLOCKADE;
+
+	rpl = SbieDll_CallServerQueue(INTERACTIVE_QUEUE_NAME, &req, sizeof(req), sizeof(*rpl));
+	if (rpl)
+	{
+		ok = rpl->retval != 0;
+		Dll_Free(rpl);
+	}
+	else if(SbieApi_QueryConfBool(NULL, L"NotifyInternetAccessDenied", TRUE))
+		SbieApi_Log(1307, L"%S [%S]", Dll_ImageName, Dll_BoxName);
+
+	//
+	// Note: the granting process must notify the driver about the exemption 
+	//			and we must ask the driver to update the open/closed path lists
+	//
+
+	if (ok) 
+	{
+		Dll_RefreshPathList();
+	}
+
+	return ok;
 }
 
 
@@ -454,7 +496,7 @@ _FX NTSTATUS File_NtCreateNamedPipeFile(
     InitializeObjectAttributes(&objattrs,
         &objname, OBJECT_ATTRIBUTES_ATTRIBUTES, NULL, NULL);
 
-    mp_flags = File_MatchPath(TruePath, NULL);
+    mp_flags = File_MatchPath2(TruePath, NULL, FALSE, TRUE); // File_MatchPath(TruePath, NULL);
 
     if (PATH_IS_CLOSED(mp_flags)) {
         status = STATUS_ACCESS_DENIED;
@@ -578,6 +620,8 @@ _FX NTSTATUS File_NtCreateFilePipe(
     //
     // keep list of permitted pipes in sync with
     // SbieSvc::NamedPipeServer::OpenHandler
+    // and with
+    // SbieDrv::openPipesCM
     //
 
     if (PipeType == TYPE_NAMED_PIPE) {
@@ -633,7 +677,7 @@ _FX NTSTATUS File_NtCreateFilePipe(
         status == STATUS_OBJECT_NAME_NOT_FOUND ||
         status == STATUS_OBJECT_PATH_NOT_FOUND) {
 
-        USHORT monflag = MONITOR_PIPE;
+        ULONG monflag = MONITOR_PIPE;
         if (status == STATUS_ACCESS_DENIED)
             monflag |= MONITOR_DENY;
         SbieApi_MonitorPut(monflag, TruePath);
@@ -1237,7 +1281,7 @@ _FX NTSTATUS File_WaitNamedPipe(
 
             if (mp_flags) {
 
-                USHORT monflag = MONITOR_PIPE;
+                ULONG monflag = MONITOR_PIPE;
                 if (PATH_IS_CLOSED(mp_flags))
                     monflag |= MONITOR_DENY;
                 else
@@ -1312,6 +1356,8 @@ _FX NTSTATUS File_NtDeviceIoControlFile(
     OUT PVOID OutputBuffer OPTIONAL,
     IN ULONG OutputBufferLength)
 {
+    NTSTATUS status;
+
     //
     // check if this is an IOCTL that we want to deny
     //
@@ -1322,7 +1368,6 @@ _FX NTSTATUS File_NtDeviceIoControlFile(
         ULONG LastError;
         THREAD_DATA *TlsData = Dll_GetTlsData(&LastError);
 
-        NTSTATUS status;
         WCHAR *TruePath;
         WCHAR *CopyPath;
 
@@ -1367,8 +1412,10 @@ _FX NTSTATUS File_NtDeviceIoControlFile(
     // otherwise
     //
 
-    return __sys_NtDeviceIoControlFile(
+    status = __sys_NtDeviceIoControlFile(
         FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock,
         IoControlCode, InputBuffer, InputBufferLength,
         OutputBuffer, OutputBufferLength);
+
+    return status;
 }

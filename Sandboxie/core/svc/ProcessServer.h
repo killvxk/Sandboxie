@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -34,6 +35,10 @@ public:
 
     ProcessServer(PipeServer *pipeServer);
 
+    static BOOL RunSandboxedSetDacl(HANDLE CallerProcessHandle, HANDLE NewTokenHandle, DWORD AccessMask, bool useUserSID, HANDLE idProcess = NULL);
+    static BOOL RunSandboxedStripPrivilege(HANDLE NewTokenHandle, LPCWSTR lpName);
+    static BOOL RunSandboxedStripPrivileges(HANDLE NewTokenHandle);
+
 protected:
 
     static MSG_HEADER *Handler(void *_this, MSG_HEADER *msg);
@@ -46,7 +51,7 @@ protected:
 
     MSG_HEADER *KillAllHandler(HANDLE CallerProcessId, MSG_HEADER *msg);
 
-    NTSTATUS KillAllHelper(const WCHAR *BoxName, ULONG SessionId);
+    NTSTATUS KillAllHelper(const WCHAR *BoxName, ULONG SessionId, BOOLEAN TerminateJob = FALSE);
 
     MSG_HEADER *SetDeviceMap(HANDLE CallerProcessId, MSG_HEADER *msg);
 
@@ -60,22 +65,17 @@ protected:
     WCHAR *RunSandboxedCopyString(MSG_HEADER *msg, ULONG ofs, ULONG len);
     HANDLE RunSandboxedGetToken(
             HANDLE CallerProcessHandle, bool CallerInSandbox,
-            const WCHAR *BoxName, ULONG idProcess);
-    BOOL RunSandboxedSetDacl(
-            HANDLE CallerProcessHandle, HANDLE NewTokenHandle, DWORD AccessMask, bool useUserSID);
+            const WCHAR *BoxName, const WCHAR* cmd);
     BOOL RunSandboxedStartProcess(
             HANDLE PrimaryTokenHandle, LONG_PTR BoxNameOrModelPid,
-            ULONG CallerProcessId,
-            WCHAR *cmd, const WCHAR *dir, WCHAR *env, ULONG *crflags,
+            WCHAR *cmd, const WCHAR *dir, WCHAR *env, 
+            BOOL* FilterHandles, ULONG crflags,
             STARTUPINFO *si, PROCESS_INFORMATION *pi);
     WCHAR *RunSandboxedComServer(ULONG CallerProcessId);
     BOOL RunSandboxedDupAndCloseHandles(
-            HANDLE CallerProcessHandle, ULONG crflags,
+            HANDLE CallerProcessHandle, BOOL FilterHandles, ULONG crflags,
             PROCESS_INFORMATION *piInput, PROCESS_INFORMATION *piReply);
 
-protected:
-
-    CRITICAL_SECTION m_RunSandboxed_CritSec;
 
 };
 

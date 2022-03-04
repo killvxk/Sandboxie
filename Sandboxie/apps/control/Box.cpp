@@ -77,8 +77,8 @@ static const CString _NotifyInternetAccessDenied(
 static const CString _NotifyStartRunAccessDenied(
                                             L"NotifyStartRunAccessDenied");
 
-static const WCHAR *BorderColor_off = L",off";
-static const WCHAR *BorderColor_ttl = L",ttl";
+//static const WCHAR *BorderColor_off = L",off";
+//static const WCHAR *BorderColor_ttl = L",ttl";
 
 
 //---------------------------------------------------------------------------
@@ -226,18 +226,28 @@ void CBox::SetDefaultSettings()
     int cfglvl;
     ini.GetNum(m_name, _ConfigLevel, cfglvl);
 
-    if (cfglvl >= 7)
+    if (cfglvl >= 9)
         return;
 
     BOOL ok = TRUE;
 
     if (cfglvl >= 1) {
 
-        ok = ini.SetNum(m_name, _ConfigLevel, 7);
+        ok = ini.SetNum(m_name, _ConfigLevel, 9);
 
         if (ok) {
 
-            if (cfglvl == 6) {
+            if (cfglvl == 8) {
+
+                CAppPage::SetDefaultTemplates9(*this);
+
+            }
+            else if (cfglvl == 7) {
+
+                CAppPage::SetDefaultTemplates8(*this);
+
+            }
+            else if (cfglvl == 6) {
 
                 CAppPage::SetDefaultTemplates7(*this);
 
@@ -250,7 +260,7 @@ void CBox::SetDefaultSettings()
         goto done;
     }
 
-    ok = ini.SetNum(m_name, _ConfigLevel, 7);
+    ok = ini.SetNum(m_name, _ConfigLevel, 9);
 
     if (ok)
     {
@@ -263,8 +273,8 @@ void CBox::SetDefaultSettings()
 
     if (ok)
         ok = AddOrRemoveQuickRecoveryFolder(L"%Desktop%",    TRUE);
-    if (ok)
-        ok = AddOrRemoveQuickRecoveryFolder(L"%Favorites%",  TRUE);
+    //if (ok)
+    //    ok = AddOrRemoveQuickRecoveryFolder(L"%Favorites%",  TRUE);
     if (ok)
         ok = AddOrRemoveQuickRecoveryFolder(L"%Personal%",   TRUE);
     if (ok && CMyApp::m_WindowsVista) {
@@ -273,7 +283,7 @@ void CBox::SetDefaultSettings()
     }
 
     if (ok)
-        ok = SetBorder(TRUE, RGB(255,255,0), TRUE);
+        ok = SetBorder(TRUE, RGB(255,255,0), TRUE, 6);
 
 done:
 
@@ -1221,9 +1231,9 @@ BOOL CBox::SetBoxNameTitle(UCHAR enabled)
 //---------------------------------------------------------------------------
 
 
-BOOL CBox::GetBorder(COLORREF *color, BOOL *title)
+BOOL CBox::GetBorder(COLORREF *color, BOOL *title, int* width)
 {
-    *color = RGB(255,255,0);
+    /*color = RGB(255,255,0);
     *title = FALSE;
 
     CString text;
@@ -1248,7 +1258,9 @@ BOOL CBox::GetBorder(COLORREF *color, BOOL *title)
     } else if (text.Mid(7).CompareNoCase(BorderColor_off) == 0)
         return FALSE;
 
-    return TRUE;
+    return TRUE;*/
+
+    return SbieDll_GetBorderColor(m_name, color, title, width);
 }
 
 
@@ -1257,14 +1269,17 @@ BOOL CBox::GetBorder(COLORREF *color, BOOL *title)
 //---------------------------------------------------------------------------
 
 
-BOOL CBox::SetBorder(BOOL enabled, COLORREF color, BOOL title)
+BOOL CBox::SetBorder(BOOL enabled, COLORREF color, BOOL title, int width)
 {
     WCHAR text[32];
-    swprintf(text, L"#%06X", color);
+    swprintf(text, L"#%06X,%s,%d", color, !enabled ? L"off" : (title ? L"ttl" : L"on"), width);
+
+    /*swprintf(text, L"#%06X", color);
     if (title)
         wcscat(text, BorderColor_ttl);
     if (! enabled)
-        wcscat(text, BorderColor_off);
+        wcscat(text, BorderColor_off);*/
+    
     CSbieIni &ini = CSbieIni::GetInstance();
     return ini.SetText(m_name, _BorderColor, text);
 }

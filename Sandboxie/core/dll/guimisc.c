@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -86,6 +87,14 @@ static LONG Gui_ChangeDisplaySettingsExW(
     DWORD dwflags, void *lParam);
 
 
+static LONG Gui_GetRawInputDeviceInfoA(
+    _In_opt_ HANDLE hDevice, _In_ UINT uiCommand,
+    _Inout_ LPVOID pData, _Inout_ PUINT pcbSize);
+
+static LONG Gui_GetRawInputDeviceInfoW(
+    _In_opt_ HANDLE hDevice, _In_ UINT uiCommand,
+    _Inout_ LPVOID pData, _Inout_ PUINT pcbSize);
+
 //---------------------------------------------------------------------------
 
 
@@ -114,6 +123,16 @@ typedef int (*P_ReleaseDC)(
 
 static P_GetUserObjectInformationW __sys_GetUserObjectInformationW = NULL;
 
+#ifndef _DPI_AWARENESS_CONTEXTS_
+struct DPI_AWARENESS_CONTEXT__ { int unused; };
+typedef DPI_AWARENESS_CONTEXT__ *DPI_AWARENESS_CONTEXT;
+#endif
+
+typedef DPI_AWARENESS_CONTEXT (WINAPI *P_GetThreadDpiAwarenessContext)(
+    VOID);
+
+static P_GetThreadDpiAwarenessContext __sys_GetThreadDpiAwarenessContext = NULL;
+
 
 //---------------------------------------------------------------------------
 // Variables
@@ -138,16 +157,19 @@ _FX BOOLEAN Gui_InitMisc(void)
 {
     if (! Gui_OpenAllWinClasses) {
 
-        SBIEDLL_HOOK_GUI(GetWindow);
-        SBIEDLL_HOOK_GUI(GetParent);
+        
         SBIEDLL_HOOK_GUI(SetParent);
-        SBIEDLL_HOOK_GUI(SetForegroundWindow);
-        SBIEDLL_HOOK_GUI(MonitorFromWindow);
-
-        SBIEDLL_HOOK_GUI(SetCursor);
-        SBIEDLL_HOOK_GUI(GetIconInfo);
-        SBIEDLL_HOOK_GUI(SetCursorPos);
-        SBIEDLL_HOOK_GUI(ClipCursor);
+        if (Gui_UseProxyService) {
+            SBIEDLL_HOOK_GUI(GetWindow);
+            SBIEDLL_HOOK_GUI(GetParent);
+            SBIEDLL_HOOK_GUI(SetForegroundWindow);
+            SBIEDLL_HOOK_GUI(MonitorFromWindow);
+        
+            SBIEDLL_HOOK_GUI(SetCursor);
+            SBIEDLL_HOOK_GUI(GetIconInfo);
+            SBIEDLL_HOOK_GUI(SetCursorPos);
+            SBIEDLL_HOOK_GUI(ClipCursor);
+        }
         SBIEDLL_HOOK_GUI(SwapMouseButton);
         SBIEDLL_HOOK_GUI(SetDoubleClickTime);
 
@@ -165,6 +187,9 @@ _FX BOOLEAN Gui_InitMisc(void)
         }
     }
 
+	if (!Gui_UseProxyService)
+		return TRUE;
+
     SBIEDLL_HOOK_GUI(OpenClipboard);
     SBIEDLL_HOOK_GUI(CloseClipboard);
     SBIEDLL_HOOK_GUI(GetClipboardData);
@@ -173,7 +198,7 @@ _FX BOOLEAN Gui_InitMisc(void)
     // Chinese instant messenger QQ.exe (aka TM.exe) uses OpenInputDesktop,
     // GetThreadDesktop and GetUserObjectInformation to determine if the
     // desktop is locked, and if OpenInputDesktop fails, it assumes lock.
-    // fortunately it is enough to hook just OpenInputDesktop to fix this
+    // Fortunately it is enough to hook just OpenInputDesktop to fix this
     //
     // Google Chrome also uses OpenInputDesktop and GetUserObjectInformation
     // to check if the desktop is locked, and other programs might as well
@@ -211,6 +236,12 @@ _FX BOOLEAN Gui_InitMisc(void)
         SBIEDLL_HOOK_GUI(ChangeDisplaySettingsExA);
         SBIEDLL_HOOK_GUI(ChangeDisplaySettingsExW);
     }
+
+    SBIEDLL_HOOK_GUI(GetRawInputDeviceInfoA);
+    SBIEDLL_HOOK_GUI(GetRawInputDeviceInfoW);
+
+	__sys_GetThreadDpiAwarenessContext = (P_GetThreadDpiAwarenessContext)
+		Ldr_GetProcAddrNew(DllName_user32, L"GetThreadDpiAwarenessContext","GetThreadDpiAwarenessContext");
 
     return TRUE;
 }
@@ -296,6 +327,7 @@ _FX BOOL Gui_ClipCursor(const RECT *lpRect)
         memzero(&req.rect, sizeof(req.rect));
         Gui_ClipCursorActive = FALSE;
     }
+    req.dpi_awareness_ctx = __sys_GetThreadDpiAwarenessContext ? (LONG64)(LONG_PTR)__sys_GetThreadDpiAwarenessContext() : 0;
 
     rpl = Gui_CallProxy(&req, sizeof(req), sizeof(ULONG));
     if (rpl) {
@@ -447,6 +479,7 @@ _FX BOOL Gui_SetCursorPos(int x, int y)
     req.error = GetLastError();
     req.x = x;
     req.y = y;
+    req.dpi_awareness_ctx = __sys_GetThreadDpiAwarenessContext ? (LONG64)(LONG_PTR)__sys_GetThreadDpiAwarenessContext() : 0;
     rpl = Gui_CallProxyEx(&req, sizeof(req), sizeof(ULONG), TRUE);
     if (rpl) {
         retval = rpl->retval;
@@ -1083,48 +1116,60 @@ _FX void Gui_GetClipboardData_MF(void *buf, ULONG sz, ULONG fmt)
 
 
 //---------------------------------------------------------------------------
-// Gui_ChangeDisplaySettingsExA
+// Gui_ChangeDisplaySettingsEx_impl
 //---------------------------------------------------------------------------
 
 
-_FX LONG Gui_ChangeDisplaySettingsExA(
-    void *lpszDeviceName, void *lpDevMode, HWND hwnd,
-    DWORD dwflags, void *lParam)
+_FX LONG Gui_ChangeDisplaySettingsEx_impl(
+    void* lpszDeviceName, void* lpDevMode, HWND hwnd,
+    DWORD dwflags, void* lParam, BOOLEAN bUnicode)
 {
     GUI_CHANGE_DISPLAY_SETTINGS_REQ req;
-    GUI_CHANGE_DISPLAY_SETTINGS_RPL *rpl;
+    GUI_CHANGE_DISPLAY_SETTINGS_RPL* rpl;
 
     if ((dwflags & ~(CDS_UNKNOWNFLAG | CDS_RESET | CDS_FULLSCREEN | CDS_TEST)) || lParam || hwnd) {
-        SbieApi_Log(2205, L"ChangeDisplaySettingsExA %08X", dwflags);
+        SbieApi_Log(2205, L"ChangeDisplaySettingsEx %08X", dwflags);
         SetLastError(ERROR_ACCESS_DENIED);
         return DISP_CHANGE_FAILED;
     }
 
     req.msgid = GUI_CHANGE_DISPLAY_SETTINGS;
     req.flags = dwflags;
-    req.unicode = FALSE;
+    req.unicode = bUnicode;
 
     if (lpszDeviceName) {
-        UCHAR *name = (UCHAR *)req.devname;
-        ULONG len = strlen(lpszDeviceName);
-        if (len > 62)
-            len = 62;
-        memcpy(name, lpszDeviceName, len);
-        name[len] = L'\0';
+        if (bUnicode) {
+            WCHAR* name = (WCHAR*)req.devname;
+            ULONG len = wcslen(lpszDeviceName);
+            if (len > 62)
+                len = 62;
+            wmemcpy(name, lpszDeviceName, len);
+            name[len] = L'\0';
+        }
+        else {
+            UCHAR* name = (UCHAR*)req.devname;
+            ULONG len = strlen(lpszDeviceName);
+            if (len > 62)
+                len = 62;
+            memcpy(name, lpszDeviceName, len);
+            name[len] = L'\0';
+        }
         req.have_devname = TRUE;
-    } else {
+    }
+    else {
         memzero(req.devname, sizeof(req.devname));
         req.have_devname = FALSE;
     }
 
     if (lpDevMode) {
-        memcpy(&req.devmode, lpDevMode, sizeof(DEVMODEA));
+        memcpy(&req.devmode, lpDevMode, bUnicode ? sizeof(DEVMODEW) : sizeof(DEVMODEA));
         req.have_devmode = TRUE;
-    } else
+    }
+    else
         req.have_devmode = FALSE;
 
     rpl = Gui_CallProxy(&req, sizeof(req), sizeof(*rpl));
-    if (! rpl)
+    if (!rpl)
         return DISP_CHANGE_FAILED;
     else {
         ULONG error = rpl->error;
@@ -1133,6 +1178,18 @@ _FX LONG Gui_ChangeDisplaySettingsExA(
         SetLastError(error);
         return retval;
     }
+}
+
+//---------------------------------------------------------------------------
+// Gui_ChangeDisplaySettingsExA
+//---------------------------------------------------------------------------
+
+
+_FX LONG Gui_ChangeDisplaySettingsExA(
+    void *lpszDeviceName, void *lpDevMode, HWND hwnd,
+    DWORD dwflags, void *lParam)
+{
+    return Gui_ChangeDisplaySettingsEx_impl(lpszDeviceName, lpDevMode, hwnd, dwflags, lParam, FALSE);
 }
 
 
@@ -1145,48 +1202,90 @@ _FX LONG Gui_ChangeDisplaySettingsExW(
     void *lpszDeviceName, void *lpDevMode, HWND hwnd,
     DWORD dwflags, void *lParam)
 {
-    GUI_CHANGE_DISPLAY_SETTINGS_REQ req;
-    GUI_CHANGE_DISPLAY_SETTINGS_RPL *rpl;
+    return Gui_ChangeDisplaySettingsEx_impl(lpszDeviceName, lpDevMode, hwnd, dwflags, lParam, TRUE);
+}
 
-    if ((dwflags & ~(CDS_UNKNOWNFLAG | CDS_RESET | CDS_FULLSCREEN | CDS_TEST)) || lParam || hwnd) {
-        SbieApi_Log(2205, L"ChangeDisplaySettingsExW %08X", dwflags);
-        SetLastError(ERROR_ACCESS_DENIED);
-        return DISP_CHANGE_FAILED;
-    }
 
-    req.msgid = GUI_CHANGE_DISPLAY_SETTINGS;
-    req.flags = dwflags;
-    req.unicode = TRUE;
+//---------------------------------------------------------------------------
+// Gui_GetRawInputDeviceInfo_impl
+//---------------------------------------------------------------------------
 
-    if (lpszDeviceName) {
-        WCHAR *name = (WCHAR *)req.devname;
-        ULONG len = wcslen(lpszDeviceName);
-        if (len > 62)
-            len = 62;
-        wmemcpy(name, lpszDeviceName, len);
-        name[len] = L'\0';
-        req.have_devname = TRUE;
-    } else {
-        memzero(req.devname, sizeof(req.devname));
-        req.have_devname = FALSE;
-    }
 
-    if (lpDevMode) {
-        memcpy(&req.devmode, lpDevMode, sizeof(DEVMODEW));
-        req.have_devmode = TRUE;
+_FX LONG Gui_GetRawInputDeviceInfo_impl(
+    _In_opt_ HANDLE hDevice, _In_ UINT uiCommand,
+    _Inout_ LPVOID pData, _Inout_ PUINT pcbSize, BOOLEAN bUnicode)
+{
+    GUI_GET_RAW_INPUT_DEVICE_INFO_REQ* req;
+    GUI_GET_RAW_INPUT_DEVICE_INFO_RPL* rpl;
+
+    // Note: pcbSize seems to be in tchars not in bytes!
+    ULONG lenData = 0;
+    if (pData && pcbSize)
+        lenData = (*pcbSize) * (bUnicode ? sizeof(WCHAR) : 1);
+
+    ULONG reqSize = sizeof(GUI_GET_RAW_INPUT_DEVICE_INFO_REQ) + lenData + 10;
+    req = Dll_Alloc(reqSize);
+
+    LPVOID reqData = (BYTE*)req + sizeof(GUI_GET_RAW_INPUT_DEVICE_INFO_REQ);
+
+    req->msgid = GUI_GET_RAW_INPUT_DEVICE_INFO;
+    req->hDevice = (ULONG64)hDevice;
+    req->uiCommand = uiCommand;
+    req->unicode = bUnicode;
+    if (lenData) {
+        memcpy(reqData, pData, lenData);
+        req->hasData = TRUE;
     } else
-        req.have_devmode = FALSE;
+        req->hasData = FALSE;
+    req->cbSize = pcbSize ? *pcbSize : -1;
 
-    rpl = Gui_CallProxy(&req, sizeof(req), sizeof(*rpl));
-    if (! rpl)
-        return DISP_CHANGE_FAILED;
+    rpl = Gui_CallProxy(req, reqSize, sizeof(*rpl));
+
+    Dll_Free(req);
+
+    if (!rpl)
+        return -1;
     else {
         ULONG error = rpl->error;
         ULONG retval = rpl->retval;
+
+        if (pcbSize)
+            *pcbSize = rpl->cbSize;
+        if (lenData) {
+            LPVOID rplData = (BYTE*)rpl + sizeof(GUI_GET_RAW_INPUT_DEVICE_INFO_RPL);
+            memcpy(pData, rplData, lenData);
+        }
+
         Dll_Free(rpl);
         SetLastError(error);
         return retval;
     }
+}
+
+
+//---------------------------------------------------------------------------
+// Gui_GetRawInputDeviceInfoA
+//---------------------------------------------------------------------------
+
+
+_FX LONG Gui_GetRawInputDeviceInfoA(
+    _In_opt_ HANDLE hDevice, _In_ UINT uiCommand,
+    _Inout_ LPVOID pData, _Inout_ PUINT pcbSize)
+{
+    return Gui_GetRawInputDeviceInfo_impl(hDevice, uiCommand, pData, pcbSize, FALSE);
+}
+
+
+//---------------------------------------------------------------------------
+// Gui_GetRawInputDeviceInfoW
+//---------------------------------------------------------------------------
+
+
+_FX LONG Gui_GetRawInputDeviceInfoW(
+    _In_opt_ HANDLE hDevice, _In_ UINT uiCommand,
+    _Inout_ LPVOID pData, _Inout_ PUINT pcbSize)
+{
+    return Gui_GetRawInputDeviceInfo_impl(hDevice, uiCommand, pData, pcbSize, TRUE);
 }
 
 
@@ -1231,6 +1330,11 @@ static P_ImmCreateContext       __sys_ImmCreateContext      = NULL;
 
 _FX BOOLEAN Gui_Init_IMM32(HMODULE module)
 {
+    // NoSbieDesk BEGIN
+    if (Dll_CompartmentMode || SbieApi_QueryConfBool(NULL, L"NoSandboxieDesktop", FALSE))
+        return TRUE;
+	// NoSbieDesk END
+
     __sys_ImmAssociateContext = (P_ImmAssociateContext)
                 GetProcAddress(module, "ImmAssociateContext");
 

@@ -246,7 +246,7 @@ _FX BOOLEAN Scm_DllHack(HMODULE module, const WCHAR *svcname)
     SERVICE_QUERY_RPL *rpl;
 
     //
-    // hack for Office 2010:  make sure osppsvc service is running
+    // hack:  make sure the given service is running
     //
 
     if (! module)
@@ -307,44 +307,4 @@ _FX BOOLEAN Scm_DWriteDll(HMODULE module)
     //
 
     return Scm_DllHack(module, L"FontCache");
-}
-
-
-//---------------------------------------------------------------------------
-// Scm_MsiDll
-//---------------------------------------------------------------------------
-
-
-_FX BOOLEAN Scm_MsiDll(HMODULE module)
-{
-    //
-    // MSI library unloading
-    //      XXX - Ldr module no longer does unload notifications
-    //            so we might rely on MsiCloseHandle instead
-    //
-
-    /* if (! module) {
-
-        if (Msi_ServerInUseEvent) {
-            CloseHandle(Msi_ServerInUseEvent);
-            Msi_ServerInUseEvent = FALSE;
-        }
-
-        return TRUE;
-    }*/
-
-    //
-    // indicate we are one more process that is using the MSI Server
-    //
-
-    if (Dll_ImageType != DLL_IMAGE_SANDBOXIE_RPCSS &&
-        Dll_ImageType != DLL_IMAGE_SANDBOXIE_DCOMLAUNCH) {
-
-        if ((! Msi_ServerInUseEvent) && (! Scm_IsMsiServer)) {
-            Msi_ServerInUseEvent = CreateEvent(
-                NULL, TRUE, FALSE, _MsiServerInUseEventName);
-        }
-    }
-
-    return TRUE;
 }

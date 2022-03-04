@@ -111,9 +111,9 @@ static HWND Gui_FindWindowExA(
 
 //---------------------------------------------------------------------------
 
-static void Gui_MonitorW(const WCHAR *clsnm, USHORT monflag, HWND hwnd);
+static void Gui_MonitorW(const WCHAR *clsnm, ULONG monflag, HWND hwnd);
 
-static void Gui_MonitorA(const UCHAR *clsnm, USHORT monflag, HWND hwnd);
+static void Gui_MonitorA(const UCHAR *clsnm, ULONG monflag, HWND hwnd);
 
 //---------------------------------------------------------------------------
 
@@ -163,6 +163,9 @@ P_D3D11CreateDevice D3D11CreateDevice = NULL;
 /*
 extern P_D3D11CreateDevice D3D11CreateDevice;
 */
+
+ULONGLONG GetTickCount64();
+
 //---------------------------------------------------------------------------
 // Variables
 //---------------------------------------------------------------------------
@@ -170,7 +173,7 @@ extern P_D3D11CreateDevice D3D11CreateDevice;
 
 static BOOLEAN Gui_D3D9_Loaded = FALSE;
 
-static ULONG Gui_GetShellWindow_LastTicks = 0;
+static ULONG64 Gui_GetShellWindow_LastTicks = 0;
 
 
 //---------------------------------------------------------------------------
@@ -186,10 +189,10 @@ _FX BOOLEAN Gui_InitEnum(void)
 
     if (! Gui_OpenAllWinClasses) {
 
-        if (! Gui_HookQueryWindow())
+        if (Gui_UseProxyService && !Gui_HookQueryWindow())
             return FALSE;
 
-        if (! Dll_SkipHook(L"enumwin")) {
+        if (Gui_UseProxyService && !Dll_SkipHook(L"enumwin")) {
 
             SBIEDLL_HOOK_GUI(EnumWindows);
             SBIEDLL_HOOK_GUI(EnumChildWindows);
@@ -197,7 +200,7 @@ _FX BOOLEAN Gui_InitEnum(void)
             SBIEDLL_HOOK_GUI(EnumDesktopWindows);
         }
 
-        if (! Dll_SkipHook(L"findwin")) {
+        if (!Dll_SkipHook(L"findwin")) {
 
             SBIEDLL_HOOK_GUI(FindWindowA);
             SBIEDLL_HOOK_GUI(FindWindowW);
@@ -222,6 +225,11 @@ _FX BOOLEAN Gui_InitEnum(void)
         }
     }
 
+	// NoSbieDesk BEGIN
+    if (Dll_CompartmentMode || SbieApi_QueryConfBool(NULL, L"NoSandboxieDesktop", FALSE))
+        return TRUE;
+	// NoSbieDesk END
+
     //
     // hook desktop APIs
     //
@@ -236,7 +244,8 @@ _FX BOOLEAN Gui_InitEnum(void)
     // raises an error when CreateDesktop is call.  This hook
     // is removed for chrome.  See advapi.c: AdvApi_GetSecurityInfo
 
-    if ((Dll_ImageType != DLL_IMAGE_GOOGLE_CHROME) &&
+    if (!Config_GetSettingsForImageName_bool(L"UseSbieWndStation", TRUE) && 
+        (Dll_ImageType != DLL_IMAGE_GOOGLE_CHROME) &&
         (Dll_ImageType != DLL_IMAGE_MOZILLA_FIREFOX)) {
         SBIEDLL_HOOK_GUI(CreateDesktopW);
         SBIEDLL_HOOK_GUI(CreateDesktopA);
@@ -245,7 +254,8 @@ _FX BOOLEAN Gui_InitEnum(void)
         SBIEDLL_HOOK_GUI(CreateWindowStationW);
         SBIEDLL_HOOK_GUI(CreateWindowStationA);
     }    
-return TRUE;
+
+    return TRUE;
 }
 
 
@@ -722,15 +732,15 @@ _FX HWND Gui_FindWindowW(
     WCHAR *clsnm;
     WCHAR *winnm;
     HWND hwndResult;
-    USHORT monflag = 0;
+    ULONG monflag = 0;
 
 #ifdef DEBUG_FINDWINDOW
     WCHAR txt[256];
 
     if (((ULONG_PTR)lpClassName & 0xFFFF0000) != 0)
-        Sbie_swprintf(txt, L"FindWindowW   - %s\n", lpClassName);
+        Sbie_snwprintf(txt, 256, L"FindWindowW   - %s\n", lpClassName);
     else
-        Sbie_swprintf(txt, L"FindWindowW   - %X\n", lpClassName);
+        Sbie_snwprintf(txt, 256, L"FindWindowW   - %X\n", lpClassName);
     OutputDebugString(txt);
 #endif
 
@@ -748,7 +758,7 @@ _FX HWND Gui_FindWindowW(
         }
     }
 
-    if (! hwndResult) {
+    if (Gui_UseProxyService && ! hwndResult) {
         hwndResult = Gui_FindWindowCommon(
                         'fw w', NULL, NULL, lpClassName, lpWindowName);
     }
@@ -762,7 +772,7 @@ _FX HWND Gui_FindWindowW(
         Gui_Free(clsnm);
 
 #ifdef DEBUG_FINDWINDOW
-    Sbie_swprintf(txt, L"FindWindowW   - Result HWND %X\n", hwndResult);
+    Sbie_snwprintf(txt, 256, L"FindWindowW   - Result HWND %X\n", hwndResult);
     OutputDebugString(txt);
 #endif
 
@@ -781,14 +791,14 @@ _FX HWND Gui_FindWindowA(
     UCHAR *clsnm;
     UCHAR *winnm;
     HWND hwndResult;
-    USHORT monflag = 0;
+    ULONG monflag = 0;
 
 #ifdef DEBUG_FINDWINDOW
     WCHAR txt[256];
     if (((ULONG_PTR)lpClassName & 0xFFFF0000) != 0)
-        Sbie_swprintf(txt, L"FindWindowA   - %S\n", lpClassName);
+        Sbie_snwprintf(txt, 256, L"FindWindowA   - %S\n", lpClassName);
     else
-        Sbie_swprintf(txt, L"FindWindowA   - %X\n", lpClassName);
+		Sbie_snwprintf(txt, 256, L"FindWindowA   - %X\n", lpClassName);
     OutputDebugString(txt);
 #endif
 
@@ -806,7 +816,7 @@ _FX HWND Gui_FindWindowA(
         }
     }
 
-    if (! hwndResult) {
+    if (Gui_UseProxyService && ! hwndResult) {
         hwndResult = Gui_FindWindowCommon(
                         'fw a', NULL, NULL, lpClassName, lpWindowName);
     }
@@ -820,7 +830,7 @@ _FX HWND Gui_FindWindowA(
         Gui_Free(clsnm);
 
 #ifdef DEBUG_FINDWINDOW
-    Sbie_swprintf(txt, L"FindWindowA   - Result HWND %X\n", hwndResult);
+	Sbie_snwprintf(txt, 256, L"FindWindowA   - Result HWND %X\n", hwndResult);
     OutputDebugString(txt);
 #endif
 
@@ -840,14 +850,14 @@ _FX HWND Gui_FindWindowExW(
     WCHAR *clsnm;
     WCHAR *winnm;
     HWND hwndResult;
-    USHORT monflag = 0;
+    ULONG monflag = 0;
 
 #ifdef DEBUG_FINDWINDOW
     WCHAR txt[256];
     if (((ULONG_PTR)lpClassName & 0xFFFF0000) != 0)
-        Sbie_swprintf(txt, L"FindWindowExW - %s\n", lpClassName);
+		Sbie_snwprintf(txt, 256, L"FindWindowExW - %s\n", lpClassName);
     else
-        Sbie_swprintf(txt, L"FindWindowExW - %X\n", lpClassName);
+		Sbie_snwprintf(txt, 256, L"FindWindowExW - %X\n", lpClassName);
     OutputDebugString(txt);
 #endif
 
@@ -867,7 +877,7 @@ _FX HWND Gui_FindWindowExW(
         }
     }
 
-    if (! hwndResult) {
+    if (Gui_UseProxyService && ! hwndResult) {
         hwndResult = Gui_FindWindowCommon(
             'fwxw', hwndParent, hwndChildAfter, lpClassName, lpWindowName);
     }
@@ -881,7 +891,7 @@ _FX HWND Gui_FindWindowExW(
         Gui_Free(clsnm);
 
 #ifdef DEBUG_FINDWINDOW
-    Sbie_swprintf(txt, L"FindWindowExW - Result HWND %X\n", hwndResult);
+	Sbie_snwprintf(txt, 256, L"FindWindowExW - Result HWND %X\n", hwndResult);
     OutputDebugString(txt);
 #endif
 
@@ -901,14 +911,14 @@ _FX HWND Gui_FindWindowExA(
     UCHAR *clsnm;
     UCHAR *winnm;
     HWND hwndResult;
-    USHORT monflag = 0;
+    ULONG monflag = 0;
 
 #ifdef DEBUG_FINDWINDOW
     WCHAR txt[256];
     if (((ULONG_PTR)lpClassName & 0xFFFF0000) != 0)
-        Sbie_swprintf(txt, L"FindWindowExA - %S\n", lpClassName);
+		Sbie_snwprintf(txt, 256, L"FindWindowExA - %S\n", lpClassName);
     else
-        Sbie_swprintf(txt, L"FindWindowExA - %X\n", lpClassName);
+		Sbie_snwprintf(txt, 256, L"FindWindowExA - %X\n", lpClassName);
     OutputDebugString(txt);
 #endif
 
@@ -928,7 +938,7 @@ _FX HWND Gui_FindWindowExA(
         }
     }
 
-    if (! hwndResult) {
+    if (Gui_UseProxyService && ! hwndResult) {
         hwndResult = Gui_FindWindowCommon(
             'fwxa', hwndParent, hwndChildAfter, lpClassName, lpWindowName);
     }
@@ -942,7 +952,7 @@ _FX HWND Gui_FindWindowExA(
         Gui_Free(clsnm);
 
 #ifdef DEBUG_FINDWINDOW
-    Sbie_swprintf(txt, L"FindWindowExA - Result HWND %X\n", hwndResult);
+	Sbie_snwprintf(txt, 256, L"FindWindowExA - Result HWND %X\n", hwndResult);
     OutputDebugString(txt);
 #endif
 
@@ -955,14 +965,14 @@ _FX HWND Gui_FindWindowExA(
 //---------------------------------------------------------------------------
 
 
-_FX void Gui_MonitorW(const WCHAR *clsnm, USHORT monflag, HWND hwnd)
+_FX void Gui_MonitorW(const WCHAR *clsnm, ULONG monflag, HWND hwnd)
 {
     WCHAR text[130];
     if (((ULONG_PTR)clsnm & (LONG_PTR)0xFFFF0000) != 0) {
         wcsncpy(text, Gui_UnCreateClassName(clsnm), 128);
         text[128] = L'\0';
     } else
-        Sbie_swprintf(text, L"#%d", PtrToUlong(clsnm) & 0xFFFF);
+        Sbie_snwprintf(text, 130, L"#%d", PtrToUlong(clsnm) & 0xFFFF);
     if ((! hwnd) && (! monflag))
         monflag |= MONITOR_DENY;
     SbieApi_MonitorPut(MONITOR_WINCLASS | monflag, text);
@@ -974,7 +984,7 @@ _FX void Gui_MonitorW(const WCHAR *clsnm, USHORT monflag, HWND hwnd)
 //---------------------------------------------------------------------------
 
 
-_FX void Gui_MonitorA(const UCHAR *clsnm, USHORT monflag, HWND hwnd)
+_FX void Gui_MonitorA(const UCHAR *clsnm, ULONG monflag, HWND hwnd)
 {
     if (((ULONG_PTR)clsnm & (LONG_PTR)0xFFFF0000) != 0) {
         NTSTATUS status;
@@ -1002,7 +1012,7 @@ _FX HWND Gui_GetShellWindow(void)
     static HWND _LastHwnd = NULL;
     HWND hwnd;
 
-    ULONG TicksNow = GetTickCount();
+    ULONG64 TicksNow = GetTickCount64();
     if (TicksNow - Gui_GetShellWindow_LastTicks <= 5000)
         return _LastHwnd;
     Gui_GetShellWindow_LastTicks = TicksNow;
@@ -1010,8 +1020,12 @@ _FX HWND Gui_GetShellWindow(void)
     hwnd = NULL;
     if (Gui_RenameClasses)
         hwnd = Gui_FindWindowW(_Progman, NULL);
-    if ((! hwnd) && Gui_D3D9_Loaded && __sys_FindWindowW)
-        hwnd = Gui_FindWindowCommon('fw w', NULL, NULL, _Progman, NULL);
+    if ((!hwnd) && Gui_D3D9_Loaded && __sys_FindWindowW) {
+        if (!Gui_UseProxyService)
+            hwnd = __sys_FindWindowW(_Progman, NULL);
+        else
+            hwnd = Gui_FindWindowCommon('fw w', NULL, NULL, _Progman, NULL); 
+    }
     _LastHwnd = hwnd;
     return hwnd;
 }

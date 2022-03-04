@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -160,6 +161,29 @@ _FX MSG_HEADER *SbieDll_CallServer(MSG_HEADER *req)
     UCHAR *buf, *msg_data;
     ULONG buf_len, send_len;
     MSG_HEADER *rpl;
+
+    if (Dll_SbieTrace) {
+        WCHAR dbg[1024];
+        extern const wchar_t* Trace_SbieSvcFunc2Str(ULONG func);
+        extern const wchar_t* Trace_SbieGuiFunc2Str(ULONG func);
+        switch (req->msgid) {
+            //case MSGID_QUEUE:
+        case MSGID_QUEUE_CREATE: Sbie_snwprintf(dbg, 1024, L"SbieDll_CallServer: %s queue create %s", Dll_ImageName, ((QUEUE_CREATE_REQ*)req)->queue_name); break;
+        case MSGID_QUEUE_GETREQ: Sbie_snwprintf(dbg, 1024, L"SbieDll_CallServer: %s queue getreq %s", Dll_ImageName, ((QUEUE_GETREQ_REQ*)req)->queue_name); break;
+        case MSGID_QUEUE_PUTRPL: Sbie_snwprintf(dbg, 1024, L"SbieDll_CallServer: %s queue putrpl %s", Dll_ImageName, ((QUEUE_PUTRPL_REQ*)req)->queue_name); break;
+        case MSGID_QUEUE_PUTREQ: 
+            if (wcsstr(((QUEUE_PUTREQ_REQ*)req)->queue_name, L"*GUIPROXY_") != NULL)
+                Sbie_snwprintf(dbg, 1024, L"SbieDll_CallServer: %s queue putreq %s %s", Dll_ImageName, ((QUEUE_PUTREQ_REQ*)req)->queue_name, Trace_SbieGuiFunc2Str(*((ULONG*)((QUEUE_PUTREQ_REQ*)req)->data))); 
+            else
+                Sbie_snwprintf(dbg, 1024, L"SbieDll_CallServer: %s queue putreq %s %d", Dll_ImageName, ((QUEUE_PUTREQ_REQ*)req)->queue_name, *((ULONG*)((QUEUE_PUTREQ_REQ*)req)->data)); 
+            break;
+        case MSGID_QUEUE_GETRPL: Sbie_snwprintf(dbg, 1024, L"SbieDll_CallServer: %s queue getrpl %s", Dll_ImageName, ((QUEUE_GETRPL_REQ*)req)->queue_name); break;
+            //case MSGID_QUEUE_NOTIFICATION:
+        //default: Sbie_snwprintf(dbg, 1024, L"SbieDll_CallServer: %s 0x%04x", Dll_ImageName, req->msgid);
+        default: Sbie_snwprintf(dbg, 1024, L"SbieDll_CallServer: %s %s", Dll_ImageName, Trace_SbieSvcFunc2Str(req->msgid));
+        }
+        SbieApi_MonitorPut2(MONITOR_OTHER | MONITOR_TRACE, dbg, FALSE);
+    }
 
     //
     // connect to the service API port.  note that we don't issue
@@ -323,6 +347,78 @@ _FX MSG_HEADER *SbieDll_CallServer(MSG_HEADER *req)
 
     memzero(buf, 8);
     return rpl;
+}
+
+
+//---------------------------------------------------------------------------
+// SbieDll_CallServerQueue
+//---------------------------------------------------------------------------
+
+
+_FX void *SbieDll_CallServerQueue(const WCHAR* queue, void *req, ULONG req_len, ULONG rpl_min_len)
+{
+	//static ULONG _Ticks = 0;
+	//static ULONG _Ticks1 = 0;
+	WCHAR QueueName[64];
+	NTSTATUS status;
+	ULONG req_id;
+	ULONG data_len;
+	void *data;
+	HANDLE event;
+
+	//ULONG Ticks0 = GetTickCount();
+
+	/*if (1) {
+		WCHAR txt[128];
+		Sbie_snwprintf(txt, 128, L"Request command is %08X\n", *(ULONG *)req);
+		OutputDebugString(txt);
+	}*/
+
+	Sbie_snwprintf(QueueName, 64, L"*%s_%08X", queue, Dll_SessionId);
+
+	status = SbieDll_QueuePutReq(QueueName, req, req_len, &req_id, &event);
+	if (NT_SUCCESS(status)) {
+
+		if (WaitForSingleObject(event, 60 * 1000) != 0)
+			status = STATUS_TIMEOUT;
+
+		CloseHandle(event);
+	}
+
+	if (status == 0) {
+
+		status = SbieDll_QueueGetRpl(QueueName, req_id, &data, &data_len);
+
+		if (NT_SUCCESS(status)) {
+
+			if (data_len >= sizeof(ULONG) && *(ULONG *)data) {
+
+				status = *(ULONG *)data;
+
+			}
+			else if (data_len >= rpl_min_len) {
+
+				/*_Ticks += GetTickCount() - Ticks0;
+				if (_Ticks > _Ticks1 + 1000) {
+					WCHAR txt[128];
+					Sbie_snwprintf(txt, 128, L"Already spent %d ticks in gui\n", _Ticks);
+					OutputDebugString(txt);
+					_Ticks1 = _Ticks;
+				}*/
+
+				return data;
+
+			}
+			else
+				status = STATUS_INFO_LENGTH_MISMATCH;
+
+			Dll_Free(data);
+		}
+	}
+
+	SbieApi_Log(2203, L"%S - %S [%08X]", QueueName, Dll_ImageName, status);
+	SetLastError(ERROR_SERVER_DISABLED);
+	return NULL;
 }
 
 
@@ -636,6 +732,8 @@ _FX ULONG SbieDll_UpdateConf(
     else
         req->password[0] = L'\0';
 
+    req->refresh = TRUE;
+
     wcscpy(req->section, Section);
     wcscpy(req->setting, Setting);
     if (Value)
@@ -650,6 +748,60 @@ _FX ULONG SbieDll_UpdateConf(
         status = STATUS_INSUFFICIENT_RESOURCES;
     else {
         status = rpl->status;
+        Dll_Free(rpl);
+    }
+
+    Dll_Free(req);
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// SbieDll_QueryConf
+//---------------------------------------------------------------------------
+
+
+_FX ULONG SbieDll_QueryConf(const WCHAR *Section, const WCHAR *Setting,
+    ULONG setting_index, WCHAR *out_buffer, ULONG buffer_len)
+{
+    SBIE_INI_SETTING_REQ *req;
+    SBIE_INI_SETTING_RPL *rpl;
+    ULONG RequestLen;
+    ULONG status;
+
+    if ((! Section) || (! Setting))
+        return STATUS_INVALID_PARAMETER;
+
+    RequestLen = sizeof(SBIE_INI_SETTING_REQ);
+    req = Dll_Alloc(RequestLen);
+    if (! req)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    req->h.length = RequestLen;
+    req->h.msgid  = MSGID_SBIE_INI_GET_SETTING;
+    
+    req->password[0] = L'\0';
+
+    req->refresh = FALSE;
+
+    wcscpy(req->section, Section);
+    wcscpy(req->setting, Setting);
+    req->value[0] = L'\0';
+    req->value_len = wcslen(req->value);
+
+    rpl = (SBIE_INI_SETTING_RPL *)SbieDll_CallServer(&req->h);
+
+    if (! rpl)
+        status = STATUS_INSUFFICIENT_RESOURCES;
+    else {
+        status = rpl->h.status;
+        if (NT_SUCCESS(status)) {
+            if (rpl->value_len > buffer_len)
+                status = STATUS_BUFFER_TOO_SMALL;
+            else
+                memcpy(out_buffer, rpl->value, rpl->value_len);
+        }
+
         Dll_Free(rpl);
     }
 
@@ -763,3 +915,4 @@ _FX BOOL SbieDll_RunSandboxed(
     SetLastError(err);
     return ok;
 }
+

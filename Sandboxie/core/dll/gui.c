@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -29,6 +30,13 @@
 #include "core/drv/api_defs.h"
 #include <stdio.h>
 #include <psapi.h>
+
+//---------------------------------------------------------------------------
+// Variables
+//---------------------------------------------------------------------------
+
+
+BOOLEAN Gui_UseProxyService = TRUE;
 
 
 //---------------------------------------------------------------------------
@@ -247,7 +255,7 @@ static HWND Gui_CreateWindowExW(
     LPVOID lpParam);
 
 static BOOLEAN Gui_CanForwardMsg(
-    HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+    HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam/*, LRESULT* plResult*/);
 
 static LRESULT Gui_DefWindowProcA(
     HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -355,6 +363,17 @@ _FX BOOLEAN Gui_Init(HMODULE module)
     if (! Gdi_InitZero())       // only if Gdi_Init was not called yet
         return FALSE;
 
+    // NoSbieDesk BEGIN
+
+    //
+    // Sandboxie is routing many gui related things through teh service, 
+    // when we operate in app mode we dont need to do that hence
+    // disable the use of the gui proxy
+    //
+
+    Gui_UseProxyService = !Dll_CompartmentMode && !SbieApi_QueryConfBool(NULL, L"NoSandboxieDesktop", FALSE);
+    // NoSbieDesk END
+
     GUI_IMPORT___(GetWindowThreadProcessId);
     GUI_IMPORT___(SetThreadDesktop);
     GUI_IMPORT___(SwitchDesktop);
@@ -391,8 +410,14 @@ _FX BOOLEAN Gui_Init(HMODULE module)
     GUI_IMPORT_AW(RegisterClipboardFormat);
     GUI_IMPORT___(GetClipboardData);
 
+    GUI_IMPORT___(GetRawInputDeviceInfoA);
+    GUI_IMPORT___(GetRawInputDeviceInfoW);
+    
     GUI_IMPORT___(ExitWindowsEx);
     GUI_IMPORT___(EndTask);
+    // NoSbieCons BEGIN
+    if (!Dll_CompartmentMode && !SbieApi_QueryConfBool(NULL, L"NoSandboxieConsole", FALSE))
+	// NoSbieCons END
     if (Dll_OsBuild >= 8400) {
         GUI_IMPORT___(ConsoleControl);
     }
@@ -523,15 +548,18 @@ import_fail:
         ok = Gui_InitMsg();
 
     if (ok)
-        ok = Gui_InitWinHooks();
-
-    if (ok)
         ok = Gui_InitDlgTmpl();
 
     if (ok)
         ok = Gui_Init3();
 
-    SBIEDLL_HOOK_GUI(AttachThreadInput);
+    if (Gui_UseProxyService) {
+
+        if (ok)
+            ok = Gui_InitWinHooks();
+
+        SBIEDLL_HOOK_GUI(AttachThreadInput);
+    }
 
     return ok;
 }
@@ -546,11 +574,15 @@ _FX BOOLEAN Gui_Init2(void)
 {
     SBIEDLL_HOOK_GUI(ExitWindowsEx);
     SBIEDLL_HOOK_GUI(EndTask);
+    // NoSbieCons BEGIN
+    if (!Dll_CompartmentMode && !SbieApi_QueryConfBool(NULL, L"NoSandboxieConsole", FALSE))
+	// NoSbieCons END
     if (__sys_ConsoleControl) {
         SBIEDLL_HOOK_GUI(ConsoleControl);
     }
 
-    if (Gui_RenameClasses) {
+    //if (Gui_RenameClasses) {
+    if (! Dll_SkipHook(L"createwin")) {
 
         SBIEDLL_HOOK_GUI(CreateWindowExA);
         SBIEDLL_HOOK_GUI(CreateWindowExW);
@@ -576,20 +608,26 @@ _FX BOOLEAN Gui_Init2(void)
     if (! Gui_OpenAllWinClasses) {
 
         SBIEDLL_HOOK_GUI(UserHandleGrantAccess);
-        SBIEDLL_HOOK_GUI(IsWindow);
-        SBIEDLL_HOOK_GUI(IsWindowEnabled);
-        SBIEDLL_HOOK_GUI(IsWindowVisible);
-        SBIEDLL_HOOK_GUI(IsWindowUnicode);
-        SBIEDLL_HOOK_GUI(IsIconic);
-        SBIEDLL_HOOK_GUI(IsZoomed);
+
+        if(Gui_UseProxyService) {
+            SBIEDLL_HOOK_GUI(IsWindow);
+            SBIEDLL_HOOK_GUI(IsWindowEnabled);
+            SBIEDLL_HOOK_GUI(IsWindowVisible);
+            SBIEDLL_HOOK_GUI(IsWindowUnicode);
+            SBIEDLL_HOOK_GUI(IsIconic);
+            SBIEDLL_HOOK_GUI(IsZoomed);
+        }
+
         SBIEDLL_HOOK_GUI(MoveWindow);
         SBIEDLL_HOOK_GUI(SetWindowPos);
-        SBIEDLL_HOOK_GUI(MapWindowPoints);
-        SBIEDLL_HOOK_GUI(ClientToScreen);
-        SBIEDLL_HOOK_GUI(ScreenToClient);
-        SBIEDLL_HOOK_GUI(GetClientRect);
-        SBIEDLL_HOOK_GUI(GetWindowRect);
-        SBIEDLL_HOOK_GUI(GetWindowInfo);
+        if (Gui_UseProxyService) {
+            SBIEDLL_HOOK_GUI(MapWindowPoints);
+            SBIEDLL_HOOK_GUI(ClientToScreen);
+            SBIEDLL_HOOK_GUI(ScreenToClient);
+            SBIEDLL_HOOK_GUI(GetClientRect);
+            SBIEDLL_HOOK_GUI(GetWindowRect);
+            SBIEDLL_HOOK_GUI(GetWindowInfo);
+        }
         SBIEDLL_HOOK_GUI(AnimateWindow);
         SBIEDLL_HOOK_GUI(WaitForInputIdle);
         SBIEDLL_HOOK_GUI(ActivateKeyboardLayout);
@@ -791,6 +829,11 @@ _FX BOOLEAN Gui_ConnectToWindowStationAndDesktop(HMODULE User32)
     ULONG_PTR rc = 0;
     ULONG errlvl = 0;
 
+    // NoSbieDesk BEGIN
+	if (Dll_CompartmentMode || SbieApi_QueryConfBool(NULL, L"NoSandboxieDesktop", FALSE))
+		return TRUE;
+	// NoSbieDesk END
+
     //
     // process is already connected to window station, connect to desktop
     //
@@ -952,6 +995,11 @@ _FX BOOLEAN Gui_ConnectToWindowStationAndDesktop(HMODULE User32)
 
                 rc = (ULONG_PTR)NtCurrentThread();
 
+				// OriginalToken BEGIN
+				if (Dll_CompartmentMode || SbieApi_QueryConfBool(NULL, L"OriginalToken", FALSE))
+					rc = 0;
+				else
+				// OriginalToken END
                 if (__sys_NtSetInformationThread)
                 {
                     rc = __sys_NtSetInformationThread(NtCurrentThread(),
@@ -1020,7 +1068,7 @@ ConnectThread:
 
     if (errlvl) {
         WCHAR errtxt[48];
-        Sbie_swprintf(errtxt, L"Win32Init.%d (%08p)", errlvl, (void*)rc);
+        Sbie_snwprintf(errtxt, 48, L"Win32Init.%d (%08p)", errlvl, (void*)rc);
         SbieApi_Log(2205, errtxt);
     }
 
@@ -1165,7 +1213,7 @@ _FX HWND Gui_CreateDummyParentWindow(void)
         WCHAR clsnm[64], *boxed_clsnm;
         WNDCLASS wc;
 
-        Sbie_swprintf(clsnm, L"%s-DUMMY-%d-%d",
+        Sbie_snwprintf(clsnm, 64, L"%s-DUMMY-%d-%d",
                  SBIE, Dll_ProcessId, GetTickCount());
         boxed_clsnm = Gui_CreateClassNameW(clsnm);
 
@@ -1215,30 +1263,22 @@ _FX HWND Gui_CreateWindowExW(
     HWND hwndResult;
 
     //
-    // under Sandboxie 4 the Chrome sandbox child process gets confused
+    // Under Sandboxie 4, the Chrome sandbox child process gets confused
     // (reason not known) and creates some top level windows, for which it
-    // does not process messages.  this causes DDE message broadcast to
-    // hang for several seconds.  to workaround this, we cause the windows
+    // does not process messages. This causes DDE message broadcast to
+    // hang for several seconds. To workaround this, we cause the windows
     // to be created as message-only windows
     //
     // note:  the desktop window was made accessible in early v4 builds
     // but this code is still here to handle any other parent windows
     //
-    /*//debug code
-    _asm {
-        nop
-        nop
-//HERE1:
-//      jmp HERE1
-        //int 3
-        nop
-        nop
-    }
-*/
-    if (Dll_ChromeSandbox) {
+    // note:  this code breaks Chrome hw acceleration, so it is no longer used
+    //
+
+    /*if (Dll_ChromeSandbox) { 
         dwStyle |= WS_CHILD;
         hWndParent = HWND_MESSAGE;
-    }
+    }*/
 
     //
     // replace title on windows that have no parent
@@ -1253,7 +1293,10 @@ _FX HWND Gui_CreateWindowExW(
     else
         new_WindowName = lpWindowName;
 
-    clsnm = Gui_CreateClassNameW(lpClassName);
+    if (! Gui_RenameClasses)
+        clsnm = lpClassName;
+    else
+        clsnm = Gui_CreateClassNameW(lpClassName);
 
     if (hWndParent && (hWndParent != HWND_MESSAGE)
                             && (! __sys_IsWindow(hWndParent))) {
@@ -1270,7 +1313,10 @@ _FX HWND Gui_CreateWindowExW(
     ++TlsData->gui_create_window;
     if (TlsData->gui_create_window == 1) {
 
-        Gui_ApplyWinHooks(0);
+        if (!TlsData->gui_hooks_installed) {
+            Gui_NotifyWinHooks();
+            TlsData->gui_hooks_installed = TRUE;
+        }
 
         Taskbar_SetProcessAppUserModelId();
     }
@@ -1297,7 +1343,7 @@ _FX HWND Gui_CreateWindowExW(
     // replace window procedure
     //
 
-    if (hwndResult) {
+    if (hwndResult && Gui_RenameClasses) {
 
         Gui_SetWindowProc(hwndResult, FALSE);
 
@@ -1355,7 +1401,10 @@ _FX HWND Gui_CreateWindowExA(
     else
         new_WindowName = lpWindowName;
 
-    clsnm = Gui_CreateClassNameA(lpClassName);
+    if (! Gui_RenameClasses)
+        clsnm = lpClassName;
+    else
+        clsnm = Gui_CreateClassNameA(lpClassName);
 
     if (hWndParent && (hWndParent != HWND_MESSAGE)
                             && (! __sys_IsWindow(hWndParent))) {
@@ -1371,8 +1420,11 @@ _FX HWND Gui_CreateWindowExA(
 
     ++TlsData->gui_create_window;
     if (TlsData->gui_create_window == 1) {
-
-        Gui_ApplyWinHooks(0);
+        
+        if (!TlsData->gui_hooks_installed) {
+            Gui_NotifyWinHooks();
+            TlsData->gui_hooks_installed = TRUE;
+        }
 
         Taskbar_SetProcessAppUserModelId();
     }
@@ -1399,7 +1451,7 @@ _FX HWND Gui_CreateWindowExA(
     // replace window procedure
     //
 
-    if (hwndResult) {
+    if (hwndResult && Gui_RenameClasses) {
 
         Gui_SetWindowProc(hwndResult, FALSE);
 
@@ -1426,16 +1478,10 @@ _FX HWND Gui_CreateWindowExA(
 
 
 _FX BOOLEAN Gui_CanForwardMsg(
-    HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+    HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam/*, LRESULT* plResult*/)
 {
-    if (uMsg == WM_NULL) {
-
-        if (wParam == tzuk) {
-            Gui_ApplyWinHooks(lParam);
-            return FALSE;
-        }
-
-    } else if (uMsg == WM_DROPFILES) {
+    //*plResult = 0;
+    if (uMsg == WM_DROPFILES) {
 
         if (Ole_DoDragDrop(hWnd, wParam, lParam))
             return FALSE;
@@ -1472,8 +1518,8 @@ _FX LRESULT Gui_WindowProcW(
     THREAD_DATA * TlsData = Dll_GetTlsData(NULL);
     BOOLEAN bIgnore = FALSE;
 
-    if (! Gui_CanForwardMsg(hWnd, uMsg, wParam, lParam))
-        return 0;
+    if (! Gui_CanForwardMsg(hWnd, uMsg, wParam, lParam/*, &lResult*/))
+        return 0; //lResult;
 
     if (uMsg == WM_DDE_INITIATE)
         wParam = Gui_DDE_INITIATE_Received(hWnd, wParam);
@@ -1485,6 +1531,7 @@ _FX LRESULT Gui_WindowProcW(
 
     wndproc = __sys_GetPropW(hWnd, (LPCWSTR)Gui_WindowProcOldW_Atom);
     if (DLL_IMAGE_OFFICE_EXCEL == Dll_ImageType) {
+
         if (WM_RENDERFORMAT == uMsg)
         {
             TlsData = Dll_GetTlsData(NULL);
@@ -1499,7 +1546,6 @@ _FX LRESULT Gui_WindowProcW(
         if (!bIgnore)
         {
             lResult = __sys_CallWindowProcW(wndproc, hWnd, uMsg, wParam, new_lParam);
-
         }
         else
         {
@@ -1528,8 +1574,8 @@ _FX LRESULT Gui_WindowProcA(
     LRESULT lResult;
     LPARAM new_lParam;
 
-    if (! Gui_CanForwardMsg(hWnd, uMsg, wParam, lParam))
-        return 0;
+    if (! Gui_CanForwardMsg(hWnd, uMsg, wParam, lParam/*, &lResult*/))
+        return 0; //lResult;
 
     if (uMsg == WM_DDE_INITIATE)
         wParam = Gui_DDE_INITIATE_Received(hWnd, wParam);
@@ -1807,7 +1853,7 @@ _FX BOOL Gui_SetWindowPos(
     // use SbieSvc GUI Proxy if hWnd is accessible but outside the sandbox
     //
 
-    if (! Gui_IsSameBox(hWnd, NULL, NULL)) {
+    if (Gui_UseProxyService && !Gui_IsSameBox(hWnd, NULL, NULL)) {
 
         GUI_SET_WINDOW_POS_REQ req;
         GUI_SET_WINDOW_POS_RPL *rpl;
@@ -1946,7 +1992,7 @@ _FX BOOL Gui_ConsoleControl(ULONG ctlcode, ULONG *data, ULONG_PTR unknown)
         BOOLEAN ok = SbieDll_KillOne(*data);
         if (ok)
             return STATUS_SUCCESS;
-        SbieApi_Log(2205, L"ConsoleControl");
+        //SbieApi_Log(2205, L"ConsoleControl"); // don't log when the process was already killed
     }
     return __sys_ConsoleControl(ctlcode, data, unknown);
 }
@@ -2440,13 +2486,13 @@ _FX void *Gui_CallProxyEx(
 
     if (! _QueueName) {
         _QueueName = Dll_Alloc(32 * sizeof(WCHAR));
-        Sbie_swprintf(_QueueName, L"*GUIPROXY_%08X", Dll_SessionId);
+        Sbie_snwprintf(_QueueName, 32, L"*GUIPROXY_%08X", Dll_SessionId);
         //_Ticks = 0;
     }
 
     /*if (1) {
         WCHAR txt[128];
-        Sbie_swprintf(txt, L"Request command is %08X\n", *(ULONG *)req);
+        Sbie_snwprintf(txt, 128, L"Request command is %08X\n", *(ULONG *)req);
         OutputDebugString(txt);
     }*/
 
@@ -2564,7 +2610,7 @@ _FX void *Gui_CallProxyEx(
                 /*_Ticks += GetTickCount() - Ticks0;
                 if (_Ticks > _Ticks1 + 1000) {
                     WCHAR txt[128];
-                    Sbie_swprintf(txt, L"Already spent %d ticks in gui\n", _Ticks);
+                    Sbie_snwprintf(txt, 128, L"Already spent %d ticks in gui\n", _Ticks);
                     OutputDebugString(txt);
                     _Ticks1 = _Ticks;
                 }*/
@@ -2578,7 +2624,7 @@ _FX void *Gui_CallProxyEx(
         }
     }
 
-    SbieApi_Log(2203, L"%S - %S [%08X]", _QueueName, Dll_ImageName, status);
+    SbieApi_Log(2203, L"%S; MsgId: %d - %S [%08X]", _QueueName, *(ULONG*)req, Dll_ImageName, status);
     SetLastError(ERROR_SERVER_DISABLED);
     return NULL;
 }

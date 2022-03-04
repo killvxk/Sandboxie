@@ -28,6 +28,7 @@
 struct _FILE_DRIVE {
 
     WCHAR letter;
+    WCHAR sn[10];
     BOOLEAN subst;
     ULONG len;          // in characters, excluding NULL
     WCHAR path[0];
@@ -636,7 +637,7 @@ finish:
     /*TimeSpentHere += GetTickCount() - ticks;
     if (TimeSpentHere - TimeSpentHereLastReport > 5000) {
         WCHAR txt[256];
-        Sbie_swprintf(txt, L"Time Spent On Links = %d\n", TimeSpentHere);
+        Sbie_snwprintf(txt, 256, L"Time Spent On Links = %d\n", TimeSpentHere);
         OutputDebugString(txt);
         TimeSpentHereLastReport = TimeSpentHere;
     }*/
@@ -787,6 +788,22 @@ _FX WCHAR *File_TranslateTempLinks_2(WCHAR *input_str, ULONG input_len)
 
 
 //---------------------------------------------------------------------------
+// File_GetFileName
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS File_GetFileName(HANDLE FileHandle, ULONG NameLen, WCHAR* NameBuf)
+{
+    //extern P_GetFinalPathNameByHandle __sys_GetFinalPathNameByHandleW;
+    //if (__sys_GetFinalPathNameByHandleW(FileHandle, NameBuf, NameLen, VOLUME_NAME_NT) > 0)
+    //    return STATUS_SUCCESS;
+    //return STATUS_UNSUCCESSFUL;
+
+    return SbieApi_GetFileName(FileHandle, NameLen, NameBuf);
+}
+
+
+//---------------------------------------------------------------------------
 // File_AddTempLink
 //---------------------------------------------------------------------------
 
@@ -836,7 +853,7 @@ _FX FILE_LINK *File_AddTempLink(WCHAR *path)
         const ULONG PATH_BUF_LEN = 1024;
         newpath = Dll_AllocTemp(PATH_BUF_LEN);
 
-        status = SbieApi_GetFileName(handle, PATH_BUF_LEN - 4, newpath);
+        status = File_GetFileName(handle, PATH_BUF_LEN - 4, newpath);
         if (NT_SUCCESS(status)) {
 
             //

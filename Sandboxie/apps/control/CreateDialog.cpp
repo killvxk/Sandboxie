@@ -175,6 +175,18 @@ void CCreateDialog::OnOK()
             errmsg = MSG_3668;
     }
 
+    if (!errmsg && len <= 8) {
+        if(SbieDll_IsReservedFileName(name))
+            errmsg = MSG_3667;
+    }
+
+    if (!errmsg) {
+        if (_wcsicmp(name, L"GlobalSettings") == 0
+         || _wcsnicmp(name, L"UserSettings_", 13) == 0) {
+            errmsg = MSG_3667;
+        }
+    }
+
     if (errmsg) {
 
         GetDlgItem(ID_CREATE_ERROR)->SetWindowText(CMyMsg(errmsg));

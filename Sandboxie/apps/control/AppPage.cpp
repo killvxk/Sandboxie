@@ -1,5 +1,6 @@
 /*
- * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2004-2020 Sandboxie Holdings, LLC
+ * Copyright 2020-2021 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -46,13 +47,14 @@ enum {
 #define MODIF_IEXPLORE  0x0001
 #define MODIF_FIREFOX   0x0002
 #define MODIF_CHROME    0x0004
+#define MODIF_EDGE      0x0008
 #define MODIF_OTHERWB   0x0080
 
 #define MODIF_NONLOCAL  0x2000
 #define MODIF_ADDONS    0x4000
 
 #define MODIF_BROWSER   \
-    (MODIF_IEXPLORE | MODIF_FIREFOX | MODIF_CHROME | MODIF_OTHERWB)
+    (MODIF_IEXPLORE | MODIF_EDGE | MODIF_FIREFOX | MODIF_CHROME | MODIF_OTHERWB)
 
 
 //---------------------------------------------------------------------------
@@ -145,10 +147,12 @@ CAppPage::CAppPage(TMPL_INFO *info, const CString &BoxName)
 
         if (m_tmpl_info.ClassModifier & MODIF_IEXPLORE)
             m_titleForPage = L"Internet Explorer";
+        if (m_tmpl_info.ClassModifier & MODIF_EDGE)
+            m_titleForPage = L"Microsoft Edge";
         if (m_tmpl_info.ClassModifier & MODIF_FIREFOX)
-            m_titleForPage = L"Firefox";
+            m_titleForPage = L"Mozilla Firefox";
         if (m_tmpl_info.ClassModifier & MODIF_CHROME)
-            m_titleForPage = "Google Chrome";
+            m_titleForPage = L"Google Chrome";
         if (m_tmpl_info.ClassModifier & MODIF_OTHERWB)
             m_titleForPage = CMyMsg(MSG_4357);
 
@@ -244,8 +248,7 @@ void CAppPage::Access_OnInitDialog(CBox &box)
 
 void CAppPage::Access_OnOK(CBox &box)
 {
-    BOOL global = CBoxes::GetInstance().GetBox(0).
-                                IsTemplateEnabled(Template_ScreenReader);
+    BOOL global = CBoxes::GetInstance().GetBox(0).IsTemplateEnabled(Template_ScreenReader);
 
     BOOL wasEnabled = box.IsTemplateEnabled(Template_ScreenReader);
     if (! wasEnabled)
@@ -538,24 +541,35 @@ void CAppPage::Template_Filter()
         POSITION old_pos = pos;
         CString name = m_tmpl_sections.GetNext(pos);
         BOOL ie = (name.Find(L"IExplore_") != -1);
+        BOOL edge = (name.Find(L"Edge_") != -1);
         BOOL ff = (name.Find(L"Firefox_") != -1)
                || (name.Find(L"Waterfox_") != -1)
-               || (name.Find(L"PaleMoon_") != -1);
-        BOOL ch = (name.Find(L"Chrome_") != -1)
-               || (name.Find(L"Iron_") != -1)
-               || (name.Find(L"Dragon_") != -1)
-               || (name.Find(L"Vivaldi_") != -1)
-               || (name.Find(L"Neon_") != -1);
+               || (name.Find(L"PaleMoon_") != -1)
+               || (name.Find(L"SeaMonkey_") != -1)
+               || (name.Find(L"LibreWolf_") != -1);
+        BOOL ch = (name.Find(L"Chrome_") != -1);
+        BOOL other = (name.Find(L"Vivaldi_") != -1)
+                  || (name.Find(L"Brave_") != -1)
+                  || (name.Find(L"Opera_") != -1)
+                  || (name.Find(L"Yandex_") != -1)
+                  || (name.Find(L"Ungoogled_") != -1)
+                  || (name.Find(L"Iron_") != -1)
+                  || (name.Find(L"Maxthon_6_") != -1)
+                  || (name.Find(L"Dragon_") != -1)
+                  || (name.Find(L"Osiris_") != -1)
+                  || (name.Find(L"Slimjet_") != -1);
 
         BOOL keep = FALSE;
 
         if ((modif & MODIF_IEXPLORE) && ie)
             keep = TRUE;
+        else if ((modif & MODIF_EDGE) && edge)
+            keep = TRUE;
         else if ((modif & MODIF_FIREFOX) && ff)
             keep = TRUE;
         else if ((modif & MODIF_CHROME) && ch)
             keep = TRUE;
-        else if ((modif & MODIF_OTHERWB) && (! ie) && (! ff) && (! ch))
+        else if ((modif & MODIF_OTHERWB) && other)
             keep = TRUE;
 
         if (modif & MODIF_NONLOCAL) {
@@ -759,7 +773,7 @@ void CAppPage::Folders_OnInitDialog(CBox &box)
 
     while (! tmpl_names.IsEmpty()) {
         CString tmpl_name = tmpl_names.RemoveHead();
-        CString varname = ini.GetTemplateVariable(tmpl_name);
+        CString varname = ini.GetTemplateVariable(tmpl_name); // fix-me: there may be more than one folder per template
         if (varname.IsEmpty())
             continue;
 
@@ -989,7 +1003,9 @@ void CAppPage::AddPages(CPropertySheet &sheet, const CString &BoxName)
     info.WithCreate = FALSE;
     info.ClassModifier = MODIF_IEXPLORE;                // IExplore
     m_app_pages.AddTail(new CAppPage(&info, BoxName));
-    info.ClassModifier = MODIF_FIREFOX;                 // Firefox
+    info.ClassModifier = MODIF_EDGE;                    // Microsoft Edge
+    m_app_pages.AddTail(new CAppPage(&info, BoxName));
+    info.ClassModifier = MODIF_FIREFOX;                 // Mozilla Firefox
     m_app_pages.AddTail(new CAppPage(&info, BoxName));
     info.WithLink = TRUE;
     info.ClassModifier |= MODIF_ADDONS;                 // Firefox Add-ons
@@ -1026,6 +1042,20 @@ void CAppPage::AddPages(CPropertySheet &sheet, const CString &BoxName)
     info.TitleId = MSG_4228;
     info.LabelId = MSG_4207;
     info.WithLink = TRUE;
+    info.WithCreate = FALSE;
+    m_app_pages.AddTail(new CAppPage(&info, BoxName));
+
+    info.ClassName = L"MediaPlayer";
+    info.TitleId = MSG_4393;
+    info.LabelId = MSG_4394;
+    info.WithLink = FALSE;
+    info.WithCreate = FALSE;
+    m_app_pages.AddTail(new CAppPage(&info, BoxName));
+
+    info.ClassName = L"TorrentClient";
+    info.TitleId = MSG_4396;
+    info.LabelId = MSG_4397;
+    info.WithLink = FALSE;
     info.WithCreate = FALSE;
     m_app_pages.AddTail(new CAppPage(&info, BoxName));
 
@@ -1122,7 +1152,7 @@ void CAppPage::UpdateTemplates(CBox &box)
     UpdateEmailTemplates(box);
 
     //
-    // finaly, enable default templates
+    // finally, enable default templates
     //
 
     SetDefaultTemplates6(box);
@@ -1156,38 +1186,49 @@ void CAppPage::UpdateWebTemplates(CBox &box)
     // find and remove:
     //      OpenFilePath=seamonkey.exe,%AppData%\Mozilla\Profiles\*\bookmark*
     //      OpenFilePath=seamonkey.exe,%AppData%\Mozilla\Profiles\*\places*
-    //      OpenFilePath=seamon~1.exe,%AppData%\Mozilla\Profiles\*\bookmark*
-    //      OpenFilePath=seamon~1.exe,%AppData%\Mozilla\Profiles\*\places*
     //
     // replace with:    Template=SeaMonkey_Bookmarks_DirectAccess
     //
 
     const CString &SeaMonkeyTemplate(L"SeaMonkey_Bookmarks_DirectAccess");
     const CString &SeaMonkeyPath1(
-        L"%AppData%\\Mozilla\\Profiles\\*\\bookmark*");
+        L"%AppData%\\Mozilla\\SeaMonkey\\Profiles\\*\\bookmark*");
     const CString &SeaMonkeyPath2(
-        L"%AppData%\\Mozilla\\Profiles\\*\\places*");
+        L"%AppData%\\Mozilla\\SeaMonkey\\Profiles\\*\\places*");
 
     UpdateTemplates2(
         box, L"seamonkey.exe", SeaMonkeyTemplate,
         SeaMonkeyPath1, SeaMonkeyPath2);
 
-    UpdateTemplates2(
-        box, L"seamon~1.exe", SeaMonkeyTemplate,
-        SeaMonkeyPath1, SeaMonkeyPath2);
-
     //
     // find and remove:
-    //      OpenFilePath=opera.exe,%AppData%\Opera\Opera\Profile\opera6.adr
-    //      OpenFilePath=opera.exe,%AppData%\Opera\Opera\Profile\notes.adr
+    //      OpenFilePath=opera.exe,%AppData%\Opera Software\Opera Stable\Bookmarks
+    //      OpenFilePath=opera.exe,%AppData%\Opera Software\Opera Stable\Bookmarks.bak
+    //      OpenFilePath=opera.exe,%AppData%\Opera Software\Opera Stable\BookmarksExtras
     //
-    // replace with:    Template=SeaMonkey_Bookmarks_DirectAccess
+    // replace with:    Template=Opera_Bookmarks_DirectAccess
     //
 
+    const CString &OperaBookmarksTmpl(L"Opera_Bookmarks_DirectAccess");
+    const CString &OperaBookmarks1(L"%AppData%\\Opera Software\\Opera Stable\\Bookmarks");
+    const CString &OperaBookmarks2(L"%AppData%\\Opera Software\\Opera Stable\\Bookmarks.bak");
+    const CString &OperaBookmarks3(L"%AppData%\\Opera Software\\Opera Stable\\BookmarksExtras");
+
     UpdateTemplates2(
-        box, L"opera.exe", L"Opera_Bookmarks_DirectAccess",
-        L"%AppData%\\Opera\\Opera\\Profile\\opera6.adr",
-        L"%AppData%\\Opera\\Opera\\Profile\\notes.adr");
+        box, L"opera.exe", OperaBookmarksTmpl, OperaBookmarks1, OperaBookmarks2);
+
+    UpdateTemplates2(
+        box, L"opera.exe", OperaBookmarksTmpl, OperaBookmarks3, OperaBookmarks3);
+
+    //
+    // find and remove invalid OpenFilePath reference:
+    //      OpenFilePath=bookmarks.exe,bookmarks*
+    //
+
+    const CString &InvalidEntry1(L"bookmarks*");
+
+    UpdateTemplates2(
+        box, L"bookmarks.exe", L'\0', InvalidEntry1, InvalidEntry1);
 }
 
 
@@ -1198,51 +1239,6 @@ void CAppPage::UpdateWebTemplates(CBox &box)
 
 void CAppPage::UpdateEmailTemplates(CBox &box)
 {
-    //
-    // find and remove:
-    //      OpenFilePath=msimn.exe,%AppData%\Identities
-    //      OpenFilePath=msimn.exe,%Local AppData%\Identities
-    //      OpenFilePath=msimn.exe,%AppData%\Microsoft\Address Book
-    //      OpenFilePath=msimn.exe,*.eml
-    //
-    // replace with:    Template=Outlook_Express
-    //
-    // discard:
-    //      OpenKeyPath=msimn.exe,HKEY_CURRENT_USER\Identities
-    //      OpenKeyPath=msimn.exe,
-    //          HKEY_CURRENT_USER\Software\Microsoft\Outlook Express
-    //      OpenKeyPath=msimn.exe,
-    //          HKEY_CURRENT_USER\Software\Microsoft\Internet Account Manager
-    //      OpenKeyPath=msimn.exe,
-    //          HKEY_LOCAL_MACHINE\Software\Microsoft\Outlook Express
-    //      OpenKeyPath=msimn.exe,
-    //          HKEY_LOCAL_MACHINE\Software\Wow6432Node\Microsoft\
-    //          Outlook Express
-    //
-
-    CStringList _OutlookExpressFiles;
-    CStringList _OutlookExpressKeys;
-
-    _OutlookExpressFiles.AddTail(L"%AppData%\\Identities");
-    _OutlookExpressFiles.AddTail(L"%Local AppData%\\Identities");
-    _OutlookExpressFiles.AddTail(L"%AppData%\\Microsoft\\Address Book");
-    _OutlookExpressFiles.AddTail(L"*.eml");
-
-    _OutlookExpressKeys.AddTail(L"HKEY_CURRENT_USER\\Identities");
-    _OutlookExpressKeys.AddTail(
-        L"HKEY_CURRENT_USER\\Software\\Microsoft\\Outlook Express");
-    _OutlookExpressKeys.AddTail(
-        L"HKEY_CURRENT_USER\\Software\\Microsoft\\Internet Account Manager");
-    _OutlookExpressKeys.AddTail(
-        L"HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Outlook Express");
-    _OutlookExpressKeys.AddTail(
-        L"HKEY_LOCAL_MACHINE\\Software\\Wow6432Node\\"
-        L"Microsoft\\Outlook Express");
-
-    UpdateTemplates3(
-        box, L"msimn.exe", L"Outlook_Express",
-        _OutlookExpressFiles, _OutlookExpressKeys);
-
     //
     // find and remove:
     //      OpenFilePath=outlook.exe,%AppData%\Microsoft\Outlook
@@ -1370,15 +1366,10 @@ void CAppPage::UpdateEmailTemplates(CBox &box)
         box, L"thunderbird.exe", _Thunderbird,
         _ThunderbirdFiles, _ThunderbirdKeys);
 
-    UpdateTemplates3(
-        box, L"thunde~1.exe", _Thunderbird,
-        _ThunderbirdFiles, _ThunderbirdKeys);
-
     //
     // find and remove:
     //      OpenFilePath=seamonkey.exe,%AppData%\Mozilla\Profiles\*\Mail*
-    //      OpenFilePath=seamonkey.exe,
-    //          %Local AppData%\Mozilla\Profiles\*\Mail*
+    //      OpenFilePath=seamonkey.exe,%Local AppData%\Mozilla\Profiles\*\Mail*
     //
     // replace with:    Template=SeaMonkey
     //
@@ -1410,10 +1401,6 @@ void CAppPage::UpdateEmailTemplates(CBox &box)
         box, L"seamonkey.exe", _SeaMonkey,
         _SeaMonkeyFiles, _SeaMonkeyKeys);
 
-    UpdateTemplates3(
-        box, L"seamon~1.exe", _SeaMonkey,
-        _SeaMonkeyFiles, _SeaMonkeyKeys);
-
     //
     // find and remove:
     //      OpenFilePath=opera.exe,%AppData%\Opera\Opera\mail
@@ -1421,10 +1408,10 @@ void CAppPage::UpdateEmailTemplates(CBox &box)
     // replace with:    Template=Opera_Mail
     //
 
-    CString _OperaPath1(L"%AppData%\\Opera\\Opera\\mail");
+    CString _OperaMailPath1(L"%AppData%\\Opera\\Opera\\mail");
 
     UpdateTemplates2(
-        box, L"opera.exe", L"Opera_Mail", _OperaPath1, _OperaPath1);
+        box, L"opera.exe", L"Opera_Mail", _OperaMailPath1, _OperaMailPath1);
 }
 
 
@@ -1542,8 +1529,8 @@ void CAppPage::UpdateTemplates3(CBox &box,
 void CAppPage::SetDefaultTemplates6(CBox &box)
 {
     box.EnableTemplate(L"AutoRecoverIgnore", TRUE);
-    box.EnableTemplate(L"Firefox_Phishing_DirectAccess", TRUE);
-    box.EnableTemplate(L"Chrome_Phishing_DirectAccess", TRUE);
+    //box.EnableTemplate(L"Firefox_Phishing_DirectAccess", TRUE);
+    //box.EnableTemplate(L"Chrome_Phishing_DirectAccess", TRUE);
     box.EnableTemplate(L"LingerPrograms", TRUE);
     SetDefaultTemplates7(box);
 }
@@ -1557,6 +1544,45 @@ void CAppPage::SetDefaultTemplates6(CBox &box)
 void CAppPage::SetDefaultTemplates7(CBox &box)
 {
     box.EnableTemplate(L"BlockPorts", TRUE);
-    box.EnableTemplate(L"WindowsFontCache", TRUE);
+    //box.EnableTemplate(L"WindowsFontCache", TRUE); // since 5.46.3 open by driver
     box.EnableTemplate(L"qWave", TRUE);
+    SetDefaultTemplates8(box);
+}
+
+//---------------------------------------------------------------------------
+// SetDefaultTemplates8
+//---------------------------------------------------------------------------
+
+
+void CAppPage::SetDefaultTemplates8(CBox& box)
+{
+    box.EnableTemplate(L"FileCopy", TRUE);
+    box.EnableTemplate(L"SkipHook", TRUE);
+    SetDefaultTemplates9(box);
+}
+
+//---------------------------------------------------------------------------
+// SetDefaultTemplates9
+//---------------------------------------------------------------------------
+
+
+void CAppPage::SetDefaultTemplates9(CBox& box)
+{
+    CSbieIni &ini = CSbieIni::GetInstance();
+
+    // fix the unfortunate typo
+    if (box.IsTemplateEnabled(L"FileCppy")) {
+        box.EnableTemplate(L"FileCopy", TRUE);
+        box.EnableTemplate(L"FileCppy", FALSE);
+    }
+
+    box.EnableTemplate(L"WindowsFontCache", FALSE);
+
+    BOOL bHardened = FALSE;
+    ini.GetBool(box.GetName(), L"DropAdminRights", bHardened, FALSE);
+    if (!bHardened) {
+        // enable those templates only for non hardened boxes
+        box.EnableTemplate(L"OpenBluetooth", TRUE);
+        box.EnableTemplate(L"OpenSmartCard", TRUE);
+    }
 }

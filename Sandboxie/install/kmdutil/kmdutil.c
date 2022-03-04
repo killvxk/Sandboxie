@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -25,7 +26,6 @@
 #include <stdlib.h>
 #include "common/defines.h"
 #include "common/my_version.h"
-#include "rc4.h"
 
 extern void Kmd_ScanDll(BOOLEAN silent);
 
@@ -610,15 +610,9 @@ BOOL Kmd_Stop_Service(
     SC_HANDLE service;
     SERVICE_STATUS service_status;
     ULONG retries;
+    BOOLEAN is_driver;
 
-    if (_wcsicmp(Driver_Name, SBIEDRV) == 0) {
-        // stop the driver
-        if (! Kmd_Stop_SbieDrv())
-            return FALSE;
-
-        // fallback to stopping through SCM, otherwise the
-        // driver registry key does not always disappear
-    }
+    is_driver = _wcsicmp(Driver_Name, SBIEDRV) == 0;
 
     // try to open the service for the driver
 
@@ -639,18 +633,7 @@ BOOL Kmd_Stop_Service(
     // stop the service if it's active
     //
 
-    for (retries = 0; ; ++retries) {
-
-        if (retries) {
-
-            WCHAR Text[384];
-
-            wcscpy(Text, SbieDll_FormatMessage1(8102, Driver_Name));
-            wcscat(Text, L"\n\n");
-            wcscat(Text, SbieDll_FormatMessage0(8102 + retries));
-
-            MessageBox(NULL, Text, L"KmdUtil", MB_ICONEXCLAMATION | MB_OK);
-        }
+    for (retries = 0; retries <= 6; ++retries) {
 
         if (! ControlService(
                 service,
@@ -659,30 +642,55 @@ BOOL Kmd_Stop_Service(
             if (GetLastError() == ERROR_SERVICE_NOT_ACTIVE)
                 return TRUE;
 
-            if ((GetLastError() == ERROR_SERVICE_REQUEST_TIMEOUT ||
-                 GetLastError() == ERROR_PIPE_BUSY) && retries < 3)
-                    continue;
+            if (!(GetLastError() == ERROR_SERVICE_REQUEST_TIMEOUT ||
+                 GetLastError() == ERROR_PIPE_BUSY)){
 
-            Display_Error(L"ControlService Interrogate", 0);
-            return FALSE;
+                Display_Error(L"ControlService Interrogate", 0);
+                return FALSE;
+            }
+        }
+        else if (service_status.dwCurrentState == SERVICE_STOPPED)
+            return TRUE;
+
+        if (retries) {
+            if (retries <= 3) 
+                Sleep(2500 * retries);
+            else {
+                WCHAR Text[384];
+
+                wcscpy(Text, SbieDll_FormatMessage1(8102, Driver_Name));
+                wcscat(Text, L"\n\n");
+                wcscat(Text, SbieDll_FormatMessage0(8102 + retries - 3));
+
+                MessageBox(NULL, Text, L"KmdUtil", MB_ICONEXCLAMATION | MB_OK);
+            }
         }
 
-        if (service_status.dwCurrentState != SERVICE_STOPPED) {
+        if (is_driver) {
+            // stop the driver
+            if (! Kmd_Stop_SbieDrv())
+                continue;
 
-            if (! ControlService(
-                    service,
-                    SERVICE_CONTROL_STOP, &service_status)) {
+            // fallback to stopping through SCM, otherwise the
+            // driver registry key does not always disappear
+        }
 
-                if ((GetLastError() == ERROR_SERVICE_REQUEST_TIMEOUT ||
-                     GetLastError() == ERROR_PIPE_BUSY) && retries < 3)
-                        continue;
+        if (! ControlService(
+                service,
+                SERVICE_CONTROL_STOP, &service_status)) {
+
+            if (GetLastError() == ERROR_SERVICE_NOT_ACTIVE)
+                return TRUE;
+
+            if (!(GetLastError() == ERROR_SERVICE_REQUEST_TIMEOUT ||
+                 GetLastError() == ERROR_PIPE_BUSY)){
 
                 Display_Error(L"ControlService Stop", 0);
                 return FALSE;
             }
         }
 
-        return TRUE;
+        Sleep(500);
     }
 
     return FALSE;
@@ -714,43 +722,6 @@ int __stdcall WinMain(
             &Driver_Altitude, &Driver_Group,
             &Options))
         return EXIT_FAILURE;
-
-	if (Driver_Path)
-	{
-		int path_len = wcslen(Driver_Path);
-		if (path_len > 8 && wcscmp(Driver_Path + path_len - 8, L".sys.rc4") == 0)
-		{
-			PWSTR Driver_Path_tmp = Driver_Path; // strip \??\ if present
-			if (Driver_Path_tmp[0] == L'\\' && Driver_Path_tmp[1] == L'?' && Driver_Path_tmp[2] == L'?' && Driver_Path_tmp[3] == L'\\')
-				Driver_Path_tmp += 4;
-
-			FILE* inFile = _wfopen(Driver_Path_tmp, L"rb");
-			if (inFile)
-			{
-				Driver_Path_tmp[path_len - 4] = L'\0'; // strip .rc4
-				FILE* outFile = _wfopen(Driver_Path_tmp, L"wb");
-				if (outFile)
-				{
-					fseek(inFile, 0, SEEK_END);
-					DWORD fileSize = ftell(inFile);
-					fseek(inFile, 0, SEEK_SET);
-
-					void* buffer = HeapAlloc(GetProcessHeap(), HEAP_GENERATE_EXCEPTIONS, fileSize);
-					fread(buffer, 1, fileSize, inFile);
-					
-					char key[] = "default_key";
-					rc4_sbox_t sbox;
-					rc4_init(&sbox, key, strlen(key));
-					rc4_transform(&sbox, buffer, fileSize);
-
-					fwrite(buffer, 1, fileSize, outFile);
-
-					fclose(outFile);
-				}
-				fclose(inFile);
-			}
-		}
-	}
 
     ScMgr = OpenSCManager(
         NULL, SERVICES_ACTIVE_DATABASE, SC_MANAGER_CREATE_SERVICE);

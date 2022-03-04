@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2021 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -24,6 +25,7 @@
 #include "log.h"
 #include "api.h"
 #include "util.h"
+#include "session.h"
 
 //---------------------------------------------------------------------------
 // Functions
@@ -102,24 +104,40 @@ _FX void Log_Event_Msg(
 
 
 _FX void Log_Popup_Msg(
-    NTSTATUS error_code,
-    const WCHAR *string1,
-    const WCHAR *string2,
-    ULONG session_id,
+	NTSTATUS error_code,
+	const WCHAR *string1,
+	const WCHAR *string2,
+	ULONG session_id,
 	HANDLE pid)
 {
-    ULONG string1_len, string2_len;
+	ULONG string1_len, string2_len;
 
-    if (string1)
-        string1_len = wcslen(string1);
-    else
-        string1_len = 0;
+	if (string1)
+		string1_len = wcslen(string1);
+	else
+		string1_len = 0;
 
-    if (string2)
-        string2_len = wcslen(string2);
-    else
-        string2_len = 0;
+	if (string2)
+		string2_len = wcslen(string2);
+	else
+		string2_len = 0;
 
+	Log_Popup_MsgEx(error_code, string1, string1_len, string2, string2_len, session_id, pid);
+}
+
+
+//---------------------------------------------------------------------------
+// Log_Popup_MsgEx
+//---------------------------------------------------------------------------
+
+
+_FX void Log_Popup_MsgEx(
+	NTSTATUS error_code,
+	const WCHAR *string1, ULONG string1_len,
+	const WCHAR *string2, ULONG string2_len,
+	ULONG session_id,
+	HANDLE pid)
+{
     //
     // log message to target session
     //
@@ -134,19 +152,21 @@ _FX void Log_Popup_Msg(
         session_id = 1;
 
     //Log_Popup_Msg_2(
-	Api_AddMessage(
-        error_code, string1, string1_len, string2, string2_len, session_id, (ULONG)pid);
+    //  error_code, string1, string1_len, string2, string2_len, session_id, (ULONG)pid);
+
+    const WCHAR* strings[3] = { string1, string2, NULL };
+    ULONG lengths[3] = { string1_len, string2_len, 0 };
+	Api_AddMessage(error_code, strings, lengths, session_id, (ULONG)pid);
 
     //
     // log message to SbieSvc and trigger SbieSvc to wake up and collect it
     //
 
     //Log_Popup_Msg_2(
-	Api_AddMessage(
-        error_code, string1, string1_len, string2, string2_len, -1, (ULONG)pid);
+    //    error_code, string1, string1_len, string2, string2_len, -1, (ULONG)pid);
 
-    string1_len = 0;
-    Api_SendServiceMessage(SVC_LOG_MESSAGE, sizeof(ULONG), &string1_len);
+	ULONG data = 0;
+    Api_SendServiceMessage(SVC_LOG_MESSAGE, sizeof(ULONG), &data);
 
     // DbgPrint("POPUP %04d %S %S\n", error_code & 0xFFFF, string1, string2);
 }
@@ -217,6 +237,7 @@ _FX void Log_Msg(
     const WCHAR *string1,
     const WCHAR *string2)
 {
+    //DbgPrint("Sbie MSG_%d: %S; %S\r\n", (error_code & 0xFFFF), string1, string2);
     Log_Msg_Session(error_code, string1, string2, -1);
 }
 
@@ -300,9 +321,9 @@ _FX void Log_Status_Ex_Process(
     WCHAR str[100];
 
     if (error_subcode)
-        swprintf(str, L"[%08X / %02X]", nt_status, error_subcode);
+        RtlStringCbPrintfW(str, sizeof(str), L"[%08X / %02X]", nt_status, error_subcode);
     else
-        swprintf(str, L"[%08X]", nt_status);
+        RtlStringCbPrintfW(str, sizeof(str), L"[%08X]", nt_status);
 
     Log_Msg_Process(error_code, str, string2, session_id, process_id);
 }
@@ -313,8 +334,13 @@ _FX void Log_Status_Ex_Process(
 //---------------------------------------------------------------------------
 
 
-_FX void Log_Debug_Msg(const WCHAR *string1, const WCHAR *string2)
+_FX void Log_Debug_Msg(ULONG type, const WCHAR *string1, const WCHAR *string2)
 {
-    DbgPrint("(%06d) SBIE %S %S\n",
-        PsGetCurrentProcessId(), string1, string2);
+    //DbgPrint("(%06d) SBIE %S %S\n",
+    //    PsGetCurrentProcessId(), string1, string2);
+	if (Session_MonitorCount) {
+	
+		const WCHAR* strings[4] = { string1, string2 ? L" " : NULL, string2, NULL };
+		Session_MonitorPutEx(type, strings, NULL, PsGetCurrentProcessId(), PsGetCurrentThreadId());
+	}
 }

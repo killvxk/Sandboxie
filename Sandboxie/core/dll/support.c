@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -67,6 +68,8 @@ _FX void SbieDll_SetStartError(ULONG Level)
                         FORMAT_MESSAGE_IGNORE_INSERTS;
     WCHAR *ErrorText;
 
+	size_t len;
+
     if (SbieDll_StartError) {
         Dll_Free(SbieDll_StartError);
         SbieDll_StartError = NULL;
@@ -76,9 +79,10 @@ _FX void SbieDll_SetStartError(ULONG Level)
                   MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
                   (LPTSTR)&ErrorText, 0, NULL);
 
-    SbieDll_StartError = Dll_Alloc((wcslen(ErrorText) + 32) * sizeof(WCHAR));
+	len = (wcslen(ErrorText) + 32);
+    SbieDll_StartError = Dll_Alloc(len * sizeof(WCHAR));
 
-    Sbie_swprintf(SbieDll_StartError,
+    Sbie_snwprintf(SbieDll_StartError, len,
              L"[%02X / %d] %s", Level, ErrorCode, ErrorText);
 
     LocalFree(ErrorText);
@@ -642,7 +646,7 @@ static UCHAR Support_BuiltinDomainRid[12] = {
 // SbieDll_FormatMessage_2
 //---------------------------------------------------------------------------
 
-extern int __CRTDECL Sbie_swprintf(wchar_t *_Buffer, const wchar_t * const _Format, ...);
+extern int __CRTDECL Sbie_snwprintf(wchar_t *_Buffer, size_t Count, const wchar_t * const _Format, ...);
 
 _FX ULONG SbieDll_FormatMessage_2(WCHAR **text_ptr, const WCHAR **ins)
 {
@@ -781,7 +785,7 @@ _FX WCHAR *SbieDll_FormatMessage(ULONG code, const WCHAR **ins)
         out = LocalAlloc(LMEM_FIXED, 128 * sizeof(WCHAR));
         if (out) {
             static const WCHAR *_empty = L"";
-            Sbie_swprintf(out, L"err=%08X ... str1=%40.40s ... str2=%40.40s",
+            Sbie_snwprintf(out, 128, L"err=%08X ... str1=%40.40s ... str2=%40.40s",
                      code,
                      ins && ins[0] ? ins[0] : _empty,
                      ins && ins[1] ? ins[1] : _empty);
@@ -847,3 +851,30 @@ _FX WCHAR *SbieDll_FormatMessage2(
 }
 
 #endif
+
+//---------------------------------------------------------------------------
+// SbieDll_IsReservedFileName
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN SbieDll_IsReservedFileName(const WCHAR *name)
+{
+    static const WCHAR* deviceNames[] = {
+        L"aux", L"clock$", L"con", L"nul", L"prn",
+        L"com1", L"com2", L"com3", L"com4", L"com5",
+        L"com6", L"com7", L"com8", L"com9",
+        L"lpt1", L"lpt2", L"lpt3", L"lpt4", L"lpt5",
+        L"lpt6", L"lpt7", L"lpt8", L"lpt9",
+        NULL
+    };
+
+    for (ULONG devNum = 0; deviceNames[devNum]; ++devNum) {
+        const WCHAR* devName = deviceNames[devNum];
+        //ULONG devNameLen = wcslen(devName);
+        //if (_wcsnicmp(name, devName, devNameLen) == 0) {
+        if (_wcsicmp(name, devName) == 0) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}

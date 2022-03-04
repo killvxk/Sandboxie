@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -505,6 +506,7 @@ _FX ULONG File_GetTempPathW(ULONG nBufferLength, WCHAR *lpBuffer)
     return rc;
 }
 
+//BOOLEAN RpcRt_TestCallingModule(ULONG_PTR pRetAddr, ULONG_PTR hModule);
 
 BOOL File_WriteProcessMemory(
     HANDLE hProcess,
@@ -513,8 +515,12 @@ BOOL File_WriteProcessMemory(
     SIZE_T nSize,
     SIZE_T * lpNumberOfBytesWritten)
 {
+    //
+    // this function is only hooked when Dll_ImageType == DLL_IMAGE_MOZILLA_FIREFOX
+    //
 
     if (lpBaseAddress && lpBaseAddress == GetProcAddress(Dll_Ntdll, "NtSetInformationThread"))
+    //if (RpcRt_TestCallingModule((ULONG_PTR)lpBaseAddress, (ULONG_PTR)Dll_Ntdll))
     {
         if (lpNumberOfBytesWritten)
         {

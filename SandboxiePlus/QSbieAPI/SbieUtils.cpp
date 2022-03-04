@@ -1,15 +1,19 @@
 #include "stdafx.h"
 #include "SbieUtils.h"
 #include <QCoreApplication>
+#include <QWinEventNotifier>
 
 #include <ntstatus.h>
 #define WIN32_NO_STATUS
 typedef long NTSTATUS;
 
 #include <windows.h>
+#include <Shlobj.h>
 #include "SbieDefs.h"
 
 #include "..\..\Sandboxie\common\win32_ntddk.h"
+
+#include "SbieAPI.h"
 
 int GetServiceStatus(const wchar_t* name)
 {
@@ -55,10 +59,10 @@ SB_STATUS CSbieUtils::DoAssist()
 	SB_STATUS Status = ExecOps(Args.mid(AssistPos + 1));
 	if (Status.IsError())
 		return Status;
-	return SB_ERR("OK", ERROR_OK);
+	return SB_ERR(ERROR_OK);
 }
 
-SB_STATUS CSbieUtils::Start(EComponent Component)
+SB_RESULT(void*) CSbieUtils::Start(EComponent Component)
 {
 	QStringList Ops;
 	if(!IsInstalled(Component))
@@ -69,13 +73,14 @@ SB_STATUS CSbieUtils::Start(EComponent Component)
 
 void CSbieUtils::Start(EComponent Component, QStringList& Ops)
 {
-	if ((Component & eDriver) != 0 && GetServiceStatus(SBIEDRV) != SERVICE_RUNNING)
-		Ops.append(QString::fromWCharArray(L"kmdutil.exe|start|" SBIEDRV));
+	// Note: Service aways starts the driver
 	if ((Component & eService) != 0 && GetServiceStatus(SBIESVC) != SERVICE_RUNNING)
 		Ops.append(QString::fromWCharArray(L"kmdutil.exe|start|" SBIESVC));
+	else if ((Component & eDriver) != 0 && GetServiceStatus(SBIEDRV) != SERVICE_RUNNING)
+		Ops.append(QString::fromWCharArray(L"kmdutil.exe|start|" SBIEDRV));
 }
 
-SB_STATUS CSbieUtils::Stop(EComponent Component)
+SB_RESULT(void*) CSbieUtils::Stop(EComponent Component)
 {
 	QStringList Ops;
 	Stop(Component, Ops);
@@ -84,6 +89,7 @@ SB_STATUS CSbieUtils::Stop(EComponent Component)
 
 void CSbieUtils::Stop(EComponent Component, QStringList& Ops)
 {
+	Ops.append(QString::fromWCharArray(L"kmdutil.exe|scandll"));
 	if ((Component & eService) != 0 && GetServiceStatus(SBIESVC) != SERVICE_STOPPED)
 		Ops.append(QString::fromWCharArray(L"kmdutil.exe|stop|" SBIESVC));
 	if ((Component & eDriver) != 0 && GetServiceStatus(SBIEDRV) != SERVICE_STOPPED)
@@ -99,7 +105,7 @@ bool CSbieUtils::IsRunning(EComponent Component)
 	return true;
 }
 
-SB_STATUS CSbieUtils::Install(EComponent Component)
+SB_RESULT(void*) CSbieUtils::Install(EComponent Component)
 {
 	QStringList Ops;
 	Install(Component, Ops);
@@ -109,15 +115,15 @@ SB_STATUS CSbieUtils::Install(EComponent Component)
 void CSbieUtils::Install(EComponent Component, QStringList& Ops)
 {
 	QString HomePath = QCoreApplication::applicationDirPath().replace("/", "\\"); // "C:\\Program Files\\Sandboxie	"
-	if ((Component & eDriver) != 0 && GetServiceStatus(SBIEDRV) == 0) // todo: why when we are admin we need \??\ and else not and why knd util from console as admin also does not need that???
-		Ops.append(QString::fromWCharArray(L"kmdutil.exe|install|" SBIEDRV L"|") + "\"\\??\\" + HomePath + "\\" + QString::fromWCharArray(SBIEDRV_SYS) + "\"" + "|type=kernel|start=demand|altitude=86900");
+	if ((Component & eDriver) != 0 && GetServiceStatus(SBIEDRV) == 0) 
+		Ops.append(QString::fromWCharArray(L"kmdutil.exe|install|" SBIEDRV L"|") + HomePath + "\\" + QString::fromWCharArray(SBIEDRV_SYS) + "|type=kernel|start=demand|altitude=86900");
 	if ((Component & eService) != 0 && GetServiceStatus(SBIESVC) == 0) {
-		Ops.append(QString::fromWCharArray(L"kmdutil.exe|install|" SBIESVC L"|") + "\"" + HomePath + "\\" + QString::fromWCharArray(SBIESVC_EXE) + "\"" + "|type=own|start=auto|display=\"Sandboxie Service\"|group=UIGroup");
+		Ops.append(QString::fromWCharArray(L"kmdutil.exe|install|" SBIESVC L"|") + HomePath + "\\" + QString::fromWCharArray(SBIESVC_EXE) + "|type=own|start=auto|display=\"Sandboxie Service\"|group=UIGroup");
 		Ops.append("reg.exe|ADD|HKLM\\SYSTEM\\ControlSet001\\Services\\SbieSvc|/v|PreferExternalManifest|/t|REG_DWORD|/d|1|/f");
 	}
 }
 
-SB_STATUS CSbieUtils::Uninstall(EComponent Component)
+SB_RESULT(void*) CSbieUtils::Uninstall(EComponent Component)
 {
 	QStringList Ops;
 	Stop(Component, Ops);
@@ -142,7 +148,7 @@ bool CSbieUtils::IsInstalled(EComponent Component)
 	return true;
 }
 
-SB_STATUS CSbieUtils::ElevateOps(const QStringList& Ops)
+SB_RESULT(void*) CSbieUtils::ElevateOps(const QStringList& Ops)
 {
 	if (Ops.isEmpty())
 		return SB_OK;
@@ -151,12 +157,12 @@ SB_STATUS CSbieUtils::ElevateOps(const QStringList& Ops)
 		return ExecOps(Ops);
 
 	wstring path = QCoreApplication::applicationFilePath().toStdWString();
-	wstring params = L"-assist " + Ops.join(" ").toStdWString();
+	wstring params = L"-assist \"" + Ops.join("\" \"").toStdWString() + L"\"";
 
 	SHELLEXECUTEINFO shex;
 	memset(&shex, 0, sizeof(SHELLEXECUTEINFO));
 	shex.cbSize = sizeof(SHELLEXECUTEINFO);
-	shex.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+	shex.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOCLOSEPROCESS;
 	shex.hwnd = NULL;
 	shex.lpFile = path.c_str();
 	shex.lpParameters = params.c_str();
@@ -164,8 +170,8 @@ SB_STATUS CSbieUtils::ElevateOps(const QStringList& Ops)
 	shex.lpVerb = L"runas";
 
 	if (!ShellExecuteEx(&shex))
-		return SB_ERR("Admin rights required");
-	return SB_ERR(OP_ASYNC);
+		return SB_ERR(SB_NeedAdmin);
+	return CSbieResult<void*>(OP_ASYNC, shex.hProcess);
 }
 
 SB_STATUS CSbieUtils::ExecOps(const QStringList& Ops)
@@ -180,25 +186,64 @@ SB_STATUS CSbieUtils::ExecOps(const QStringList& Ops)
 		Proc.waitForFinished();
 		int ret = Proc.exitCode();
 		if (ret != 0)
-			return SB_ERR("Failed to execute: " + Args.join(" "));
+			return SB_ERR(SB_ExecFail, QVariantList() << Args.join(" "));
 	}
 	return SB_OK;
+}
+
+CSbieProgressPtr CSbieUtils::RunCommand(const QString& Command, bool noGui)
+{
+	STARTUPINFOW si = { 0 };
+	si.cb = sizeof(si);
+	if (noGui) {	
+		si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+		si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+		si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+		si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+		si.wShowWindow = SW_HIDE;
+	}
+	PROCESS_INFORMATION pi = { 0 };
+	if (!CreateProcessW(NULL, (LPWSTR)Command.toStdWString().c_str(), NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi))
+		return CSbieProgressPtr();
+	
+	HANDLE hJobObject = CreateJobObject(NULL, NULL);
+	if (hJobObject)
+		AssignProcessToJobObject(hJobObject, pi.hProcess);
+
+	CSbieProgressPtr pProgress = CSbieProgressPtr(new CSbieProgress());
+
+	QWinEventNotifier* processFinishedNotifier = new QWinEventNotifier(pi.hProcess);
+	processFinishedNotifier->setEnabled(true);
+	QObject::connect(processFinishedNotifier, &QWinEventNotifier::activated, [=]() {
+		processFinishedNotifier->setEnabled(false);
+		processFinishedNotifier->deleteLater();
+
+		pProgress->Finish(SB_OK);
+
+		if(hJobObject)
+			CloseHandle(hJobObject);
+		CloseHandle(pi.hThread);
+		CloseHandle(pi.hProcess);
+	});
+
+	QObject::connect(pProgress.data(), &CSbieProgress::Canceled, [=]() {
+		if (hJobObject)
+			TerminateJobObject(hJobObject, 0);
+		else
+			TerminateProcess(pi.hProcess, 0);
+	});
+
+	ResumeThread(pi.hThread);
+	
+	return pProgress;
 }
 
 //////////////////////////////////////////////////////////////////////////////
 // Shell integration
 
-int CSbieUtils::IsContextMenu()
+QString CSbieUtils::GetContextMenuStartCmd()
 {
-	if (!CheckRegValue(L"Software\\Classes\\*\\shell\\sandbox\\command"))
-		return 0;
-	if (!CheckRegValue(L"software\\classes\\folder\\shell\\sandbox\\command"))
-		return 1;
-	return 2;
-}
-
-bool CSbieUtils::CheckRegValue(const wchar_t* key)
-{
+	const wchar_t* key = L"Software\\Classes\\*\\shell\\sandbox\\command";
 	HKEY hkey;
 	LONG rc = RegOpenKeyEx(HKEY_CURRENT_USER, key, 0, KEY_READ, &hkey);
 	if (rc != 0)
@@ -210,16 +255,17 @@ bool CSbieUtils::CheckRegValue(const wchar_t* key)
 	rc = RegQueryValueEx(hkey, NULL, NULL, &type, (BYTE *)path, &path_len);
 	RegCloseKey(hkey);
 	if (rc != 0)
-		return false;
+		return QString();
 
-	return true;
+	return QString::fromWCharArray(path);
 }
 
-void CSbieUtils::AddContextMenu(const QString& StartPath)
+void CSbieUtils::AddContextMenu(const QString& StartPath, const QString& RunStr, /*const QString& ExploreStr,*/ const QString& IconPath)
 {
 	wstring start_path = L"\"" + StartPath.toStdWString() + L"\"";
+	wstring icon_path = L"\"" + (IconPath.isEmpty() ? StartPath : IconPath).toStdWString() + L"\"";
 
-	CreateShellEntry(L"*", L"Run &Sandboxed", start_path, start_path + L" /box:__ask__ \"%1\" %*");
+	CreateShellEntry(L"*", L"sandbox", RunStr.toStdWString(), icon_path, start_path + L" /box:__ask__ \"%1\" %*");
 
 	wstring explorer_path(512, L'\0');
 
@@ -244,13 +290,13 @@ void CSbieUtils::AddContextMenu(const QString& StartPath)
 		explorer_path.append(L"\\explorer.exe");
 	}
 
-	CreateShellEntry(L"Folder", L"Explore &Sandboxed", start_path, start_path + L" /box:__ask__ " + explorer_path + L" \"%1\"");
+	CreateShellEntry(L"Folder", L"sandbox", RunStr.toStdWString(), icon_path, start_path + L" /box:__ask__ " + explorer_path + L" \"%1\""); // ExploreStr
 }
 
-void CSbieUtils::CreateShellEntry(const wstring& classname, const wstring& cmdtext, const wstring& iconpath, const wstring& startcmd)
+void CSbieUtils::CreateShellEntry(const wstring& classname, const wstring& key, const wstring& cmdtext, const wstring& iconpath, const wstring& startcmd)
 {
 	HKEY hkey;
-	LONG rc = RegCreateKeyEx(HKEY_CURRENT_USER, (L"software\\classes\\" + classname + L"\\shell\\sandbox").c_str(), 0, NULL, 0, KEY_WRITE, NULL, &hkey, NULL);
+	LONG rc = RegCreateKeyEx(HKEY_CURRENT_USER, (L"software\\classes\\" + classname + L"\\shell\\" + key).c_str(), 0, NULL, 0, KEY_WRITE, NULL, &hkey, NULL);
 	if (rc != 0)
 		return;
 
@@ -261,7 +307,7 @@ void CSbieUtils::CreateShellEntry(const wstring& classname, const wstring& cmdte
 	if (rc != 0)
 		return;
 
-	rc = RegCreateKeyEx(HKEY_CURRENT_USER, (L"software\\classes\\" + classname + L"\\shell\\sandbox\\command").c_str(), 0, NULL, 0, KEY_WRITE, NULL, &hkey, NULL);
+	rc = RegCreateKeyEx(HKEY_CURRENT_USER, (L"software\\classes\\" + classname + L"\\shell\\"  + key + L"\\command").c_str(), 0, NULL, 0, KEY_WRITE, NULL, &hkey, NULL);
 	if (rc != 0)
 		return;
 
@@ -275,3 +321,239 @@ void CSbieUtils::RemoveContextMenu()
 	RegDeleteTreeW(HKEY_CURRENT_USER, L"software\\classes\\*\\shell\\sandbox");
 	RegDeleteTreeW(HKEY_CURRENT_USER, L"software\\classes\\folder\\shell\\sandbox");
 }
+
+bool CSbieUtils::HasContextMenu2()
+{
+	const wchar_t* key = L"Software\\Classes\\*\\shell\\unbox\\command";
+	HKEY hkey;
+	LONG rc = RegOpenKeyEx(HKEY_CURRENT_USER, key, 0, KEY_READ, &hkey);
+	if (rc != 0)
+		return false;
+
+	RegCloseKey(hkey);
+
+	return true;
+}
+
+void CSbieUtils::AddContextMenu2(const QString& StartPath, const QString& RunStr, const QString& IconPath)
+{
+	wstring start_path = L"\"" + StartPath.toStdWString() + L"\"";
+	wstring icon_path = L"\"" + (IconPath.isEmpty() ? StartPath : IconPath).toStdWString() + L"\",-104";
+
+	CreateShellEntry(L"*", L"unbox", RunStr.toStdWString(), icon_path, start_path + L" /disable_force \"%1\" %*");
+}
+
+void CSbieUtils::RemoveContextMenu2()
+{
+	RegDeleteTreeW(HKEY_CURRENT_USER, L"software\\classes\\*\\shell\\unbox");
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Shortcuts
+
+bool CSbieUtils::CreateShortcut(CSbieAPI* pApi, QString LinkPath, const QString &LinkName, const QString &boxname, const QString &arguments, const QString &iconPath, int iconIndex, const QString &workdir, bool bRunElevated)
+{
+	QString StartExe = pApi->GetStartPath();
+
+	QString StartArgs;
+	if (bRunElevated)
+		StartArgs += "/elevated ";
+	StartArgs += "/box:" + boxname;
+	if (!arguments.isEmpty())
+		StartArgs += " \"" + arguments + "\"";
+
+	IUnknown *pUnknown;
+	HRESULT hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC, IID_IUnknown, (void **)&pUnknown);
+	if (FAILED(hr))
+		return false;
+
+	IShellLink *pShellLink;
+	hr = pUnknown->QueryInterface(IID_IShellLink, (void **)&pShellLink);
+	if (SUCCEEDED(hr)) 
+	{			
+		pShellLink->SetPath(StartExe.toStdWString().c_str());
+		pShellLink->SetArguments(StartArgs.toStdWString().c_str());
+		if (!iconPath.isEmpty())
+			pShellLink->SetIconLocation(iconPath.toStdWString().c_str(), iconIndex);
+		if (!workdir.isEmpty())
+			pShellLink->SetWorkingDirectory(workdir.toStdWString().c_str());
+		if (!LinkName.isEmpty()) {
+			QString desc = QString("%1 [%2]").arg(LinkName).arg(boxname);
+			pShellLink->SetDescription(desc.toStdWString().c_str());
+		}
+
+		IPersistFile *pPersistFile;
+		hr = pUnknown->QueryInterface(IID_IPersistFile, (void **)&pPersistFile);
+		if (SUCCEEDED(hr)) 
+		{
+			if (LinkPath.right(4) != ".lnk")
+				LinkPath.append(".lnk");
+
+			pPersistFile->Save(LinkPath.toStdWString().c_str(), FALSE);
+
+			pPersistFile->Release();
+		}
+
+		pShellLink->Release();
+	}
+
+	pUnknown->Release();
+	return (SUCCEEDED(hr));
+}
+
+bool CSbieUtils::GetStartMenuShortcut(CSbieAPI* pApi, QString &BoxName, QString &LinkPath, QString &IconPath, quint32& IconIndex, QString &WorkDir)
+{
+	WCHAR MapName[128];
+	wsprintf(MapName, SANDBOXIE L"_StartMenu_WorkArea_%08X_%08X", GetCurrentProcessId(), GetTickCount());
+	HANDLE hMapping = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 8192, MapName);
+	if (!hMapping)
+		return false;
+
+	WCHAR* buf = (WCHAR *)MapViewOfFile(hMapping, FILE_MAP_WRITE, 0, 0, 8192);
+	if (!buf) {
+		CloseHandle(hMapping);
+		return false;
+	}
+	memset(buf, 0, 8192);
+	
+
+	QProcess Process;
+	QString Command = "start_menu:" + QString::fromWCharArray(MapName);
+	if (!LinkPath.isEmpty())
+		Command += ":" + LinkPath;
+	pApi->RunStart(BoxName, Command, false, QString(), &Process);
+	//Process.waitForFinished(-1);
+	while(Process.state() != QProcess::NotRunning)
+		QCoreApplication::processEvents(); // keep UI responsive
+	
+
+	struct SLnk {
+		WCHAR box_name[34];		//0
+		WCHAR reserved[30];		//34
+		WCHAR link_path[956];	//64
+		ULONG IconIndex;		//1020
+		WCHAR unused[2];		//1022
+		WCHAR icon_path[1024];	//1024
+		WCHAR work_dir[1024];	//2048
+								//3072
+	} *lnk = (SLnk*)buf;
+
+	BoxName = QString::fromWCharArray(lnk->box_name, wcsnlen_s(lnk->box_name, sizeof(lnk->box_name)));
+	LinkPath = QString::fromWCharArray(lnk->link_path, wcsnlen_s(lnk->link_path, sizeof(lnk->link_path)));
+	if (*lnk->icon_path) {
+		IconIndex = lnk->IconIndex;
+		IconPath = QString::fromWCharArray(lnk->icon_path, wcsnlen_s(lnk->icon_path, sizeof(lnk->icon_path)));
+	}
+	if (*lnk->work_dir)	WorkDir = QString::fromWCharArray(lnk->work_dir, wcsnlen_s(lnk->work_dir, sizeof(lnk->work_dir)));
+	else				WorkDir = LinkPath.left(LinkPath.lastIndexOf('\\'));
+
+	UnmapViewOfFile(buf);
+	CloseHandle(hMapping);
+
+	if (BoxName.isEmpty() || LinkPath.isEmpty())
+		return false;
+	return true;
+}
+
+
+BOOLEAN SelectFavoriteInRegedit(HWND RegeditWindow, std::wstring FavoriteName)
+{
+    HMENU menu;
+    HMENU favoritesMenu;
+    ULONG count;
+    ULONG i;
+    ULONG id = ULONG_MAX;
+
+	if (IsIconic(RegeditWindow)) {
+        ShowWindow(RegeditWindow, SW_RESTORE);
+        SetForegroundWindow(RegeditWindow);
+    }
+    else {
+        SetForegroundWindow(RegeditWindow);
+    }
+	
+	if (!(menu = GetMenu(RegeditWindow)))
+        return FALSE;
+
+	/*UINT scan = MapVirtualKey(VK_F5, 0);
+	LPARAM lparam = 0x00000001 | (LPARAM)(scan << 16); 
+	SendMessage(RegeditWindow, WM_KEYDOWN, VK_F5, lparam);
+	SendMessage(RegeditWindow, WM_KEYUP, VK_F5, 0);*/
+	SendMessage(RegeditWindow, WM_MENUSELECT, MAKEWPARAM(2, MF_POPUP), (LPARAM)menu);
+    SendMessage(RegeditWindow, WM_COMMAND, MAKEWPARAM(0x288, 0), 0); // F5 menu entry
+    PostMessage(RegeditWindow, WM_MENUSELECT, MAKEWPARAM(0, 0xffff), 0);
+
+
+    SendMessage(RegeditWindow, WM_MENUSELECT, MAKEWPARAM(3, MF_POPUP), (LPARAM)menu);
+    if (!(favoritesMenu = GetSubMenu(menu, 3)))
+        return FALSE;
+
+    count = GetMenuItemCount(favoritesMenu);
+    if (count == -1) return FALSE;
+    if (count > 1000) count = 1000;
+
+    for (i = 3; i < count; i++) {
+
+        MENUITEMINFO info = { sizeof(MENUITEMINFO) };
+        WCHAR buffer[MAX_PATH];
+
+        info.fMask = MIIM_ID | MIIM_STRING;
+        info.dwTypeData = buffer;
+        info.cch = RTL_NUMBER_OF(buffer);
+        GetMenuItemInfo(favoritesMenu, i, TRUE, &info);
+
+        if (info.cch > 0 && _wcsicmp(FavoriteName.c_str(),buffer) == 0) {
+            id = info.wID;
+            break;
+        }
+    }
+
+    if (id == ULONG_MAX)
+        return FALSE;
+
+    SendMessage(RegeditWindow, WM_COMMAND, MAKEWPARAM(id, 0), 0);
+    PostMessage(RegeditWindow, WM_MENUSELECT, MAKEWPARAM(0, 0xffff), 0);
+
+    return TRUE;
+}
+
+bool ShellOpenRegKey(const QString& KeyName)
+{
+	std::wstring keyName = KeyName.toStdWString();
+
+    HWND regeditWindow = FindWindow(L"RegEdit_RegEdit", NULL);
+
+    if (!regeditWindow)
+    {
+		RegSetKeyValue(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Applets\\Regedit", L"LastKey", REG_SZ, keyName.c_str(), (keyName.size() + 1) * sizeof(WCHAR));
+
+		SHELLEXECUTEINFO sei = { sizeof(sei) };
+		sei.fMask = 0;
+		sei.lpVerb = NULL;
+		sei.lpFile = L"regedit.exe";
+		sei.lpParameters = NULL;
+		sei.hwnd = NULL;
+		sei.nShow = SW_NORMAL;
+	
+		ShellExecuteEx(&sei);
+
+        return TRUE;
+    }
+	
+	// for this to work we need elevated privileges !!!
+
+	QString FavoriteName = "A_Sandbox_" + QString::number((quint32)rand(), 16);
+	std::wstring favoriteName = FavoriteName.toStdWString();
+
+	RegSetKeyValue(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Applets\\Regedit\\Favorites", favoriteName.c_str(), REG_SZ, keyName.c_str(), (keyName.size() + 1) * sizeof(WCHAR));
+
+    BOOLEAN result = SelectFavoriteInRegedit(regeditWindow, favoriteName);
+
+	HKEY key;
+	RegOpenKey(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Applets\\Regedit\\Favorites", &key);
+	RegDeleteValue(key, favoriteName.c_str());
+	RegCloseKey(key);
+
+    return result;
+}
+

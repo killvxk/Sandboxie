@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -78,6 +79,21 @@ static P_GetMessage                 __sys_GetMessageW               = NULL;
 
 _FX BOOLEAN Gui_InitConsole1(void)
 {
+    // NoSbieCons BEGIN
+    if (Dll_CompartmentMode || SbieApi_QueryConfBool(NULL, L"NoSandboxieConsole", FALSE)) {
+
+        //
+        // We need to set Gui_ConsoleHwnd in order for Gui_InitConsole2 to start up properly,
+        // this functions starts a thread which listens for WM_DEVICECHANGE which we need
+        // we could go for a different signaling method in future but for now we stick to this methos
+        //
+
+        Gui_ConsoleHwnd = GetConsoleWindow();
+
+        return TRUE;
+    }
+	// NoSbieCons END
+
     //
     // on Windows 7 we may need to connect this process to a console
     // instance (conhost.exe) outside the sandbox
@@ -216,7 +232,7 @@ _FX BOOL Gui_ConnectConsole(ULONG ShowFlag)
 
     if (! NT_SUCCESS(status)) {
         WCHAR errtxt[48];
-        Sbie_swprintf(errtxt, L"ConsoleInit (%08X)", status);
+        Sbie_snwprintf(errtxt, 48, L"ConsoleInit (%08X)", status);
         SbieApi_Log(2205, errtxt);
         return FALSE;
     }
@@ -254,7 +270,9 @@ _FX void Gui_InitConsole2(void)
 
     if (_wcsicmp(Dll_ImageName, L"klwtblfs.exe") == 0) {
 
-        CreateThread(NULL, 0, Proc_WaitForParentExit, (void *)1, 0, NULL);
+		HANDLE ThreadHandle = CreateThread(NULL, 0, Proc_WaitForParentExit, (void *)1, 0, NULL);
+		if (ThreadHandle)
+			CloseHandle(ThreadHandle); 
     }
 
     //
@@ -366,11 +384,14 @@ _FX ULONG Gui_ConsoleThread(void *xHandles)
 
     while (1) {
 
-        if (Gui_ConsoleHwnd && Dll_InitComplete) {
-
-            Taskbar_SetWindowAppUserModelId(Gui_ConsoleHwnd);
-            Gui_ConsoleHwnd = NULL;
-        }
+        //
+        // this causes git.exe to hang also jumplists for a console process are pointless anyways
+        // 
+        //if (Gui_ConsoleHwnd && Dll_InitComplete) {
+        //
+        //    Taskbar_SetWindowAppUserModelId(Gui_ConsoleHwnd);
+        //    Gui_ConsoleHwnd = NULL;
+        //}
 
         while (__sys_PeekMessageW(&msg, NULL, 0, 0, PM_NOREMOVE)) {
 

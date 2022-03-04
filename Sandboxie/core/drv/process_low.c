@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -23,6 +24,7 @@
 #include "process.h"
 #include "api.h"
 #include "util.h"
+#include "conf.h"
 
 
 //---------------------------------------------------------------------------
@@ -57,8 +59,7 @@ static KEVENT *Process_Low_Event = NULL;
 
 _FX BOOLEAN Process_Low_Init(void)
 {
-    Process_Low_Event =
-                ExAllocatePoolWithTag(NonPagedPool, sizeof(KEVENT), tzuk);
+    Process_Low_Event = ExAllocatePoolWithTag(NonPagedPool, sizeof(KEVENT), tzuk);
     if (! Process_Low_Event) {
         Log_Msg0(MSG_1104);
         return FALSE;
@@ -190,7 +191,7 @@ _FX BOOLEAN Process_Low_Inject(
             if (sbielow_loaded)
                 break;
 
-            time.QuadPart = -(SECONDS(1) / 4);
+            time.QuadPart = -(SECONDS(1) / 4); // 250ms*40 = 10s
             KeWaitForSingleObject(Process_Low_Event,
                                   Executive, KernelMode, FALSE, &time);
             ++retries;
@@ -216,27 +217,12 @@ _FX BOOLEAN Process_Low_Inject(
         ExReleaseResourceLite(Process_ListLock);
         KeLowerIrql(irql);
 
-        if (1) {
-
-            BOX dummy_box;
-            PROCESS dummy_proc;
-            memzero(&dummy_box, sizeof(dummy_box));
-            memzero(&dummy_proc, sizeof(dummy_proc));
-            dummy_box.session_id = session_id;
-            dummy_proc.box = &dummy_box;
-            dummy_proc.pid = process_id;
-            dummy_proc.create_time = create_time;
-            dummy_proc.image_name = (WCHAR *)image_name;
-
-            Process_CancelProcess(&dummy_proc);
-        }
-
-		Log_Status_Ex_Process(MSG_1231, 0x22, status, image_name, session_id, process_id);
+        Log_Status_Ex_Process(MSG_1231, 0x22, status, image_name, session_id, process_id);
 
         return FALSE;
     }
 
-    return sbielow_loaded;
+    return TRUE; // sbielow_loaded;
 }
 
 
@@ -295,6 +281,11 @@ _FX NTSTATUS Process_Low_Api_InjectComplete(PROCESS *proc, ULONG64 *parms)
 _FX BOOLEAN Process_Low_InitConsole(PROCESS *proc)
 {
     NTSTATUS status;
+
+	// NoSbieCons BEGIN
+	if (proc->bAppCompartment || Conf_Get_Boolean(proc->box->name, L"NoSandboxieConsole", 0, FALSE))
+		return TRUE;
+	// NoSbieCons END
 
     //
     // on Windows 7, a console process tries to launch conhost.exe through
