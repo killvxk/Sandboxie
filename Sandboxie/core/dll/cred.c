@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2023 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -63,9 +64,9 @@ static BOOL Cred_CredWriteW(void *pCredential, ULONG Flags);
 static BOOL Cred_CredWriteA(void *pCredential, ULONG Flags);
 
 static BOOL Cred_CredReadW(
-    void *TargetName, ULONG Type, ULONG Flags, void **ppCredential);
+    const wchar_t *TargetName, ULONG Type, ULONG Flags, void **ppCredential);
 static BOOL Cred_CredReadA(
-    void *TargetName, ULONG Type, ULONG Flags, void **ppCredential);
+    const char *TargetName, ULONG Type, ULONG Flags, void **ppCredential);
 
 static BOOL Cred_CredWriteDomainCredentialsW(
     void *pTargetInfo, void *pCredential, ULONG Flags);
@@ -82,13 +83,8 @@ static BOOL Cred_CredGetTargetInfoW(
 static BOOL Cred_CredGetTargetInfoA(
     void *pTargetName, ULONG Flags, void **pTargetInfo);
 
-static BOOL Cred_CredRenameW(
-    void *OldTargetName, void *NewTargetName, ULONG Type, ULONG Flags);
-static BOOL Cred_CredRenameA(
-    void *OldTargetName, void *NewTargetName, ULONG Type, ULONG Flags);
-
-static BOOL Cred_CredDeleteW(void *TargetName, ULONG Type, ULONG Flags);
-static BOOL Cred_CredDeleteA(void *TargetName, ULONG Type, ULONG Flags);
+static BOOL Cred_CredDeleteW(const wchar_t *TargetName, ULONG Type, ULONG Flags);
+static BOOL Cred_CredDeleteA(const char *TargetName, ULONG Type, ULONG Flags);
 
 static BOOL Cred_CredEnumerateW(
     void *pFilter, ULONG Flags, ULONG *pCount, void ***ppCredentials);
@@ -122,9 +118,6 @@ P_CredReadDomainCredentials __sys_CredReadDomainCredentialsA = NULL;
 //P_CredGetTargetInfo      __sys_CredGetTargetInfoA    = NULL;
 //P_CredGetTargetInfo      __sys_CredGetTargetInfoW    = NULL;
 
-P_CredRename             __sys_CredRenameA           = NULL;
-P_CredRename             __sys_CredRenameW           = NULL;
-
 P_CredDelete             __sys_CredDeleteA           = NULL;
 P_CredDelete             __sys_CredDeleteW           = NULL;
 
@@ -146,8 +139,8 @@ DEFINE_GUID(GUID_SANDBOXIE,
 static const WCHAR *Cred_SimpleCred = L"SimpleCred-";
 static const WCHAR *Cred_DomainCred = L"DomainCred-";
 
-extern const WCHAR *Pst_OpenProtectedStorage;
 
+//static BOOLEAN Cred_Trace = FALSE;
 
 //---------------------------------------------------------------------------
 // SBIEDLL_HOOK_CRED
@@ -155,31 +148,34 @@ extern const WCHAR *Pst_OpenProtectedStorage;
 
 
 #define SBIEDLL_HOOK_CRED(proc)                                             \
-    *(ULONG_PTR *)&__sys_##proc = (ULONG_PTR)Ldr_GetProcAddrNew(DllName_advapi32, L#proc, #proc); \
+    *(ULONG_PTR *)&__sys_##proc = (ULONG_PTR)GetProcAddress(module, #proc); \
     if (*(ULONG_PTR *)&__sys_##proc) {                                      \
         *(ULONG_PTR *)&__sys_##proc = (ULONG_PTR)                           \
-            SbieDll_Hook(#proc, __sys_##proc, Cred_##proc);                 \
+            SbieDll_Hook(#proc, __sys_##proc, Cred_##proc, module);         \
         if (! __sys_##proc) return FALSE;                                   \
     }
 
 
 //---------------------------------------------------------------------------
-// Cred_Init_AdvApi
+// Cred_Init
 //---------------------------------------------------------------------------
 
 
-_FX BOOLEAN Cred_Init_AdvApi(HMODULE module)
+_FX BOOLEAN Cred_Init(HMODULE module)
 {
     //
     // if OpenProtectedStorage or OpenCredentials is specified,
     // don't hook anything
     //
 
-    if (SbieApi_QueryConfBool(NULL, Pst_OpenProtectedStorage, FALSE))
+    ULONG mp_flags = SbieDll_MatchPath(L'i', L"\\RPC Control\\protected_storage");
+    if (PATH_IS_OPEN(mp_flags))
         return TRUE;
 
     if (SbieApi_QueryConfBool(NULL, L"OpenCredentials", FALSE))
         return TRUE;
+
+    //Cred_Trace = SbieApi_QueryConfBool(NULL, L"CredTrace", FALSE);
 
 //    __sys_CredMarshalCredential = (P_CredMarshalCredential)
 //        GetProcAddress(module, "CredMarshalCredential");
@@ -202,9 +198,6 @@ _FX BOOLEAN Cred_Init_AdvApi(HMODULE module)
 
     //SBIEDLL_HOOK_CRED(CredGetTargetInfoA);
     //SBIEDLL_HOOK_CRED(CredGetTargetInfoW);
-
-    SBIEDLL_HOOK_CRED(CredRenameA);
-    SBIEDLL_HOOK_CRED(CredRenameW);
 
     SBIEDLL_HOOK_CRED(CredDeleteA);
     SBIEDLL_HOOK_CRED(CredDeleteW);
@@ -263,7 +256,8 @@ _FX WCHAR *Cred_GetName(
     if (DomainName)
         len += wcslen(DomainName);
     if (TargetName)
-        len += wcslen(TargetName) + 10;
+        //len += wcslen(TargetName) + 10;
+        len += wcslen(TargetName);
     else
         TargetName = L"?";
 
@@ -272,7 +266,8 @@ _FX WCHAR *Cred_GetName(
     if (DomainName)
         Sbie_snwprintf(name, len, L"%s%s-%s", Cred_DomainCred, DomainName, TargetName);
     else
-        Sbie_snwprintf(name, len, L"%s%08X-%s", Cred_SimpleCred, Type, TargetName);
+        //Sbie_snwprintf(name, len, L"%s%08X-%s", Cred_SimpleCred, Type, TargetName);
+        Sbie_snwprintf(name, len, L"%s-%s", Cred_SimpleCred, TargetName);
 
     return name;
 }
@@ -733,6 +728,12 @@ _FX BOOL Cred_CredWriteW(void *pCredential, ULONG Flags)
         return FALSE;
     }
 
+    /*if (Cred_Trace) {
+        WCHAR msg[1024];
+        Sbie_snwprintf(msg, 1024, L"CredWriteW: %s (%d)", cred->TargetName, cred->Type);
+        SbieApi_MonitorPutMsg(MONITOR_OTHER | MONITOR_TRACE, msg);
+    }*/
+
     name = Cred_GetName(NULL, cred->TargetName, cred->Type);
 
     ok = Cred_WriteItem(name, mrshcred, mrshcred_len);
@@ -752,7 +753,7 @@ _FX BOOL Cred_CredWriteW(void *pCredential, ULONG Flags)
 
 
 _FX BOOL Cred_CredReadW(
-    void *TargetName, ULONG Type, ULONG Flags, void **ppCredential)
+    const wchar_t* TargetName, ULONG Type, ULONG Flags, void** ppCredential)
 {
     HRESULT hr;
     WCHAR *name;
@@ -778,23 +779,32 @@ _FX BOOL Cred_CredReadW(
         if (SUCCEEDED(hr))
             Cred_CoTaskMemFree(mrshcred);
 
-        return __sys_CredReadW(TargetName, Type, Flags, ppCredential);
+        ok = __sys_CredReadW(TargetName, Type, Flags, ppCredential);
+    }
+    else {
+
+        *ppCredential = Cred_Unserialize1(mrshcred);
+
+        Cred_CoTaskMemFree(mrshcred);
+
+        if (*ppCredential) {
+            err = 0;
+            ok = TRUE;
+        }
+        else {
+            err = ERROR_NOT_FOUND;
+            ok = FALSE;
+        }
+
+        SetLastError(err);
     }
 
-    *ppCredential = Cred_Unserialize1(mrshcred);
+    /*if (Cred_Trace) {
+        WCHAR msg[1024];
+        Sbie_snwprintf(msg, 1024, L"CredReadW: %s (%d) = %d", TargetName, Type, FAILED(hr) ? ok : (ok ? 2 : -1));
+        SbieApi_MonitorPutMsg(MONITOR_OTHER | MONITOR_TRACE, msg);
+    }*/
 
-    Cred_CoTaskMemFree(mrshcred);
-
-    if (*ppCredential) {
-        err = 0;
-        ok = TRUE;
-    } else {
-        err = ERROR_NOT_FOUND;
-        ok = FALSE;
-    }
-
-
-    SetLastError(err);
     return ok;
 }
 
@@ -944,24 +954,23 @@ _FX BOOL Cred_CredReadDomainCredentialsW(
 //---------------------------------------------------------------------------
 
 
-_FX BOOL Cred_CredDeleteW(void *TargetName, ULONG Type, ULONG Flags)
+_FX BOOL Cred_CredDeleteW(const wchar_t *TargetName, ULONG Type, ULONG Flags)
 {
     WCHAR *name;
     ULONG zero;
-    PCREDENTIALW *cred;
+    CREDENTIALW *cred;
 
     if (!Cred_PreparePStore()) {
         SetLastError(ERROR_NOT_FOUND);
         return FALSE;
     }
-    name = Cred_GetName(NULL, TargetName, Type);
 
-    if (Cred_CredReadW(name, Type, Flags, (void **)&cred)) {
+    if (Cred_CredReadW(TargetName, Type, Flags, &cred)) {
         if (!cred) {
             SetLastError(ERROR_NOT_FOUND);
             return FALSE;
         }
-        if (cred[0]->CredentialBlobSize == sizeof(ULONG) && *(ULONG *)cred[0]->CredentialBlob == 0) {
+        if (cred->CredentialBlobSize == sizeof(ULONG) && *(ULONG *)cred->CredentialBlob == 0) {
             LocalFree(cred);
             SetLastError(ERROR_NOT_FOUND);
             return FALSE;
@@ -973,10 +982,15 @@ _FX BOOL Cred_CredDeleteW(void *TargetName, ULONG Type, ULONG Flags)
     }
     LocalFree(cred);
     zero = 0;
+
+    name = Cred_GetName(NULL, TargetName, Type);
+
     if (!Cred_WriteItem(name, &zero, sizeof(ULONG))) {
+        Dll_Free(name);
         SetLastError(ERROR_NOT_FOUND);
         return FALSE;
     }
+    Dll_Free(name);
     return TRUE;
 }
 
@@ -1108,16 +1122,205 @@ _FX BOOL Cred_CredEnumerateW(
 
 
 //---------------------------------------------------------------------------
-// Cred_CredRenameW
+// Cred_CopyW2A
 //---------------------------------------------------------------------------
 
 
-_FX BOOL Cred_CredRenameW(
-    void *OldTargetName, void *NewTargetName, ULONG Type, ULONG Flags)
+_FX char* Cred_CopyW2A(char** pStrA, const WCHAR* strW)
 {
-    SbieApi_Log(2205, L"CredRenameW");
-    SetLastError(ERROR_NO_SUCH_LOGON_SESSION);
-    return FALSE;
+    if (!strW)
+        return NULL;
+    ULONG i = 0;
+    WCHAR* strA = *pStrA;
+    for (; strW[i]; i++)
+        strA[i] = strW[i];
+    strA[i++] = '\0';
+    *pStrA += i;
+    return strA;
+}
+
+
+//---------------------------------------------------------------------------
+// Cred_StrASizeW
+//---------------------------------------------------------------------------
+
+
+_FX size_t Cred_StrASizeW(const WCHAR* strW)
+{
+    if (!strW)
+        return 0;
+    return wcslen(strW) + 1;
+}
+
+
+//---------------------------------------------------------------------------
+// Cred_CopyA2W
+//---------------------------------------------------------------------------
+
+
+_FX WCHAR* Cred_CopyA2W(WCHAR** pStrW, const char* strA)
+{
+    if (!strA)
+        return NULL;
+    ULONG i = 0;
+    WCHAR* strW = *pStrW;
+    for (; strA[i]; i++)
+        strW[i] = strA[i];
+    strW[i++] = L'\0';
+    *pStrW += i;
+    return strW;
+}
+
+
+//---------------------------------------------------------------------------
+// Cred_StrWSizeA
+//---------------------------------------------------------------------------
+
+
+_FX size_t Cred_StrWSizeA(const char* strA)
+{
+    if (!strA)
+        return 0;
+    return (strlen(strA) + 1) * sizeof(WCHAR);
+}
+
+
+//---------------------------------------------------------------------------
+// Cred_STRA2W
+//---------------------------------------------------------------------------
+
+
+_FX const WCHAR* Cred_STRA2W(const char* strA)
+{
+    if (!strA)
+        return NULL;
+    WCHAR* strW = LocalAlloc(LMEM_FIXED, Cred_StrWSizeA(strA));
+    return Cred_CopyA2W(&strW, strA);
+}
+
+
+//---------------------------------------------------------------------------
+// Cred_CREDENTIALA2W
+//---------------------------------------------------------------------------
+
+
+_FX CREDENTIALW* Cred_CREDENTIALA2W(CREDENTIALA* credA)
+{
+    ULONG size = sizeof(CREDENTIALW);
+    size += Cred_StrWSizeA(credA->TargetName);  // CRED_MAX_DOMAIN_TARGET_NAME_LENGTH
+    size += Cred_StrWSizeA(credA->Comment);     // CRED_MAX_STRING_LENGTH
+    for (DWORD i = 0; i < credA->AttributeCount; i++) {         // CRED_MAX_ATTRIBUTES
+        size += sizeof(CREDENTIAL_ATTRIBUTEA);
+        size += Cred_StrWSizeA(credA->Attributes[i].Keyword);   // CRED_MAX_STRING_LENGTH
+    }                                                           // CRED_MAX_VALUE_SIZE 
+    size += Cred_StrWSizeA(credA->TargetAlias); // CRED_MAX_STRING_LENGTH
+    size += Cred_StrWSizeA(credA->UserName);    // CRED_MAX_USERNAME_LENGTH
+
+    CREDENTIALW* credW = LocalAlloc(LMEM_FIXED, size);
+
+    WCHAR* ptr = (WCHAR*)(((char*)credW) + sizeof(CREDENTIALW));
+
+    credW->Flags = credA->Flags;
+    credW->Type = credA->Type;
+    credW->TargetName = Cred_CopyA2W(&ptr, credA->TargetName);
+    credW->Comment = Cred_CopyA2W(&ptr, credA->Comment);
+    credW->LastWritten = credA->LastWritten;
+    credW->CredentialBlobSize = credA->CredentialBlobSize;
+    credW->CredentialBlob = credA->CredentialBlob;              // CRED_MAX_CREDENTIAL_BLOB_SIZE 
+    credW->Persist = credA->Persist;
+    credW->AttributeCount = credA->AttributeCount;
+    credW->Attributes = (PCREDENTIAL_ATTRIBUTEW)ptr;
+    ptr = (WCHAR*)(((char*)ptr) + (sizeof(PCREDENTIAL_ATTRIBUTEW) * credW->AttributeCount));
+    for (DWORD i = 0; i < credA->AttributeCount; i++) {
+        credW->Attributes[i].Keyword = Cred_CopyA2W(&ptr, credA->Attributes[i].Keyword);
+        credW->Attributes[i].Flags = credA->Attributes[i].Flags;
+        credW->Attributes[i].ValueSize = credA->Attributes[i].ValueSize;
+        credW->Attributes[i].Value = credA->Attributes[i].Value;
+    }   
+    credW->TargetAlias = Cred_CopyA2W(&ptr, credA->TargetAlias);
+    credW->UserName = Cred_CopyA2W(&ptr, credA->UserName);
+
+    return credW;
+}
+
+
+//---------------------------------------------------------------------------
+// Cred_CREDENTIALW2A
+//---------------------------------------------------------------------------
+
+
+_FX CREDENTIALA* Cred_CREDENTIALW2A(CREDENTIALW* credW)
+{
+    ULONG size = sizeof(CREDENTIALA);
+    size += Cred_StrASizeW(credW->TargetName);  // CRED_MAX_DOMAIN_TARGET_NAME_LENGTH
+    size += Cred_StrASizeW(credW->Comment);     // CRED_MAX_STRING_LENGTH
+    for (DWORD i = 0; i < credW->AttributeCount; i++) {         // CRED_MAX_ATTRIBUTES
+        size += sizeof(CREDENTIAL_ATTRIBUTEA);
+        size += Cred_StrASizeW(credW->Attributes[i].Keyword);   // CRED_MAX_STRING_LENGTH
+    }                                                           // CRED_MAX_VALUE_SIZE 
+    size += Cred_StrASizeW(credW->TargetAlias); // CRED_MAX_STRING_LENGTH
+    size += Cred_StrASizeW(credW->UserName);    // CRED_MAX_USERNAME_LENGTH
+
+    CREDENTIALA* credA = LocalAlloc(LMEM_FIXED, size);
+
+    char* ptr = ((char*)credW) + sizeof(CREDENTIALW);
+
+    credA->Flags = credW->Flags;
+    credA->Type = credW->Type;
+    credA->TargetName = Cred_CopyW2A(&ptr, credW->TargetName);
+    credA->Comment = Cred_CopyW2A(&ptr, credW->Comment);
+    credA->LastWritten = credW->LastWritten;
+    credA->CredentialBlobSize = credW->CredentialBlobSize;
+    credA->CredentialBlob = credW->CredentialBlob;              // CRED_MAX_CREDENTIAL_BLOB_SIZE 
+    credA->Persist = credW->Persist;
+    credA->AttributeCount = credW->AttributeCount;
+    credA->Attributes = (PCREDENTIAL_ATTRIBUTEA)ptr;
+    ptr += sizeof(PCREDENTIAL_ATTRIBUTEA) * credW->AttributeCount;
+    for (DWORD i = 0; i < credW->AttributeCount; i++) {
+        credA->Attributes[i].Keyword = Cred_CopyW2A(&ptr, credW->Attributes[i].Keyword);
+        credA->Attributes[i].Flags = credW->Attributes[i].Flags;
+        credA->Attributes[i].ValueSize = credW->Attributes[i].ValueSize;
+        credA->Attributes[i].Value = credW->Attributes[i].Value;
+    }   
+    credA->TargetAlias = Cred_CopyW2A(&ptr, credW->TargetAlias);
+    credA->UserName = Cred_CopyW2A(&ptr, credW->UserName);
+
+    return credA;
+}
+
+
+//---------------------------------------------------------------------------
+// Cred_CREDENTIAL_TARGET_INFORMATIONA2W
+//---------------------------------------------------------------------------
+
+
+_FX CREDENTIAL_TARGET_INFORMATIONW* Cred_CREDENTIAL_TARGET_INFORMATIONA2W(CREDENTIAL_TARGET_INFORMATIONA* TargetInfoA)
+{
+    ULONG size = sizeof(CREDENTIAL_TARGET_INFORMATIONW);
+    size += Cred_StrWSizeA(TargetInfoA->TargetName);
+    size += Cred_StrWSizeA(TargetInfoA->NetbiosServerName);
+    size += Cred_StrWSizeA(TargetInfoA->DnsServerName);
+    size += Cred_StrWSizeA(TargetInfoA->NetbiosDomainName);
+    size += Cred_StrWSizeA(TargetInfoA->DnsDomainName);
+    size += Cred_StrWSizeA(TargetInfoA->DnsTreeName);
+    size += Cred_StrWSizeA(TargetInfoA->PackageName);
+
+    CREDENTIAL_TARGET_INFORMATIONW* TargetInfoW = LocalAlloc(LMEM_FIXED, size);
+
+    WCHAR* ptr = (WCHAR*)(((char*)TargetInfoW) + sizeof(CREDENTIAL_TARGET_INFORMATIONW));
+
+    TargetInfoW->TargetName = Cred_CopyA2W(&ptr, TargetInfoA->TargetName);
+    TargetInfoW->NetbiosServerName = Cred_CopyA2W(&ptr, TargetInfoA->NetbiosServerName);
+    TargetInfoW->DnsServerName = Cred_CopyA2W(&ptr, TargetInfoA->DnsServerName);
+    TargetInfoW->NetbiosDomainName = Cred_CopyA2W(&ptr, TargetInfoA->NetbiosDomainName);
+    TargetInfoW->DnsDomainName = Cred_CopyA2W(&ptr, TargetInfoA->DnsDomainName);
+    TargetInfoW->DnsTreeName = Cred_CopyA2W(&ptr, TargetInfoA->DnsTreeName);
+    TargetInfoW->PackageName = Cred_CopyA2W(&ptr, TargetInfoA->PackageName);
+    TargetInfoW->Flags = TargetInfoA->Flags;
+    TargetInfoW->CredTypeCount = TargetInfoA->CredTypeCount;
+    TargetInfoW->CredTypes = TargetInfoA->CredTypes;
+    
+    return TargetInfoW;
 }
 
 
@@ -1128,9 +1331,15 @@ _FX BOOL Cred_CredRenameW(
 
 _FX BOOL Cred_CredWriteA(void *pCredential, ULONG Flags)
 {
-    SbieApi_Log(2205, L"CredWriteA");
-    SetLastError(ERROR_NO_SUCH_LOGON_SESSION);
-    return FALSE;
+    CREDENTIALA *credA = (CREDENTIALA *)pCredential;
+
+    CREDENTIALW *credW = Cred_CREDENTIALA2W(credA);
+
+    BOOL ret = Cred_CredWriteW(credW, Flags);
+
+    if (credW) LocalFree(credW);
+
+    return ret;
 }
 
 
@@ -1142,9 +1351,19 @@ _FX BOOL Cred_CredWriteA(void *pCredential, ULONG Flags)
 _FX BOOL Cred_CredWriteDomainCredentialsA(
     void *pTargetInfo, void *pCredential, ULONG Flags)
 {
-    SbieApi_Log(2205, L"CredWriteDomainCredentialsA");
-    SetLastError(ERROR_NO_SUCH_LOGON_SESSION);
-    return FALSE;
+    CREDENTIAL_TARGET_INFORMATIONA *TargetInfoA =
+        (CREDENTIAL_TARGET_INFORMATIONA *)pTargetInfo;
+    CREDENTIALA *credA = (CREDENTIALA *)pCredential;
+
+    CREDENTIAL_TARGET_INFORMATIONW *TargetInfoW = Cred_CREDENTIAL_TARGET_INFORMATIONA2W(TargetInfoA);
+    CREDENTIALW *credW = Cred_CREDENTIALA2W(credA);
+
+    BOOL ret = Cred_CredWriteDomainCredentialsW(TargetInfoW, credW, Flags);
+
+    if (TargetInfoW) LocalFree(TargetInfoW);
+    if (credW) LocalFree(credW);
+
+    return ret;
 }
 
 
@@ -1175,29 +1394,19 @@ _FX BOOL Cred_CredWriteDomainCredentialsA(
 
 
 //---------------------------------------------------------------------------
-// Cred_CredRenameA
-//---------------------------------------------------------------------------
-
-
-_FX BOOL Cred_CredRenameA(
-    void *OldTargetName, void *NewTargetName, ULONG Type, ULONG Flags)
-{
-    SbieApi_Log(2205, L"CredRenameA");
-    SetLastError(ERROR_NO_SUCH_LOGON_SESSION);
-    return FALSE;
-}
-
-
-//---------------------------------------------------------------------------
 // Cred_CredDeleteA
 //---------------------------------------------------------------------------
 
 
-_FX BOOL Cred_CredDeleteA(void *TargetName, ULONG Type, ULONG Flags)
+_FX BOOL Cred_CredDeleteA(const char *TargetName, ULONG Type, ULONG Flags)
 {
-    SbieApi_Log(2205, L"CredDeleteA");
-    SetLastError(ERROR_NO_SUCH_LOGON_SESSION);
-    return FALSE;
+    const WCHAR* TargetNameW = Cred_STRA2W(TargetName);
+    
+    BOOL ret = Cred_CredDeleteW(TargetNameW, Type, Flags);
+
+    if (TargetNameW) LocalFree((WCHAR*)TargetNameW);
+
+    return ret;
 }
 
 
@@ -1207,10 +1416,20 @@ _FX BOOL Cred_CredDeleteA(void *TargetName, ULONG Type, ULONG Flags)
 
 
 _FX BOOL Cred_CredReadA(
-    void *TargetName, ULONG Type, ULONG Flags, void **ppCredential)
+    const char *TargetName, ULONG Type, ULONG Flags, void **ppCredential)
 {
-    SbieApi_Log(2205, L"CredReadA");
-    return __sys_CredReadA(TargetName, Type, Flags, ppCredential);
+    const WCHAR* TargetNameW = Cred_STRA2W(TargetName);
+    
+    void* pCredentialW = NULL;
+    BOOL ret = Cred_CredReadW(TargetNameW, Type, Flags, &pCredentialW);
+
+    if (pCredentialW) {
+        *ppCredential = Cred_CREDENTIALW2A(pCredentialW);
+        LocalFree(pCredentialW);
+    }
+    if (TargetNameW) LocalFree((WCHAR*)TargetNameW);
+
+    return ret;
 }
 
 
@@ -1222,6 +1441,7 @@ _FX BOOL Cred_CredReadA(
 _FX BOOL Cred_CredReadDomainCredentialsA(
     void *pTargetInfo, ULONG Flags, ULONG *pCount, void ***ppCredentials)
 {
+    // todo
     SbieApi_Log(2205, L"CredReadDomainCredentialsA");
     return __sys_CredReadDomainCredentialsA(
                                 pTargetInfo, Flags, pCount, ppCredentials);
@@ -1236,6 +1456,7 @@ _FX BOOL Cred_CredReadDomainCredentialsA(
 _FX BOOL Cred_CredEnumerateA(
     void *pFilter, ULONG Flags, ULONG *pCount, void ***ppCredentials)
 {
-    // SbieApi_Log(2205, L"CredEnumerateA");
+    // todo
+    //SbieApi_Log(2205, L"CredEnumerateA");
     return __sys_CredEnumerateA(pFilter, Flags, pCount, ppCredentials);
 }

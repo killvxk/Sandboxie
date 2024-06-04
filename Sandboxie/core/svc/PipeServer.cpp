@@ -27,7 +27,7 @@
 #include "core/dll/sbiedll.h"
 #include "common/defines.h"
 #include "common/my_version.h"
-//#include <psapi.h> // For access to GetModuleFileNameEx
+#include <psapi.h> // For access to GetModuleFileNameEx
 #include "sbieiniserver.h"
 
 //---------------------------------------------------------------------------
@@ -217,6 +217,9 @@ PipeServer::~PipeServer()
 
     if (m_pool)
         Pool_Delete(m_pool);
+
+	// cleanup CS
+	DeleteCriticalSection(&m_lock);
 }
 
 
@@ -1164,27 +1167,27 @@ bool PipeServer::IsCallerAdmin()
 // IsCallerSigned
 //---------------------------------------------------------------------------
 
-//extern "C" {
-//    NTSTATUS VerifyFileSignature(const wchar_t* FilePath);
-//}
-//
-//bool PipeServer::IsCallerSigned()
-//{
-//    CLIENT_TLS_DATA *TlsData =
-//                (CLIENT_TLS_DATA *)TlsGetValue(m_instance->m_TlsIndex);
-//
-//    NTSTATUS status = STATUS_UNSUCCESSFUL;
-//
-//    ULONG processId = (ULONG)(ULONG_PTR)TlsData->PortMessage->ClientId.UniqueProcess;
-//    HANDLE processHandle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
-//    if (processHandle != NULL) {
-//        TCHAR fileName[MAX_PATH];
-//        if (GetModuleFileNameEx(processHandle, NULL, fileName, MAX_PATH)) {
-//
-//            status = VerifyFileSignature(fileName);
-//        }
-//        CloseHandle(processHandle);
-//    }
-//
-//    return NT_SUCCESS(status);
-//}
+extern "C" {
+    NTSTATUS VerifyFileSignature(const wchar_t* FilePath);
+}
+
+bool PipeServer::IsCallerSigned()
+{
+    CLIENT_TLS_DATA *TlsData =
+                (CLIENT_TLS_DATA *)TlsGetValue(m_instance->m_TlsIndex);
+
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+
+    ULONG processId = (ULONG)(ULONG_PTR)TlsData->PortMessage->ClientId.UniqueProcess;
+    HANDLE processHandle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
+    if (processHandle != NULL) {
+        TCHAR fileName[MAX_PATH];
+        if (GetModuleFileNameEx(processHandle, NULL, fileName, MAX_PATH)) {
+
+            status = VerifyFileSignature(fileName);
+        }
+        CloseHandle(processHandle);
+    }
+
+    return NT_SUCCESS(status);
+}

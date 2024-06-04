@@ -1,7 +1,7 @@
 #----------------------------------------------------------------------------
 # SbieDrv
 #
-# Initialization errors issued to to the System evt Log
+# Initialization errors issued to the System evt Log
 #----------------------------------------------------------------------------
 
 1101;evt;inf;01
@@ -3615,6 +3615,10 @@ Haluatko pitää Sandboxie.ini asetustiedoston?
 Valitse KYLLÄ pitääksesi Sandboxie.ini asetustiedoston asetukset.
 
 Valitse EI poistaaksesi Sandboxie.ini asetustiedoston ja sen asetukset.
+.
+
+8055;ins;01
+Templates.inistä ja/tai tämän sandboxien version käännöksistä on saatavilla online-päivitys. Haluatko asentaa sen?
 .
 
 #----------------------------------------------------------------------------

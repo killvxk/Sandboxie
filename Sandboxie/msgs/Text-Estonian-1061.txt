@@ -1,7 +1,7 @@
 #----------------------------------------------------------------------------
 # SbieDrv
 #
-# Initialization errors issued to to the System event Log
+# Initialization errors issued to the System event Log
 #----------------------------------------------------------------------------
 
 1101;evt;inf;01
@@ -3170,6 +3170,10 @@ Soovid sa Sandboxie.ini konfiguratsioonifaili alles hoida?
 Vali JAH, et säilitada konfiguratsiooniseadeid Sandboxie.ini failis.
 
 Vali EI, et kustutada Sandboxie.ini fail ja kaotada need konfiguratsiooniseadeid.
+.
+
+8055;ins;01
+Templates.ini veebivärskendus ja/või selle sandboxie versiooni tõlked on saadaval. Kas soovite selle installida?
 .
 
 #----------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
- * Copyright 2020 David Xanatos, xanasoft.com
+ * Copyright 2020-2023 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -418,22 +418,6 @@ _FX BOOL SH32_ShellExecuteExW(SHELLEXECUTEINFOW *lpExecInfo)
 
 HICON SH32_BorderToIcon(HICON hIcon, COLORREF color)
 {
-    typedef HDC(*P_GetDC)(HWND hWnd);
-    typedef int(*P_ReleaseDC)(HWND hWnd, HDC hDC);
-    typedef BOOL(*P_GetIconInfo)(HICON hIcon, PICONINFO piconinfo);
-    typedef HICON(*P_CreateIconIndirect)(PICONINFO piconinfo);
-
-    typedef HDC(*P_CreateCompatibleDC)(HDC hdc);
-    typedef HGDIOBJ(*P_SelectObject)(HDC hdc, HGDIOBJ h);
-    typedef COLORREF(*P_GetPixel)(HDC hdc, int x, int y);
-    typedef COLORREF(*P_SetPixel)(HDC hdc, int x, int y, COLORREF color);
-    typedef BOOL(*P_DeleteObject)(HGDIOBJ ho);
-    typedef BOOL(*P_DeleteDC)(HDC hdc);
-
-#define GET_WIN_API(name, lib) \
-    P_##name name = Ldr_GetProcAddrNew(lib, #name, #name); \
-    if(!name) return NULL;
-
     GET_WIN_API(GetDC, DllName_user32);
     GET_WIN_API(ReleaseDC, DllName_user32);
     GET_WIN_API(GetIconInfo, DllName_user32);
@@ -1046,7 +1030,7 @@ _FX BOOLEAN SH32_Init(HMODULE module)
 
             *(ULONG_PTR *)&__sys_LdrGetDllHandleEx = (ULONG_PTR)
                 SbieDll_Hook("LdrGetDllHandleEx",
-                    __sys_LdrGetDllHandleEx, SH32_LdrGetDllHandleEx);
+                    __sys_LdrGetDllHandleEx, SH32_LdrGetDllHandleEx, module);
         }
 
         //
@@ -1142,6 +1126,7 @@ retry:
     // then look again in HKEY_CLASSES_ROOT\Wow64
     //
 
+#ifndef _WIN64
     if (Dll_IsWow64) {
 
         wcscpy(subkey2, L"Wow6432Node\\");
@@ -1152,6 +1137,7 @@ retry:
         if (NT_SUCCESS(status))
             return hkey;
     }
+#endif
 
     //
     // if we looked at HKEY_CURRENT_USER, try again for HKEY_LOCAL_MACHINE
@@ -1426,7 +1412,7 @@ _FX ULONG SH_GetInternetExplorerVersion(void)
 //
 // Code running in Explorer (both Windows and Internet) may AddRef() on the
 // host process using SHGetInstanceExplorer and then forget to Release().
-// This causes a sandboxed IE or Explorer to go on running indefinately.
+// This causes a sandboxed IE or Explorer to go on running indefinitely.
 // To work around this, we have a thread that monitors the number of open
 // windows, and forces Explorer to close when there are no more windows.
 //
@@ -1771,12 +1757,16 @@ _FX HRESULT SH32_IShellExtInit_Initialize(
     void *pShellExtInit,
     void *pidlFolder, IDataObject *pDataObject, HKEY hkeyProgID)
 {
-    typedef HRESULT (*P_Initialize)(void *, void *, IDataObject *, HKEY);
+#if !defined(_M_ARM64) && !defined(_M_ARM64EC)
     ULONG_PTR *StubData = Dll_JumpStubData();
+#else
+    ULONG_PTR *StubData = (ULONG_PTR *)hkeyProgID;
+    hkeyProgID = (HKEY)StubData[3];
+#endif
 
     extern IDataObject *Ole_XDataObject_From_IDataObject(
         IDataObject *pDataObject);
-
+    typedef HRESULT (*P_Initialize)(void *, void *, IDataObject *, HKEY);
     return ((P_Initialize)StubData[1])(
                         pShellExtInit, pidlFolder,
                         Ole_XDataObject_From_IDataObject(pDataObject),
@@ -1785,12 +1775,16 @@ _FX HRESULT SH32_IShellExtInit_Initialize(
 
 
 _FX HRESULT SH32_IContextMenuHook_QueryInterface(
-    void *pContextMenu, REFIID riid, void **ppv)
-{
+    void *pContextMenu, REFIID riid, void **ppv
+#if !defined(_M_ARM64) && !defined(_M_ARM64EC)
+    ) {
+    ULONG_PTR *StubData = Dll_JumpStubData();
+#else 
+    , ULONG_PTR *StubData) {
+#endif
+
     EXTERN_C const IID IID_IShellExtInit;
     typedef HRESULT (*P_QueryInterface)(void *, REFIID, void **);
-    ULONG_PTR *StubData = Dll_JumpStubData();
-
     HRESULT hr = ((P_QueryInterface)StubData[1])(pContextMenu, riid, ppv);
     if (SUCCEEDED(hr) &&
             memcmp(riid, &IID_IShellExtInit, sizeof(GUID)) == 0) {

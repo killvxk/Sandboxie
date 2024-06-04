@@ -45,6 +45,7 @@ _FX const WCHAR *SbieDll_PortName(void)
 //---------------------------------------------------------------------------
 
 
+#ifndef _WIN64
 _FX BOOLEAN SbieDll_IsWow64(void)
 {
     //
@@ -52,8 +53,6 @@ _FX BOOLEAN SbieDll_IsWow64(void)
     // Dll_Ordinal1.  for a process outside the sandbox, we
     // initialize the variable here
     //
-
-#ifndef _WIN64
 
     static BOOLEAN init = FALSE;
     typedef BOOL (*P_IsWow64Process)(HANDLE, BOOL *);
@@ -73,10 +72,9 @@ _FX BOOLEAN SbieDll_IsWow64(void)
         init = TRUE;
     }
 
-#endif ! _WIN64
-
     return Dll_IsWow64;
 }
+#endif ! _WIN64
 
 
 //---------------------------------------------------------------------------
@@ -84,10 +82,8 @@ _FX BOOLEAN SbieDll_IsWow64(void)
 //---------------------------------------------------------------------------
 
 
-_FX BOOLEAN SbieDll_ConnectPort(BOOLEAN Silent)
+_FX NTSTATUS SbieDll_ConnectPort()
 {
-    static BOOLEAN ErrorReported = FALSE;
-
     THREAD_DATA *data = Dll_GetTlsData(NULL);
     if (! data->PortHandle) {
 
@@ -106,14 +102,8 @@ _FX BOOLEAN SbieDll_ConnectPort(BOOLEAN Silent)
             &data->PortHandle, &PortName, &QoS,
             NULL, NULL, &data->MaxDataLen, NULL, NULL);
 
-        if (! NT_SUCCESS(status)) {
-            if (! ErrorReported) {
-                if (! Silent)
-                    SbieApi_Log(2203, L"connect %08X", status);
-                ErrorReported = TRUE;
-            }
-            return FALSE;
-        }
+        if (! NT_SUCCESS(status)) 
+            return status;
 
         NtRegisterThreadTerminatePort(data->PortHandle);
 
@@ -123,6 +113,7 @@ _FX BOOLEAN SbieDll_ConnectPort(BOOLEAN Silent)
 
         data->SizeofPortMsg = sizeof(PORT_MESSAGE);
 
+#ifndef _WIN64
         if (! Dll_BoxName)
             SbieDll_IsWow64();
 
@@ -137,11 +128,12 @@ _FX BOOLEAN SbieDll_ConnectPort(BOOLEAN Silent)
 
             data->SizeofPortMsg += sizeof(ULONG) * 4;
         }
+#endif
 
         data->MaxDataLen -= data->SizeofPortMsg;
     }
 
-    return TRUE;
+    return STATUS_SUCCESS;
 }
 
 
@@ -182,7 +174,7 @@ _FX MSG_HEADER *SbieDll_CallServer(MSG_HEADER *req)
         //default: Sbie_snwprintf(dbg, 1024, L"SbieDll_CallServer: %s 0x%04x", Dll_ImageName, req->msgid);
         default: Sbie_snwprintf(dbg, 1024, L"SbieDll_CallServer: %s %s", Dll_ImageName, Trace_SbieSvcFunc2Str(req->msgid));
         }
-        SbieApi_MonitorPut2(MONITOR_OTHER | MONITOR_TRACE, dbg, FALSE);
+        SbieApi_MonitorPutMsg(MONITOR_OTHER | MONITOR_TRACE, dbg);
     }
 
     //
@@ -194,8 +186,12 @@ _FX MSG_HEADER *SbieDll_CallServer(MSG_HEADER *req)
         BOOLEAN Silent = (req->msgid == MSGID_SBIE_INI_GET_VERSION ||
                           req->msgid == MSGID_SBIE_INI_GET_USER ||
                           req->msgid == MSGID_PROCESS_CHECK_INIT_COMPLETE);
-        if (! SbieDll_ConnectPort(Silent))
+        status = SbieDll_ConnectPort();
+        if (!NT_SUCCESS(status)) {
+            if (!Dll_AppContainerToken && !Silent) // todo: fix me make service available for appcontainer processes
+                SbieApi_Log(2203, L"connect %08X (msg_id 0x%04X)", status, req->msgid);
             return NULL;
+        }
     }
 
     //

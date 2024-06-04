@@ -28,6 +28,7 @@ typedef long NTSTATUS;
 #include "SbieDefs.h"
 
 #include "..\..\Sandboxie\common\win32_ntddk.h"
+#include "..\..\Sandboxie\common\defines.h"
 
 #include "..\..\Sandboxie\core\drv\api_defs.h"
 
@@ -59,32 +60,42 @@ QString ErrorString(qint32 err)
 	return Error;
 }
 
-CTraceEntry::CTraceEntry(quint32 ProcessId, quint32 ThreadId, quint32 Type, const QString& Message)
+CTraceEntry::CTraceEntry(quint64 Timestamp, quint32 ProcessId, quint32 ThreadId, quint32 Type, const QStringList& LogData, const QVector<quint64>& Stack)
 {
 	m_ProcessId = ProcessId;
 	m_ThreadId = ThreadId;
-	m_Message = Message;
+	m_Name = LogData.length() > 0 ? LogData.at(0) : QString("(empty)");
+	m_Message = LogData.length() > 1 ? LogData.at(1) : QString();
+	m_SubType = LogData.length() > 2 ? LogData.at(2) : QString();
 	m_Type.Flags = Type;
+	m_Stack = Stack;
 
-	m_TimeStamp = QDateTime::currentDateTime(); // ms resolution
+	if (m_Type.Type == MONITOR_SYSCALL && !m_SubType.isEmpty()) {
+		m_Message += ", name=" + m_SubType;
+		m_SubType.clear();
+	}
+
+	m_TimeStamp = Timestamp ? Timestamp : QDateTime::currentDateTime().toMSecsSinceEpoch();
 
 	m_BoxPtr = 0;
 
-	static atomic<quint64> uid = 0;
+	static std::atomic<quint64> uid = 0;
 	m_uid = uid.fetch_add(1);
 	
-	m_Counter = 0;
+#ifdef USE_MERGE_TRACE
+	m_Counter = 1;
+#endif
 
 	m_Message = m_Message.replace("\r", "").replace("\n", " ");
 
 	// if this is a set error, then get the actual error string
-	if (m_Type.Type == MONITOR_OTHER && Message.indexOf("SetError:") == 0)
+	if (m_Type.Type == MONITOR_OTHER && m_Message.indexOf("SetError:") == 0)
 	{
-		auto tmp = Message.split(":");
+		auto tmp = m_Message.split(":");
 		if (tmp.length() >= 2)
 		{
 			QString temp = tmp[1].trimmed();
-			int endPos = temp.indexOf(QRegExp("[ \r\n]"));
+			int endPos = temp.indexOf(QRegularExpression("[ \r\n]"));
 			if (endPos != -1)
 				temp.truncate(endPos);
 
@@ -102,7 +113,7 @@ QList<quint32> CTraceEntry::AllTypes()
 		<< MONITOR_KEY << MONITOR_FILE << MONITOR_PIPE 
 		<< MONITOR_IPC << MONITOR_RPC << MONITOR_COMCLASS << MONITOR_RTCLASS
 		<< MONITOR_WINCLASS << MONITOR_DRIVE  << MONITOR_IGNORE << MONITOR_IMAGE 
-		<< MONITOR_NETFW << MONITOR_SCM << MONITOR_OTHER;
+		<< MONITOR_NETFW << MONITOR_DNS << MONITOR_SCM << MONITOR_OTHER;
 }
 
 QString CTraceEntry::GetTypeStr(quint32 Type)
@@ -123,6 +134,7 @@ QString CTraceEntry::GetTypeStr(quint32 Type)
 	case MONITOR_FILE:			return "File"; break;
 	case MONITOR_KEY:			return "Key"; break;
 	case MONITOR_NETFW:			return "Socket"; break;
+	case MONITOR_DNS:			return "Dns"; break;
 	case MONITOR_SCM:			return "SCM"; break; // Service Control Manager
 	case MONITOR_OTHER:			return "Debug"; break;
 	default:					return QString();
@@ -135,10 +147,15 @@ QString CTraceEntry::GetTypeStr() const
 	if(Type.isEmpty())
 		Type = "Unknown: " + QString::number(m_Type.Type);
 
+	if(!m_SubType.isEmpty())
+		Type.append(" / " + m_SubType);
+
 	if (m_Type.User)
-		Type.append(" (U)");
+		Type.append(" (U)"); // user mode (sbiedll.dll)
+	//else if (m_Type.Agent)
+	//	Type.append(" (S)"); // system mode (sbiesvc.exe)
 	else
-		Type.append(" (D)");
+		Type.append(" (K)"); // kernel mode (sbiedrv.sys)
 
 	return Type;
 }
@@ -169,8 +186,10 @@ QString CTraceEntry::GetStautsStr() const
 	if (IsTrace())
 		Status.append("Trace ");
 
+#ifdef USE_MERGE_TRACE
 	if (m_Counter > 1)
 		Status.append(QString("(%1) ").arg(m_Counter));
+#endif
 
 	return Status;
 }

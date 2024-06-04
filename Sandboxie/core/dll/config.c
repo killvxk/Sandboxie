@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC
- * Copyright 2020-2021 David Xanatos, xanasoft.com
+ * Copyright 2020-2024 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -23,7 +23,7 @@
 #define NOGDI
 #include "dll.h"
 #include "common/pool.h"
-#include "common\pattern.h"
+#include "common/pattern.h"
 #include "core/svc/SbieIniWire.h"
 
 //---------------------------------------------------------------------------
@@ -217,6 +217,14 @@ _FX WCHAR* Config_MatchImageAndGetValue(WCHAR* value, const WCHAR* ImageName, UL
         BOOLEAN inv, match;
 
         //
+        // ignore all process specific presets when no image name was provided
+        // keep searching for a global default
+        //
+
+        if (!ImageName)
+            return NULL;
+
+        //
         // exclamation marks negates the matching
         //
 
@@ -300,7 +308,7 @@ _FX BOOLEAN SbieDll_GetSettingsForName_bool(
 //---------------------------------------------------------------------------
 
 
-_FX BOOLEAN Config_InitPatternList(const WCHAR* boxname, const WCHAR* setting, LIST* list)
+_FX BOOLEAN Config_InitPatternList(const WCHAR* boxname, const WCHAR* setting, LIST* list, BOOLEAN dos)
 {
     WCHAR conf_buf[2048];
 
@@ -314,11 +322,14 @@ _FX BOOLEAN Config_InitPatternList(const WCHAR* boxname, const WCHAR* setting, L
         if (!NT_SUCCESS(status))
             break;
         ++index;
-
+        
         ULONG level;
         WCHAR* value = Config_MatchImageAndGetValue(conf_buf, Dll_ImageName, &level);
         if (value)
         {
+            if (dos && *value != L'*')
+                SbieDll_TranslateNtToDosPath(value);
+
             pat = Pattern_Create(Dll_Pool, value, TRUE, level);
 
             List_Insert_After(list, NULL, pat);
@@ -589,6 +600,32 @@ BOOLEAN SbieDll_CheckStringInList(const WCHAR* string, const WCHAR* boxname, con
 
 
 //---------------------------------------------------------------------------
+// SbieDll_CheckStringInListA
+//---------------------------------------------------------------------------
+
+
+BOOLEAN SbieDll_CheckStringInListA(const char* string, const WCHAR* boxname, const WCHAR* setting)
+{
+    WCHAR buf[66];
+    ULONG index = 0;
+    while (1) {
+        NTSTATUS status = SbieApi_QueryConfAsIs(boxname, setting, index, buf, 64 * sizeof(WCHAR));
+        ++index;
+        if (NT_SUCCESS(status)) {
+            WCHAR* ptr = buf;
+            for (const char* tmp = string; *ptr && *tmp && *ptr == *tmp; ptr++, tmp++);
+            if (*ptr == L'\0') {
+                return TRUE;
+            }
+        }
+        else if (status != STATUS_BUFFER_TOO_SMALL)
+            break;
+    }
+    return FALSE;
+}
+
+
+//---------------------------------------------------------------------------
 // SbieDll_CheckStringInList
 //---------------------------------------------------------------------------
 
@@ -600,7 +637,7 @@ BOOLEAN SbieDll_CheckPatternInList(const WCHAR* string, ULONG length, const WCHA
 
     List_Init(&Patterns);
 
-    Config_InitPatternList(boxname, setting, &Patterns);
+    Config_InitPatternList(boxname, setting, &Patterns, TRUE);
 
     if (length == 0)
         length = wcslen(string);

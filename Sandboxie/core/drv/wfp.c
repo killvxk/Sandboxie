@@ -1,5 +1,5 @@
 /*
- * Copyright 2021 David Xanatos, xanasoft.com
+ * Copyright 2021-2024 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -34,7 +34,12 @@
 
 extern DEVICE_OBJECT *Api_DeviceObject;
 
-#define NDIS61 1
+#ifdef _M_ARM64
+#define NDIS630 1 // windows 8.1
+#else
+#define NDIS61 1 // windows 7
+#endif
+
 
 #include "Ntifs.h"
 #include <ntddk.h>				// Windows Driver Development Kit
@@ -268,11 +273,15 @@ _FX BOOLEAN WFP_Load(void)
 
 	if (FwpmBfeStateGet() == FWPM_SERVICE_RUNNING) {
 
+		KeEnterCriticalRegion();
+
 		ExAcquireResourceSharedLite(WFP_InitLock, TRUE);
 
 		WFP_Install_Callbacks();
 
 		ExReleaseResourceLite(WFP_InitLock);
+
+		KeLeaveCriticalRegion();
 	}
 	else
 		DbgPrint("Sbie WFP is not ready\r\n");
@@ -298,11 +307,15 @@ _FX void WFP_Unload(void)
 
 	if (WFP_InitLock) {
 
+		KeEnterCriticalRegion();
+
 		ExAcquireResourceSharedLite(WFP_InitLock, TRUE);
 
 		WFP_Uninstall_Callbacks();
 
 		ExReleaseResourceLite(WFP_InitLock);
+
+		KeLeaveCriticalRegion();
 
 		Mem_FreeLockResource(&WFP_InitLock);
 		WFP_InitLock = NULL;
@@ -340,6 +353,8 @@ _FX void WFP_Unload(void)
 
 _FX void WFP_state_changed(_Inout_ void* context, _In_ FWPM_SERVICE_STATE newState)
 {
+	KeEnterCriticalRegion();
+
 	ExAcquireResourceSharedLite(WFP_InitLock, TRUE);
 
 	if (newState == FWPM_SERVICE_STOP_PENDING)
@@ -348,6 +363,8 @@ _FX void WFP_state_changed(_Inout_ void* context, _In_ FWPM_SERVICE_STATE newSta
 		WFP_Install_Callbacks();
 
 	ExReleaseResourceLite(WFP_InitLock);
+
+	KeLeaveCriticalRegion();
 }
 
 
@@ -396,7 +413,7 @@ _FX BOOLEAN WFP_Install_Callbacks(void)
 	status = WFP_RegisterCallout(&WPF_RECV_CALLOUT_GUID_V6, &FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6, &WFP_recv_callout_id_v6, &WFP_recv_filter_id_v6);
 	stage = 0x44; if (!NT_SUCCESS(status)) goto Exit;
 
-	// note: we could also setup FWPM_LAYER_ALE_AUTH_LISTEN_V4 but since we block all accepts we dont have to
+	// note: we could also setup FWPM_LAYER_ALE_AUTH_LISTEN_V4 but since we block all accepts we don't have to
 
 
 	// Commit transaction to the Filter Engine
@@ -535,7 +552,7 @@ NTSTATUS WFP_RegisterCallout(const GUID* calloutKey, const GUID* applicableLayer
 	FWPM_FILTER filter = { 0 };
 	filter.displayData.name = WFP_FILTER_NAME;
 	filter.displayData.description = WFP_FILTER_DESCRIPTION;
-	filter.action.type = FWP_ACTION_CALLOUT_TERMINATING;	// Says this filter's callout MUST make a block/permit decission
+	filter.action.type = FWP_ACTION_CALLOUT_TERMINATING;	// Says this filter's callout MUST make a block/permit decision
 	filter.subLayerKey = WFP_SUBLAYER_GUID;
 	filter.weight.type = FWP_UINT8;
 	filter.weight.uint8 = 0xf;		// The weight of this filter within its sublayer
@@ -640,7 +657,7 @@ BOOLEAN WFP_InitProcess(PROCESS* proc)
 #endif
 
 	if(map_get(&WFP_Processes, wfp_proc->ProcessId) != NULL)
-		ok = FALSE; // that woudl be a duplicate, should not happen, but in case
+		ok = FALSE; // that would be a duplicate, should not happen, but in case
 	else if (!map_insert(&WFP_Processes, wfp_proc->ProcessId, wfp_proc, 0))
 		ok = FALSE;
     
@@ -670,6 +687,9 @@ BOOLEAN WFP_UpdateProcess(PROCESS* proc)
 	BOOLEAN LogTraffic = FALSE;
 	BOOLEAN BlockInternet = FALSE;
 	LIST NewNetFwRules, OldNetFwRules;
+	
+	List_Init(&NewNetFwRules);
+	List_Init(&OldNetFwRules);
 
 	LogTraffic = Process_GetTraceFlag(proc, L"NetFwTrace") != 0;
 
@@ -845,26 +865,52 @@ void WFP_classify(
     
 		KeReleaseSpinLock(&WFP_MapLock, irql);
 
-
-        if (log){
+		// TODO: Fix-Me, no ETW logging for now, we are here at DISPATCH_LEVEL but Session_MonitorPut is using pagable memory,
+		// we need either to create a logging proxy using non-paged pool, or change the tracking mechanism to use non-paged pool itself.
+        /*if (log){
 
 			BOOLEAN send = (filter->filterId == WFP_send_filter_id_v4) || (filter->filterId == WFP_send_filter_id_v6);
 			BOOLEAN v6 = (filter->filterId == WFP_send_filter_id_v6) || (filter->filterId == WFP_recv_filter_id_v6);
 
-			WCHAR trace_str[256];
+			
+			//RtlStringCbPrintfW at DISPATCH_LEVEL or higher can cause a BSOD, 
+			//the issue is with accessing unicode tables, which may be paged out.
+
+			//The documentation for KdPrint() states it this way:
+
+			//<wdk>
+			//Format
+			//Specifies a pointer to the format string to print. The Format string
+			//supports all the printf-style formatting codes. However, the Unicode format
+			//codes (%C, %S, %lc, %ls, %wc, %ws, and %wZ) can only be used with IRQL =
+			//PASSIVE_LEVEL.
+			//</wdk>
+
+			//RtlStringCbPrintfA is technically also not permitted so a better solution needs to be found
+			
+
+			char trace_strA[256];
 			if (v6) {
-				RtlStringCbPrintfW(trace_str, sizeof(trace_str), L"Network Traffic; Port: %u; Prot: %u; IPv6: %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x", remote_port, protocol,
+				RtlStringCbPrintfA(trace_strA, sizeof(trace_strA), "%s Network Traffic; Port: %u; Prot: %u; IPv6: %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x", 
+					send ? "Outgoing " : "Incoming ", remote_port, protocol,
 					remote_ip.Data[0], remote_ip.Data[1], remote_ip.Data[2], remote_ip.Data[3], remote_ip.Data[4], remote_ip.Data[5], remote_ip.Data[6], remote_ip.Data[7],
 					remote_ip.Data[8], remote_ip.Data[9], remote_ip.Data[10], remote_ip.Data[11], remote_ip.Data[12], remote_ip.Data[13], remote_ip.Data[14], remote_ip.Data[15]);
 			}
 			else {
-				RtlStringCbPrintfW(trace_str, sizeof(trace_str), L"Network Traffic; Port: %u; Prot: %u; IPv4: %d.%d.%d.%d", remote_port, protocol,
+				RtlStringCbPrintfA(trace_strA, sizeof(trace_strA), "%s Network Traffic; Port: %u; Prot: %u; IPv4: %d.%d.%d.%d", 
+					send ? "Outgoing " : "Incoming ", remote_port, protocol,
 					remote_ip.Data[12], remote_ip.Data[13], remote_ip.Data[14], remote_ip.Data[15]);
 			}
-			const WCHAR* strings[3] = { send ? L"Outgoing " : L"Incomming ", trace_str, NULL };
-            ULONG lengths[3] = { wcslen(strings[0]), wcslen(trace_str), 0 };
-            Session_MonitorPutEx(MONITOR_NETFW | (block ? MONITOR_DENY : MONITOR_OPEN), strings, lengths, PsGetCurrentProcessId(), PsGetCurrentThreadId());
-        }
+
+			WCHAR trace_str[256];
+			char* cptr = trace_strA;
+			WCHAR* wptr = trace_str;
+			while (*cptr != '\0')
+				*wptr++ = *cptr++;
+			*wptr = L'\0';
+
+            Session_MonitorPut(MONITOR_NETFW | (block ? MONITOR_DENY : MONITOR_OPEN), trace_str, PsGetCurrentProcessId());
+        }*/
 
 		if (block) {
 

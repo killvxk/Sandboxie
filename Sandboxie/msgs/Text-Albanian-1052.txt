@@ -1,7 +1,7 @@
 #----------------------------------------------------------------------------
 # SbieDrv
 #
-# Initialization errors issued to to the System event Log
+# Initialization errors issued to the System event Log
 #----------------------------------------------------------------------------
 
 1101;evt;inf;01
@@ -3450,6 +3450,10 @@ Do e mbani skedën e konfiguracionit tuaj Sandboxie.ini?
 Seleksiononi PO për të mbajtur parametrat e konfiguracionit në skedën Sandboxie.ini.
 
 Seleksiononi JO për të fshirë skedën Sandboxie.ini duke humbur parametrat e konfiguracionit tuaj.
+.
+
+8055;ins;01
+Ekziston një përditësim në internet i Templates.ini dhe/ose përkthimet për këtë version të sandboxie, a dëshironi ta instaloni?
 .
 
 #----------------------------------------------------------------------------

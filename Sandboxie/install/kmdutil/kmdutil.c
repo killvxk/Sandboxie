@@ -26,8 +26,11 @@
 #include <stdlib.h>
 #include "common/defines.h"
 #include "common/my_version.h"
+#include "core/dll/sbieapi.h"
 
 extern void Kmd_ScanDll(BOOLEAN silent);
+
+extern BOOL Kmd_FixDacls();
 
 
 //---------------------------------------------------------------------------
@@ -41,7 +44,9 @@ typedef enum _COMMAND {
     CMD_START,
     CMD_STOP,
     CMD_SCANDLL,
-    CMD_SCANDLL_SILENT
+    CMD_SCANDLL_SILENT,
+    CMD_MESSAGE,
+    CMD_FIXDACLS
 } COMMAND;
 
 typedef enum _OPTIONS {
@@ -218,6 +223,14 @@ BOOL Parse_Command_Line(
         *Command = CMD_STOP;
         num_args_needed = 1;
 
+    } else if (_wcsicmp(args[1], L"message") == 0) {
+        *Command = CMD_MESSAGE;
+        num_args_needed = 2;
+
+    } else if (_wcsicmp(args[1], L"fixdacls") == 0) {
+        *Command = CMD_FIXDACLS;
+        num_args_needed = 0;
+
     } else {
         *Command = CMD_ERROR;
         MessageBox(NULL, L"Invalid command", L"KmdUtil",
@@ -385,11 +398,24 @@ BOOL Kmd_Install_Service(
 
     DWORD ServiceType;
     DWORD StartType;
+    WCHAR* Path = NULL;
 
     if (Options & OPT_KERNEL_TYPE)
         ServiceType = SERVICE_KERNEL_DRIVER;
-    else
+    else {
         ServiceType = SERVICE_WIN32_OWN_PROCESS;
+
+        // quote path
+        if (*Service_Path != L'\"') {
+            ULONG len = wcslen(Service_Path);
+            Path = malloc((len + 3) * sizeof(WCHAR));
+            Path[0] = L'\"';
+            wcscpy(&Path[1], Service_Path);
+            Path[len + 1] = L'\"';
+            Path[len + 2] = 0;
+            Service_Path = Path;
+        }
+    }
 
     if (Options & OPT_SYSTEM_START)
         StartType = SERVICE_SYSTEM_START;
@@ -416,6 +442,8 @@ BOOL Kmd_Install_Service(
         NULL,                       // no dependencies
         NULL,                       // LocalSystem account
         NULL);
+
+    if (Path) free(Path);
 
     if (! service) {
         if (GetLastError() != ERROR_SERVICE_EXISTS) {
@@ -697,6 +725,23 @@ BOOL Kmd_Stop_Service(
 }
 
 //---------------------------------------------------------------------------
+// Kmd_Show_Message
+//---------------------------------------------------------------------------
+
+BOOL Kmd_Show_Message(
+    const wchar_t *message,
+    const wchar_t *text)
+{
+    if (_wcsnicmp(message, L"SBIE", 4) == 0)
+        message += 4;
+    ULONG id = _wtoi(message);
+    if (id == 0)
+        return FALSE;
+    SbieApi_LogMsgEx(-1, id, text, wcslen(text)* sizeof(WCHAR));
+    return TRUE;
+}
+
+//---------------------------------------------------------------------------
 // WinMain
 //---------------------------------------------------------------------------
 
@@ -722,6 +767,16 @@ int __stdcall WinMain(
             &Driver_Altitude, &Driver_Group,
             &Options))
         return EXIT_FAILURE;
+
+    if (Command == CMD_MESSAGE) {
+        ok = Kmd_Show_Message(Driver_Name, Driver_Path);
+        goto finish;
+    }
+
+    if (Command == CMD_FIXDACLS) {
+        ok = Kmd_FixDacls();
+        goto finish;
+    }
 
     ScMgr = OpenSCManager(
         NULL, SERVICES_ACTIVE_DATABASE, SC_MANAGER_CREATE_SERVICE);
@@ -765,6 +820,7 @@ int __stdcall WinMain(
     if (Command == CMD_STOP)
         ok = Kmd_Stop_Service(Driver_Name);
 
+finish:
     if (! ok)
         return EXIT_FAILURE;
 

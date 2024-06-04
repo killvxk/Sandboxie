@@ -159,6 +159,7 @@
     <ClCompile Include="syscall_util.c">
       <Filter>syscall</Filter>
     </ClCompile>
+    <ClCompile Include="dyn_data.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="api.h" />
@@ -241,10 +242,16 @@
     <ClInclude Include="dll.h">
       <Filter>syscall</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\common\arm64_asm.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="verify.h" />
+    <ClInclude Include="dyn_data.h" />
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="aulldvrm.asm" />
     <CustomBuild Include="util_asm.asm" />
+    <CustomBuild Include="util_arm.asm" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resource.rc" />

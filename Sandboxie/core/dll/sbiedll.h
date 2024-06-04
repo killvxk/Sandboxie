@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
- * Copyright 2020-2021 David Xanatos, xanasoft.com
+ * Copyright 2020-2024 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -42,6 +42,7 @@ extern "C" {
 // Defines
 //---------------------------------------------------------------------------
 
+#define USE_MATCH_PATH_EX
 
 #define TokenElevationTypeNone 99
 
@@ -66,16 +67,23 @@ PROCESS_DATA *my_findProcessData(WCHAR *name,int createNew);
 // Functions (DllMain)
 //---------------------------------------------------------------------------
 
+SBIEDLL_EXPORT  void SbieDll_HookInit();
 
 SBIEDLL_EXPORT  void *SbieDll_Hook(
-    const char *SourceFuncName, void *SourceFunc, void *DetourFunc);
+    const char *SourceFuncName, void *SourceFunc, void *DetourFunc, HMODULE module);
 
 #define SBIEDLL_HOOK(pfx,proc)                  \
     *(ULONG_PTR *)&__sys_##proc = (ULONG_PTR)   \
-        SbieDll_Hook(#proc, proc, pfx##proc);   \
+        SbieDll_Hook(#proc, proc, pfx##proc, module);   \
     if (! __sys_##proc) return FALSE;
 
+SBIEDLL_EXPORT  void SbieDll_TraceModule(HMODULE module);
+
+SBIEDLL_EXPORT  void SbieDll_UnHookModule(HMODULE module);
+
 SBIEDLL_EXPORT  void SbieDll_DeviceChange(WPARAM wParam, LPARAM lParam);
+
+SBIEDLL_EXPORT  BOOL SbieDll_QueryFileAttributes(const WCHAR *NtPath, ULONG64 *size, ULONG64 *date, ULONG *attrs);
 
 SBIEDLL_EXPORT  const WCHAR *SbieDll_GetDrivePath(ULONG DriveIndex);
 
@@ -96,6 +104,10 @@ SBIEDLL_EXPORT  BOOLEAN SbieDll_KillOne(ULONG ProcessId);
 
 SBIEDLL_EXPORT  BOOLEAN SbieDll_KillAll(
     ULONG SessionId, const WCHAR *BoxName);
+
+SBIEDLL_EXPORT  BOOLEAN SbieDll_Mount(const WCHAR *BoxName, const WCHAR * BoxKey, BOOLEAN Protect);
+
+SBIEDLL_EXPORT  BOOLEAN SbieDll_Unmount(const WCHAR *BoxName);
 
 SBIEDLL_EXPORT  ULONG SbieDll_GetTokenElevationType(void);
 
@@ -184,6 +196,8 @@ SBIEDLL_EXPORT  BOOL SbieDll_StartBoxedService(
 
 SBIEDLL_EXPORT  BOOL SbieDll_CheckProcessLocalSystem(HANDLE ProcessHandle);
 
+SBIEDLL_EXPORT  VOID SbieDll_SetFakeAdmin(BOOLEAN FakeAdmin);
+
 SBIEDLL_EXPORT  HANDLE SbieDll_OpenProcess(ACCESS_MASK DesiredAccess, HANDLE idProcess);
 
 SBIEDLL_EXPORT  HRESULT SbieDll_ComCreateProxy(
@@ -199,6 +213,8 @@ SBIEDLL_EXPORT  void SbieDll_DisableElevationHook(void);
 
 SBIEDLL_EXPORT  BOOLEAN SbieDll_RegisterDllCallback(void *Callback);
 
+SBIEDLL_EXPORT  BOOLEAN SbieDll_IsDllSkipHook(const WCHAR* ImageName);
+
 SBIEDLL_EXPORT  BOOLEAN SbieDll_ExpandAndRunProgram(const WCHAR *Command);
 
 
@@ -211,6 +227,7 @@ SBIEDLL_EXPORT  BOOLEAN SbieDll_MatchImage(const WCHAR* pat_str, const WCHAR* te
 
 SBIEDLL_EXPORT  BOOLEAN SbieDll_GetStringForStringList(const WCHAR* string, const WCHAR* boxname, const WCHAR* setting, WCHAR* value, ULONG value_size);
 SBIEDLL_EXPORT  BOOLEAN SbieDll_CheckStringInList(const WCHAR* string, const WCHAR* boxname, const WCHAR* setting);
+SBIEDLL_EXPORT  BOOLEAN SbieDll_CheckStringInListA(const char* string, const WCHAR* boxname, const WCHAR* setting);
 
 SBIEDLL_EXPORT  BOOLEAN SbieDll_CheckPatternInList(const WCHAR* string, ULONG length, const WCHAR* boxname, const WCHAR* setting);
 
@@ -223,6 +240,47 @@ SBIEDLL_EXPORT  BOOLEAN SbieDll_GetSettingsForName_bool(
 SBIEDLL_EXPORT  BOOLEAN SbieDll_GetBorderColor(const WCHAR* box_name, COLORREF* color, BOOL* title, int* width);
 
 SBIEDLL_EXPORT  BOOLEAN SbieDll_IsReservedFileName(const WCHAR* name);
+
+SBIEDLL_EXPORT  PSECURITY_DESCRIPTOR SbieDll_GetPublicSD();
+
+SBIEDLL_EXPORT  const WCHAR* SbieDll_FindArgumentEnd(const WCHAR* arguments);
+
+#ifdef USE_MATCH_PATH_EX
+//SBIEDLL_EXPORT ULONG SbieDll_MatchPathImpl(BOOLEAN use_rule_specificity, BOOLEAN use_privacy_mode, const WCHAR* path, void* normal_list, void* open_list, void* closed_list, void* write_list, void* read_list);
+SBIEDLL_EXPORT ULONG SbieDll_MatchPathImpl(BOOLEAN use_rule_specificity, const WCHAR* path, void* normal_list, void* open_list, void* closed_list, void* write_list, void* read_list);
+#else
+SBIEDLL_EXPORT ULONG SbieDll_MatchPathImpl(const WCHAR* path, void* open_list, void* closed_list, void* write_list);
+#endif
+
+#define PATH_OPEN_FLAG      0x10
+#define PATH_CLOSED_FLAG    0x20
+#define PATH_WRITE_FLAG     0x40
+#define PATH_READ_FLAG      0x80
+
+#ifdef USE_MATCH_PATH_EX
+// for read only paths, handle like open and let the driver deny the write access
+#define PATH_IS_OPEN(f)     ((((f) & PATH_OPEN_FLAG) != 0) || PATH_IS_READ(f))
+#define PATH_NOT_OPEN(f)    ((((f) & PATH_OPEN_FLAG) == 0) && PATH_NOT_READ(f))
+#else
+#define PATH_IS_OPEN(f)     (((f) & PATH_OPEN_FLAG) != 0)
+#define PATH_NOT_OPEN(f)    (((f) & PATH_OPEN_FLAG) == 0)
+#endif
+
+#define PATH_IS_CLOSED(f)   (((f) & PATH_CLOSED_FLAG) != 0)
+#define PATH_NOT_CLOSED(f)  (((f) & PATH_CLOSED_FLAG) == 0)
+
+#define PATH_IS_WRITE(f)    (((f) & PATH_WRITE_FLAG) != 0)
+#define PATH_NOT_WRITE(f)   (((f) & PATH_WRITE_FLAG) == 0)
+
+#define PATH_IS_READ(f)     (((f) & PATH_READ_FLAG) != 0)
+#define PATH_NOT_READ(f)    (((f) & PATH_READ_FLAG) == 0)
+
+
+
+SBIEDLL_EXPORT  void DbgPrint(const char* format, ...);
+SBIEDLL_EXPORT  void DbgTrace(const char* format, ...);
+
+SBIEDLL_EXPORT  BOOLEAN SbieDll_DisableCHPE(void);
 
 //---------------------------------------------------------------------------
 

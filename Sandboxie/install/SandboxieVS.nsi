@@ -569,30 +569,32 @@ Function ConfirmRequirements
     !insertmacro Reg_ReadString "" ${HKEY_LOCAL_MACHINE} "'Software\Microsoft\Windows NT\CurrentVersion'" "CurrentVersion"
     Pop $0
     StrCmp $0 "" SystemCheck_Fail
-    ;StrCmp $0 "5.1" SystemCheck_Done_XP_2003
-    ;StrCmp $0 "5.2" SystemCheck_Done_XP_2003
-    StrCmp $0 "6.0" SystemCheck_Done
+    ;StrCmp $0 "5.1" SystemCheck_Done_XP_2003_Vista
+    ;StrCmp $0 "5.2" SystemCheck_Done_XP_2003_Vista
+    ;StrCmp $0 "6.0" SystemCheck_Done_XP_2003_Vista
     StrCmp $0 "6.1" SystemCheck_Done
     StrCmp $0 "6.2" SystemCheck_Done
     StrCmp $0 "6.3" SystemCheck_Done
-    StrCmp $0 "6.4" SystemCheck_Done
+    StrCmp $0 "10.0" SystemCheck_Done
     Goto SystemCheck_Fail
 
 SystemCheck_Fail:
 
     StrCmp $InstallType "Remove" SystemCheck_Force_Remove
 
-    MessageBox MB_OK|MB_ICONSTOP "$(MSG_8041)$\n\
-	Windows Vista, Windows 7, Windows 8, Windows 10."
-    StrCmp $InstallType "Upgrade" SystemCheck_Force_Remove
-    Quit
-
-;SystemCheck_Done_XP_2003:
+;SystemCheck_Done_XP_2003_Vista:
 
 !if "${_BUILDARCH}" == "x64"
 
     MessageBox MB_OK|MB_ICONSTOP "$(MSG_8041)$\n\
-	(64-bit)   Windows Vista (Service Pack 1), Windows 7, Windows 8, Windows 10."
+	(64-bit)   Windows 7, Windows 8, Windows 10, Windows 11."
+    StrCmp $InstallType "Upgrade" SystemCheck_Force_Remove
+    Quit
+
+!else
+
+    MessageBox MB_OK|MB_ICONSTOP "$(MSG_8041)$\n\
+	(32-bit)   Windows 7, Windows 8, Windows 10."
     StrCmp $InstallType "Upgrade" SystemCheck_Force_Remove
     Quit
 
@@ -838,6 +840,38 @@ Function DownloadStatPng
 ;	${EndIf}
 FunctionEnd
 
+Function CheckUpdates
+
+  StrCpy $0 "install"
+  StrCmp $InstallType "Install" DoCheck
+  StrCpy $0 "upgrade"
+
+DoCheck:
+  DetailPrint "Running UpdUtil ..."
+  SetDetailsPrint listonly
+
+  ExecWait '"$INSTDIR\UpdUtil.exe" $0 sandboxie /step:scan /scope:meta /version:${VERSION}' $1
+	;MessageBox MB_OK "UpdUtil: $0"
+
+  IntCmp $1 0 is0 lessthan0 morethan0
+  is0:
+    ;DetailPrint "no update"
+    Goto NoUpdate
+  lessthan0:
+    ;DetailPrint "error"
+    Goto NoUpdate
+  morethan0:
+    DetailPrint "$$0 > 5"
+    Goto Update
+
+Update:
+  MessageBox MB_YESNO|MB_ICONQUESTION "$(MSG_8055)" IDNO NoUpdate
+
+  ExecWait '"$INSTDIR\UpdUtil.exe" $0 sandboxie /step:apply /scope:meta'
+
+NoUpdate:
+  SetDetailsPrint both
+FunctionEnd
 
 Section ""
 
@@ -959,6 +993,7 @@ Install2:
 ;	!insertmacro InstallSystemDll "mfc140u.dll" false
 ;!endif
 
+    Call CheckUpdates
     Call WriteProductKey
     Call WriteShortCuts
 
@@ -1033,6 +1068,7 @@ WriteLoop:
 ;    File /oname=${SBIEDRV_SYSX} "${BIN_ROOT}\SbieDrv.sys.w10"
 
     File /oname=KmdUtil.exe "${BIN_ROOT}\KmdUtil.Exe"
+    File /oname=UpdUtil.exe "${BIN_ROOT}\UpdUtil.Exe"
 
     File /oname=SboxHostDll.dll			   "${BIN_ROOT}\SboxHostDll.dll"
 
@@ -1043,6 +1079,7 @@ WriteLoop:
     File /oname=${SANDBOXIE}WUAU.exe       "${BIN_ROOT}\SandboxieWUAU.exe"
 
     File /oname=${START_EXE} "${BIN_ROOT}\Start.exe"
+    File /oname=${START_EXE}.sig "${BIN_ROOT}\Start.exe.sig"
 
     File /oname=${SBIECTRL_EXE} "${BIN_ROOT}\SbieCtrl.exe"
     File /oname=${SBIECTRL_EXE}.sig "${BIN_ROOT}\SbieCtrl.exe.sig"
@@ -1054,6 +1091,8 @@ WriteLoop:
     File "Manifest2.txt"
 
     File /oname=${SBIEINI_EXE} "${BIN_ROOT}\SbieIni.exe"
+
+    File "whatsnew.html"
 
     ;File "${BIN_ROOT}\License.exe"
 
@@ -1107,6 +1146,9 @@ SkipCopyInstaller:
 
     Delete "$DESKTOP\${PRODUCT_NAME} Quick Launch.lnk"
     Delete "$QUICKLAUNCH\${PRODUCT_NAME} Quick Launch.lnk"
+    Delete "$INSTDIR\${SBIEDRV_SYS}.rc4"
+    Delete "$INSTDIR\${SBIEDRV_SYS}.w10"
+    Delete "$INSTDIR\${SBIEINI_EXE}.sig"
 
 FunctionEnd
 
@@ -1138,10 +1180,11 @@ Function DeleteProgramFiles
     Delete "$INSTDIR\${SBIEMSG_DLL}"
 
     Delete "$INSTDIR\${SBIEDRV_SYS}"
-;    Delete "$INSTDIR\${SBIEDRV_SYS4}"
-;    Delete "$INSTDIR\${SBIEDRV_SYSX}"
+    Delete "$INSTDIR\${SBIEDRV_SYS}.rc4" ; leftover
+    Delete "$INSTDIR\${SBIEDRV_SYS}.w10" ; leftover
 
     Delete "$INSTDIR\KmdUtil.exe"
+    Delete "$INSTDIR\UpdUtil.exe"
 
     Delete "$INSTDIR\SboxHostDll.dll"
 
@@ -1155,6 +1198,7 @@ Function DeleteProgramFiles
     Delete "$INSTDIR\${SANDBOXIE}RpcSs.exe"
 
     Delete "$INSTDIR\${START_EXE}"
+    Delete "$INSTDIR\${START_EXE}.sig"
 
     Delete "$INSTDIR\${SBIECTRL_EXE}"
     Delete "$INSTDIR\${SBIECTRL_EXE}.sig"
@@ -1166,6 +1210,9 @@ Function DeleteProgramFiles
     Delete "$INSTDIR\Manifest2.txt"
 
     Delete "$INSTDIR\${SBIEINI_EXE}"
+    Delete "$INSTDIR\${SBIEINI_EXE}.sig" ; leftover
+
+    Delete "$INSTDIR\whatsnew.html"
 
     Delete "$INSTDIR\LICENSE.EXE"
 
@@ -1204,13 +1251,22 @@ Function DeleteProgramFiles
     StrCmp $DeleteSandboxieIni "N" SkipDeleteSandboxieIni
     Delete "$INSTDIR\${SANDBOXIE_INI}"
     Delete "$WINDIR\${SANDBOXIE_INI}"
+
 SkipDeleteSandboxieIni:
 
 ;
 ; Delete installation folder
 ;
 
+    ClearErrors
+    SetOutPath "$TEMP" ; make sure $INSTDIR is not the current directory
     RMDir "$INSTDIR"
+
+    IfErrors 0 SkipDeleteDir
+    Sleep 1000
+    RMDir "$INSTDIR"
+
+SkipDeleteDir:
 
 FunctionEnd
 
@@ -1628,7 +1684,8 @@ Function .onGUIEnd
 
     StrCmp $LaunchControl "Y" 0 Done
 
-    ExecWait '"$INSTDIR\${START_EXE}" run_sbie_ctrl' $0
+;    ExecWait '"$INSTDIR\${START_EXE}" run_sbie_ctrl' $0
+    ExecWait '"$INSTDIR\${START_EXE}" open_agent:"${SBIECTRL_EXE} /open /sync /postsetup"' $0
 
 Done:
 

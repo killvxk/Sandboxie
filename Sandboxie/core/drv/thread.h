@@ -61,7 +61,7 @@ struct _THREAD {
     BOOLEAN token_CopyOnOpen;
     BOOLEAN token_EffectiveOnly;
     SECURITY_IMPERSONATION_LEVEL token_ImpersonationLevel;
-
+    BOOLEAN create_process_in_progress;
 };
 
 //---------------------------------------------------------------------------
@@ -93,10 +93,23 @@ NTSTATUS Thread_CheckTokenObject(
     PROCESS *proc, void *Object, ACCESS_MASK GrantedAccess);
 
 THREAD *Thread_GetByThreadId(PROCESS *proc, HANDLE tid);
+THREAD *Thread_GetOrCreate(PROCESS *proc, HANDLE tid, BOOLEAN create);
 
 NTSTATUS Thread_CheckObject_Common(
     PROCESS *proc, PEPROCESS ProcessObject,
-    ACCESS_MASK GrantedAccess, ACCESS_MASK WriteAccess, WCHAR Letter1);
+    ACCESS_MASK GrantedAccess, BOOLEAN EntireProcess,
+    BOOLEAN ExplicitAccess);
+
+ACCESS_MASK Thread_CheckObject_CommonEx(
+    HANDLE pid, PEPROCESS ProcessObject,
+    ACCESS_MASK DesiredAccess, BOOLEAN EntireProcess,
+    BOOLEAN ExplicitAccess);
+
+//---------------------------------------------------------------------------
+// Variables
+//---------------------------------------------------------------------------
+
+extern void *Thread_AnonymousToken;
 
 //---------------------------------------------------------------------------
 

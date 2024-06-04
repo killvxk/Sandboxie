@@ -96,7 +96,7 @@ typedef struct _COM_SLAVE {
     LIST_ELEM list_elem;
 
     WCHAR SidString[96];
-    WCHAR BoxName[48];
+    WCHAR BoxName[BOXNAME_COUNT];
     ULONG SessionId;
     BOOLEAN IsWow64;
 
@@ -168,6 +168,12 @@ ComServer::ComServer(PipeServer *pipeServer)
     List_Init(&m_SlavesList);
 
     pipeServer->Register(MSGID_COM, this, Handler);
+}
+
+ComServer::~ComServer()
+{
+	// cleanup CS
+	DeleteCriticalSection(&m_SlavesLock);
 }
 
 
@@ -269,7 +275,7 @@ MSG_HEADER *ComServer::GetClassObjectHandler(
         exc = 0;
         pMap->ProcNum = 0;
         if (req->elevate) {
-            if (CheckDropRights(slave->BoxName))
+            if (CheckDropRights(slave->BoxName, NULL))
                 exc = ERROR_ELEVATION_REQUIRED;
             else
                 pMap->ProcNum = 1;
@@ -672,7 +678,7 @@ void *ComServer::LockSlave(HANDLE idProcess, ULONG msgid)
     ULONG session_id;
     union {
         struct {
-            WCHAR boxname[48];
+            WCHAR boxname[BOXNAME_COUNT];
             WCHAR sid[96];
         } s;
         WCHAR path[192];
@@ -1712,7 +1718,7 @@ void ComServer::GetClassObjectSlave(void *_map, LIST *ObjectsList,
 
         //
         // elevate using CoGetObject
-        // this is primarily inteded for the firewall object
+        // this is primarily intended for the firewall object
         //
 
         typedef struct tagBIND_OPTS3 {

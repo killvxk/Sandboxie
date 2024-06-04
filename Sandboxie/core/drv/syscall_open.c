@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
- * Copyright 2020-2021 David Xanatos, xanasoft.com
+ * Copyright 2020-2023 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -88,7 +88,11 @@ _FX HANDLE *Syscall_ReplaceTargetHandle(
     RandomIndex = (ULONG)
             (((ULONG_PTR)PsGetCurrentThread() * time.LowPart) % 64);
 
-#ifdef _WIN64
+    // $Offset$ - Hard Offset Dependency
+#ifdef _M_ARM64
+    Teb = (*((ULONG_PTR*)(__getReg(18) + 0x30)));
+    TlsSlots = (ULONG_PTR *)(Teb + 0x1480);
+#elif _WIN64
     Teb = (ULONG_PTR)__readgsqword(0x30);
     TlsSlots = (ULONG_PTR *)(Teb + 0x1480);
 #else ! _WIN64
@@ -183,13 +187,37 @@ _FX NTSTATUS Syscall_CheckObject(
     OBJECT_NAME_INFORMATION *Name;
     ULONG NameLength;
     NTSTATUS status;
+    BOOLEAN Operation;
 
     status = Obj_GetNameOrFileName(
                             proc->pool, OpenedObject, &Name, &NameLength);
     if (NT_SUCCESS(status)) {
 
+        //
+        // determine if this is a creation or open/duplicate operation
+        //
+
+        if (syscall_entry->name_len > 6 && memcmp(syscall_entry->name, "Create", 6) == 0)
+            Operation = OBJ_OP_CREATE;
+        else
+            Operation = OBJ_OP_OPEN; // or duplicate
+
+        //
+        // invoke the Ipc_Check[Type]Object handler
+        //
+
         status = syscall_entry->handler2_func(
-            proc, OpenedObject, &Name->Name, HandleInfo->GrantedAccess);
+            proc, OpenedObject, &Name->Name, Operation, HandleInfo->GrantedAccess);
+
+        //
+        // process/thread access has its own logging routine
+        //
+
+        if ((syscall_entry->name_len == 11 && memcmp(syscall_entry->name, "OpenProcess", 11) == 0) ||
+            (syscall_entry->name_len == 10 && memcmp(syscall_entry->name, "OpenThread", 10) == 0) ||
+            (syscall_entry->name_len == 21 && memcmp(syscall_entry->name, "AlpcOpenSenderProcess", 21) == 0) ||
+            (syscall_entry->name_len == 20 && memcmp(syscall_entry->name, "AlpcOpenSenderThread", 20) == 0))
+            goto finish;
 
         if ((status != STATUS_SUCCESS)
                             && (status != STATUS_BAD_INITIAL_PC)) {
@@ -199,9 +227,10 @@ _FX NTSTATUS Syscall_CheckObject(
 
             WCHAR msg[256];
             RtlStringCbPrintfW(msg, sizeof(msg), L"%S (%08X) access=%08X initialized=%d", syscall_entry->name, status, HandleInfo->GrantedAccess, proc->initialized);
-			Log_Msg_Process(MSG_2101, msg, puName != NULL ? puName->Buffer : L"Unnamed object", -1, proc->pid);
+			Log_Msg_Process(MSG_2112, msg, puName != NULL ? puName->Buffer : L"Unnamed object", -1, proc->pid);
         }
 
+finish:
         if (Name != &Obj_Unnamed)
             Mem_Free(Name, NameLength);
     }
@@ -244,6 +273,19 @@ _FX NTSTATUS Syscall_OpenHandle(
         }
     }
 
+    //
+    // During early process initializarion stage OpenDirectoryObject is invoked with DIRECTORY_ALL_ACCESS
+    // so we strip the "write" permissions here until the SbieDll finishes loading
+    //
+
+    if (strcmp(syscall_entry->name, "OpenDirectoryObject") == 0 && proc->ipc_namespace_isoaltion && !proc->sbiedll_loaded){
+        ULONG_PTR PermissibleAccess = READ_CONTROL | DIRECTORY_QUERY | DIRECTORY_TRAVERSE;
+        if (user_args[1] == MAXIMUM_ALLOWED)
+            user_args[1] = PermissibleAccess;
+        else
+            user_args[1] &= PermissibleAccess;
+    }
+
     PUNICODE_STRING puName = NULL;
     __try {
 
@@ -251,6 +293,14 @@ _FX NTSTATUS Syscall_OpenHandle(
             (strcmp(syscall_entry->name, "AlpcConnectPort") == 0))
         {
             puName = (UNICODE_STRING*)user_args[1];
+        }
+        else if (strcmp(syscall_entry->name, "AlpcConnectPortEx") == 0)
+        {
+            POBJECT_ATTRIBUTES pObj = (POBJECT_ATTRIBUTES)user_args[1];
+            if (pObj && pObj->ObjectName)
+            {
+                puName = pObj->ObjectName;
+            }
         }
         else if ((strcmp(syscall_entry->name, "CreateFile") == 0) ||
             (strcmp(syscall_entry->name, "OpenFile") == 0))
@@ -403,7 +453,154 @@ _FX NTSTATUS Syscall_OpenHandle(
 _FX NTSTATUS Syscall_GetNextProcess(
     PROCESS *proc, SYSCALL_ENTRY *syscall_entry, ULONG_PTR *user_args)
 {
-    return STATUS_ACCESS_DENIED;
+    if (Obj_CallbackInstalled) // ObCallbacks takes care of that already
+        return Syscall_Invoke(syscall_entry, user_args); // so here we can just allow the execution
+
+    // ToDo: make this syscall work
+
+
+    NTSTATUS status;
+    NTSTATUS orig_status;
+    HANDLE *UserHandlePtr;
+    HANDLE *TlsPtr;
+    HANDLE TlsValue;
+    HANDLE NewHandle;
+    HANDLE OldHandle = (HANDLE)user_args[0];
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)user_args[1];
+    PEPROCESS ProcessObject;
+    
+next:
+
+    //
+    // replace the address of the handle in the user stack
+    //
+
+    UserHandlePtr = Syscall_ReplaceTargetHandle(
+                                (HANDLE *)&user_args[4], TRUE,
+                                &TlsPtr, &TlsValue);
+
+    //
+    // execute the syscall to get the handle into the TLS, then extract
+    // the handle value and restore the original value at the TLS slot
+    //
+    // save the original return code from the syscall, in case there is
+    // a non-zero success status code (see also Syscall_OpenHandle)
+    //
+    // if the syscall did not complete due to an APC, then we abort early
+    //
+
+    status = Syscall_Invoke(syscall_entry, user_args);
+
+    orig_status = status;
+
+    NewHandle = Syscall_RestoreTargetHandle(
+                                &user_args[4], UserHandlePtr,
+                                TlsPtr, TlsValue);
+
+    if (! NewHandle) {
+
+        //WCHAR trace_str[128];
+        //RtlStringCbPrintfW(trace_str, sizeof(trace_str), L"Syscall %.*S security violation terminating process", max(strlen(syscall_entry->name), 64), syscall_entry->name);
+        //Session_MonitorPut(MONITOR_OTHER, trace_str, PsGetCurrentProcessId());
+
+        Process_SetTerminated(proc, 8);
+        status = STATUS_PROCESS_IS_TERMINATING;
+    }
+
+    //
+    // always close the old handle we were not allowed to access
+    //
+
+    if (OldHandle != (HANDLE)user_args[0]) {
+
+        NtClose((HANDLE)user_args[0]);
+    }
+
+    //
+    // return on error if an APC interrupted the syscall
+    //
+
+    if ((! NT_SUCCESS(status)) || (status == STATUS_USER_APC))
+        return status;
+    
+    //
+    // check if the caller is allowed to access this process
+    //
+
+    status = ObReferenceObjectByHandle(NewHandle, 0, *PsProcessType, UserMode, &ProcessObject, NULL);
+
+    if (NT_SUCCESS(status)) {
+
+        status = Thread_CheckObject_Common(proc, ProcessObject, DesiredAccess, TRUE, FALSE);
+
+        ObDereferenceObject(ProcessObject);
+    }
+    
+    if (!NT_SUCCESS(status)) {
+
+        //
+        // if we are not allowed to open this process, try the next one, don't forget to close this handle!
+        //
+
+        user_args[0] = (ULONG_PTR)NewHandle;
+
+        goto next;
+    }
+
+    //
+    // if all went well, copy the opened handle into the first parameter
+    //
+
+    if (NT_SUCCESS(status)) {
+
+        __try {
+
+            if (UserHandlePtr)
+                *UserHandlePtr = NewHandle;
+            status = orig_status;
+
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+
+            status = STATUS_PROCESS_IS_TERMINATING;
+        }
+    }
+
+    return status;
+}
+
+//---------------------------------------------------------------------------
+// Syscall_GetNextThread
+//---------------------------------------------------------------------------
+
+_FX NTSTATUS Syscall_GetNextThread(
+    PROCESS *proc, SYSCALL_ENTRY *syscall_entry, ULONG_PTR *user_args)
+{
+    NTSTATUS status;
+    HANDLE ProcessHandle = (HANDLE)user_args[0];
+    ACCESS_MASK DesiredAccess = (ACCESS_MASK)user_args[2];
+    PEPROCESS ProcessObject;
+
+    if (Obj_CallbackInstalled) // ObCallbacks takes care of that already
+        return Syscall_Invoke(syscall_entry, user_args); // so here we can just allow the execution
+
+    //
+    // check if the caller is allowed to access this process, we don't filter on a per thread basis
+    //
+
+    status = ObReferenceObjectByHandle(ProcessHandle, 0, *PsProcessType, UserMode, &ProcessObject, NULL);
+
+    if (NT_SUCCESS(status)) {
+
+        status = Thread_CheckObject_Common(proc, ProcessObject, DesiredAccess, FALSE, FALSE);
+
+        ObDereferenceObject(ProcessObject);
+    }
+
+    if (!NT_SUCCESS(status)) 
+        return STATUS_ACCESS_DENIED;
+
+    // if all checks apssed we can llow the execution of this syscall
+    return Syscall_Invoke(syscall_entry, user_args);
 }
 
 //---------------------------------------------------------------------------
@@ -707,6 +904,8 @@ _FX SYSCALL_ENTRY *Syscall_DuplicateHandle_3(
 {
     static const WCHAR *_Port = L"Port";
     static const WCHAR *_Job = L"Job";
+    static const WCHAR *_SymLink = L"SymbolicLink";
+    static const WCHAR *_Directory = L"Directory";
     SYSCALL_ENTRY *entry;
     ULONG name_len;
     UCHAR SyscallName[32];
@@ -727,10 +926,6 @@ _FX SYSCALL_ENTRY *Syscall_DuplicateHandle_3(
 
         strcpy(SyscallName, "ConnectPort");
 
-    } else if (TypeLength == 3 && wmemcmp(TypeBuffer, _Job, 3) == 0) {
-
-        strcpy(SyscallName, "OpenJobObject");
-
     } else if (TypeLength <= 24) {
 
         memcpy(SyscallName, "Open", 4);
@@ -738,6 +933,17 @@ _FX SYSCALL_ENTRY *Syscall_DuplicateHandle_3(
             --TypeLength;
             SyscallName[TypeLength + 4] = (UCHAR)TypeBuffer[TypeLength];
         } while (TypeLength);
+
+        //
+        // Job, SymbolicLink, Directory functions have the suffix Object
+        //
+
+        if ((TypeLength == 3 && wmemcmp(TypeBuffer, _Job, 3) == 0)
+         || (TypeLength == 12 && wmemcmp(TypeBuffer, _SymLink, 12) == 0)
+         || (TypeLength == 9 && wmemcmp(TypeBuffer, _Directory, 9) == 0)){
+
+            strcat(SyscallName, "Object");
+        }
 
     } else
         return NULL;

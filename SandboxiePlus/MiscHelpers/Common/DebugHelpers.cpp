@@ -9,7 +9,7 @@
 
 bool IsDebuggerAttached()
 {
-	bool isDebuggerPresent = false; // Note: on linux change edit the value in debgger to indicate precense
+	bool isDebuggerPresent = false; // Note: on linux change edit the value in debgger to indicate presence
 #ifdef WIN32
 	if (IsDebuggerPresent())
 		return true;
@@ -87,10 +87,10 @@ CMemTracer memTracer;
 void CMemTracer::DumpTrace()
 {
 	QMutexLocker Locker(&m_Locker);
-	for(map<string,int>::iterator I = m_MemoryTrace.begin(); I != m_MemoryTrace.end(); I++)
+	for(std::map<std::string,int>::iterator I = m_MemoryTrace.begin(); I != m_MemoryTrace.end(); I++)
 	{
 
-		map<string,int>::iterator J = m_MemoryTrace2.find(I->first);
+		std::map<std::string,int>::iterator J = m_MemoryTrace2.find(I->first);
 		if(J != m_MemoryTrace2.end())
 			TRACE(L"MEMORY TRACE: Object '%S' has %d (%d) instances.",I->first.c_str(),I->second, J->second);
 		else
@@ -98,13 +98,13 @@ void CMemTracer::DumpTrace()
 	}
 }
 
-void CMemTracer::TraceAlloc(string Name)
+void CMemTracer::TraceAlloc(std::string Name)
 {
 	QMutexLocker Locker(&m_Locker);
 	m_MemoryTrace[Name] += 1;
 }
 
-void CMemTracer::TraceFree(string Name)
+void CMemTracer::TraceFree(std::string Name)
 {
 	QMutexLocker Locker(&m_Locker);
 	m_MemoryTrace[Name] -= 1;
@@ -114,7 +114,7 @@ void CMemTracer::TraceFree(string Name)
 		m_MemoryTrace2[Name] -= 1;
 }
 
-void CMemTracer::TracePre(string Name)
+void CMemTracer::TracePre(std::string Name)
 {
 	QMutexLocker Locker(&m_Locker);
 	m_MemoryTrace2[Name] += 1;
@@ -126,7 +126,7 @@ CCpuTracer cpuTracer;
 void CCpuTracer::DumpTrace()
 {
 	QMutexLocker Locker(&m_Locker);
-	for(map<string,SCycles>::iterator I = m_CpuUsageTrace.begin(); I != m_CpuUsageTrace.end(); I++)
+	for(std::map<std::string,SCycles>::iterator I = m_CpuUsageTrace.begin(); I != m_CpuUsageTrace.end(); I++)
 		TRACE(L"CPU TRACE: Prozedure '%S' needed %f seconds.",I->first.c_str(),(double)I->second.Total/1000000.0);
 }
 
@@ -136,13 +136,13 @@ void CCpuTracer::ResetTrace()
 	m_CpuUsageTrace.clear();
 }
 
-void CCpuTracer::TraceStart(string Name)
+void CCpuTracer::TraceStart(std::string Name)
 {
 	QMutexLocker Locker(&m_Locker);
 	m_CpuUsageTrace[Name].Counting = GetCurCycle();
 }
 
-void CCpuTracer::TraceStop(string Name)
+void CCpuTracer::TraceStop(std::string Name)
 {
 	QMutexLocker Locker(&m_Locker);
 	m_CpuUsageTrace[Name].Total += GetCurCycle() - m_CpuUsageTrace[Name].Counting;
@@ -155,11 +155,11 @@ CLockTracer lockTracer;
 void CLockTracer::DumpTrace()
 {
 	QMutexLocker Locker(&m_Locker);
-	for(map<string,SLocks>::iterator I = m_LockTrace.begin(); I != m_LockTrace.end(); I++)
+	for(std::map<std::string,SLocks>::iterator I = m_LockTrace.begin(); I != m_LockTrace.end(); I++)
 		TRACE(L"LOCK TRACE: Lock '%S' has %d Locks for %f seconds.",I->first.c_str(),I->second.LockCount, (double)(GetCurCycle()/1000 - I->second.LockTime) / 1000);
 }
 
-void CLockTracer::TraceLock(string Name, int op)
+void CLockTracer::TraceLock(std::string Name, int op)
 {
 	QMutexLocker Locker(&m_Locker);
 	SLocks &Locks =	m_LockTrace[Name];
@@ -200,7 +200,7 @@ static LONG __stdcall MyCrashHandlerExceptionFilter(EXCEPTION_POINTERS* pEx)
 #ifdef _M_IX86
   if (pEx->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW)  
   {
-    // be sure that we have enought space...
+    // be sure that we have enough space...
     static char MyStack[1024*128];  
     // it assumes that DS and SS are the same!!! (this is the case for Win32)
     // change the stack only if the selectors are the same (this is the case for Win32)
@@ -212,8 +212,11 @@ static LONG __stdcall MyCrashHandlerExceptionFilter(EXCEPTION_POINTERS* pEx)
 #endif
   bool bSuccess = false;
 
+  if (pEx->ExceptionRecord->ExceptionCode == DBG_PRINTEXCEPTION_C || pEx->ExceptionRecord->ExceptionCode == DBG_PRINTEXCEPTION_WIDE_C)
+	  return EXCEPTION_CONTINUE_SEARCH;
+
   wchar_t szMiniDumpFileName[128];
-  wsprintf(szMiniDumpFileName, L"%s %s.dmp", s_szMiniDumpName, QDateTime::currentDateTime().toString("dd.MM.yyyy hh-mm-ss,zzz").replace(QRegExp("[:*?<>|\"\\/]"), "_").toStdWString().c_str());
+  wsprintf(szMiniDumpFileName, L"%s %s.dmp", s_szMiniDumpName, QDateTime::currentDateTime().toString("dd.MM.yyyy hh-mm-ss,zzz").replace(QRegularExpression("[:*?<>|\"\\/]"), "_").toStdWString().c_str());
   
   /*wchar_t szMiniDumpPath[MAX_PATH] = { 0 };
 
@@ -274,7 +277,7 @@ void InitMiniDumpWriter(const wchar_t* Name, const wchar_t* Path)
   ASSERT(wcslen(Path) < ARRSIZE(s_szMiniDumpPath));
   wcscpy(s_szMiniDumpPath, Path);
 
-  // Initialize the member, so we do not load the dll after the exception has occured
+  // Initialize the member, so we do not load the dll after the exception has occurred
   // which might be not possible anymore...
   s_hDbgHelpMod = LoadLibrary(L"dbghelp.dll");
   if (s_hDbgHelpMod != NULL)
@@ -286,6 +289,9 @@ void InitMiniDumpWriter(const wchar_t* Name, const wchar_t* Path)
   // Additional call "PreventSetUnhandledExceptionFilter"...
   // See also: "SetUnhandledExceptionFilter" and VC8 (and later)
   // http://blog.kalmbachnet.de/?postid=75
+
+  // Register Vectored Exception Handler
+  //AddVectoredExceptionHandler(0, MyCrashHandlerExceptionFilter);
 }
 
 
@@ -348,7 +354,7 @@ void crit_err_hdlr(int sig_num, siginfo_t * info, void * ucontext)
     messages = backtrace_symbols(array, size);
 
     char szMiniDumpFileName[128];
-    sprintf(szMiniDumpFileName, "%S_%s.log", s_szMiniDumpName, QDateTime::currentDateTime().toString("dd.MM.yyyy_hh-mm-ss,zzz").replace(QRegExp("[:*?<>|\"\\/]"), "_").toStdString().c_str());
+    sprintf(szMiniDumpFileName, "%S_%s.log", s_szMiniDumpName, QDateTime::currentDateTime().toString("dd.MM.yyyy_hh-mm-ss,zzz").replace(QRegularExpression("[:*?<>|\"\\/]"), "_").toStdString().c_str());
 
     FILE* file = fopen(szMiniDumpFileName, "wb");
 

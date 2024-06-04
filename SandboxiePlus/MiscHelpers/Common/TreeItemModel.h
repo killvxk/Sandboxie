@@ -3,6 +3,10 @@
 
 #include "../mischelpers_global.h"
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+bool MISCHELPERS_EXPORT operator < (const QVariant& l, const QVariant& r);
+#endif
+
 class MISCHELPERS_EXPORT CTreeItemModel : public QAbstractItemModelEx
 {
     Q_OBJECT
@@ -11,10 +15,9 @@ public:
     CTreeItemModel(QObject *parent = 0);
 	virtual ~CTreeItemModel();
 
-	void			SetTree(bool bTree)				{ m_bTree = bTree; }
-	bool			IsTree() const					{ return m_bTree; }
 	void			SetUseIcons(bool bUseIcons)		{ m_bUseIcons = bUseIcons; }
 	static void		SetDarkMode(bool bDark)			{ m_DarkMode = bDark;}
+	static bool		GetDarkMode()					{ return m_DarkMode;}
 
 	//void			CountItems();
 	QModelIndex		FindIndex(const QVariant& ID);
@@ -46,7 +49,7 @@ signals:
 protected:
 	struct STreeNode
 	{
-		STreeNode(const QVariant& Id){
+		STreeNode(CTreeItemModel* pModel, const QVariant& Id) {
 			ID = Id;
 			Parent = NULL;
 			Row = 0;
@@ -56,10 +59,12 @@ protected:
 
 			IsBold = false;
 			IsGray = false;
+
+			Model = pModel;
+			Model->m_Nodes.insert(this);
 		}
 		virtual ~STreeNode(){
-			foreach(STreeNode* pNode, Children)
-				delete pNode;
+			Model->m_Nodes.remove(this);
 		}
 
 		QVariant			ID;
@@ -69,7 +74,7 @@ protected:
 		QList<QVariant>		Path;
 		QList<STreeNode*>	Children;
 		//int				AllChildren;
-		QMap<QVariant, int>	Aux;
+		//QMap<QVariant, int>	Aux;
 		bool				Virtual;
 
 		QVariant			Icon;
@@ -80,19 +85,25 @@ protected:
 		{
 			QVariant Raw;
 			QVariant SortKey;
-			QVariant Formated;
+			QVariant Formatted;
 		};
 		QVector<SValue>		Values;
+		CTreeItemModel*		Model;
 	};
 
 	virtual QVariant	NodeData(STreeNode* pNode, int role, int section) const;
 
-	virtual STreeNode*	MkNode(const QVariant& Id) = 0; // { return new STreeNode(Id); }
+	virtual STreeNode*	MkNode(const QVariant& Id) = 0;
+	virtual void		FreeNode(STreeNode* pNode) { 
+		foreach(STreeNode* pSubNode, pNode->Children)
+			FreeNode(pSubNode);
+		delete pNode; 
+	}
 	virtual STreeNode*	MkVirtualNode(const QVariant& Id, STreeNode* pParent);
 
-	void			Sync(QMap<QList<QVariant>, QList<STreeNode*> >& New, QHash<QVariant, STreeNode*>& Old, QList<QVariant>* pAdded = NULL);
+	void			Sync(QMap<QList<QVariant>, QList<STreeNode*> >& New, QHash<QVariant, STreeNode*>& Old, QList<QModelIndex>* pNewBranches = NULL);
 	void			Purge(STreeNode* pParent, const QModelIndex &parent, QHash<QVariant, STreeNode*>& Old);
-	void			Fill(STreeNode* pParent, const QModelIndex &parent, const QList<QVariant>& Paths, int PathsIndex, const QList<STreeNode*>& New, const QList<QVariant>& Path, QList<QVariant>* pAdded);
+	void			Fill(STreeNode* pParent, /*const QModelIndex &parent,*/ const QList<QVariant>& Paths, int PathsIndex, const QList<STreeNode*>& New, QList<QModelIndex>* pNewBranches);
 	QModelIndex		Find(STreeNode* pParent, STreeNode* pNode);
 	//int				CountItems(STreeNode* pRoot);
 
@@ -100,7 +111,7 @@ protected:
 
 	STreeNode*							m_Root;
 	QHash<QVariant, STreeNode*>			m_Map;
-	bool								m_bTree;
+	QSet<STreeNode*>					m_Nodes;
 	bool								m_bUseIcons;
 
 	static bool							m_DarkMode;
@@ -112,7 +123,11 @@ class MISCHELPERS_EXPORT CSimpleTreeModel : public CTreeItemModel
 
 public:
 	CSimpleTreeModel(QObject *parent = 0);
+	virtual ~CSimpleTreeModel();
 	
+	void			SetTree(bool bTree)				{ m_bTree = bTree; }
+	bool			IsTree() const					{ return m_bTree; }
+
 	void					Sync(const QMap<QVariant, QVariantMap>& List);
 
 	void					AddColumn(const QString& Name, const QString& Key) { m_ColumnKeys.append(qMakePair(Name, Key)); }
@@ -121,10 +136,12 @@ public:
     virtual QVariant		headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const;
 
 protected:
-	virtual STreeNode*		MkNode(const QVariant& Id) { return new STreeNode(Id); }
+	virtual STreeNode*		MkNode(const QVariant& Id) { return new STreeNode(this, Id); }
+	virtual void			FreeNode(STreeNode* pNode) { delete pNode; }
 
 	QList<QVariant>			MakePath(const QVariantMap& Cur, const QMap<QVariant, QVariantMap>& List);
 	bool					TestPath(const QList<QVariant>& Path, const QVariantMap& Cur, const QMap<QVariant, QVariantMap>& List, int Index = 0);
 
+	bool								m_bTree;
 	QList<QPair<QString, QString>> m_ColumnKeys;
 };

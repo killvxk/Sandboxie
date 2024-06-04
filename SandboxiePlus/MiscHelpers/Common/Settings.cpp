@@ -2,6 +2,7 @@
 #include "Settings.h"
 //#include "qzlib.h"
 #include "Common.h"
+#include <QStandardPaths>
 
 bool TestWriteRight(const QString& Path)
 {
@@ -12,22 +13,18 @@ bool TestWriteRight(const QString& Path)
 	return TestFile.remove();
 }
 
-CSettings::CSettings(const QString& AppName, bool bShared, QMap<QString, SSetting> DefaultValues, QObject* qObject) : QObject(qObject)
+CSettings::CSettings(const QString& AppDir, const QString& AppName, QMap<QString, SSetting> DefaultValues, QObject* qObject) : QObject(qObject)
 {
-	m_ConfigDir = QCoreApplication::applicationDirPath();
+	m_ConfigDir = AppDir;
 	if (!(m_bPortable = QFile::exists(m_ConfigDir + "/" + AppName + ".ini")))
 	{
 		QStringList dirs = QStandardPaths::standardLocations(QStandardPaths::GenericDataLocation);
 		if (dirs.isEmpty())
 			m_ConfigDir = QDir::homePath() + "/." + AppName;
 		//
-		// if shared is set a new ini is created in the shared location 
-		// and if present take precedence over an ini in a user location
-		// howeever if the only existing ini is in a user location it will be used
+		// if ini is present in the shared location it take precedence over an ini in a user location
 		//
-		else if(bShared && dirs.count() > 2 && (
-		  QFile::exists(dirs[1] + "/" + AppName + "/" + AppName + ".ini") ||
-		 !QFile::exists(dirs[0] + "/" + AppName + "/" + AppName + ".ini") ))
+		else if(dirs.count() > 2 && QFile::exists(dirs[1] + "/" + AppName + "/" + AppName + ".ini"))
 			m_ConfigDir = dirs[1] + "/" + AppName;
 		else
 			m_ConfigDir = dirs[0] + "/" + AppName;
@@ -38,18 +35,18 @@ CSettings::CSettings(const QString& AppName, bool bShared, QMap<QString, SSettin
 
 	m_pConf->sync();
 
-	m_DefaultValues = DefaultValues;
-	foreach (const QString& Key, m_DefaultValues.uniqueKeys())
-	{
-		const SSetting& Setting = m_DefaultValues[Key];
-		if(!m_pConf->contains(Key) || !Setting.Check(m_pConf->value(Key)))
-		{
-			if(Setting.IsBlob())
-				m_pConf->setValue(Key, Setting.Value.toByteArray().toBase64().replace("+","-").replace("/","_").replace("=",""));
-			else
-				m_pConf->setValue(Key, Setting.Value);
-		}
-	}
+	//m_DefaultValues = DefaultValues;
+	//foreach (const QString& Key, m_DefaultValues.keys())
+	//{
+	//	const SSetting& Setting = m_DefaultValues[Key];
+	//	if(!m_pConf->contains(Key) || !Setting.Check(m_pConf->value(Key)))
+	//	{
+	//		if(Setting.IsBlob())
+	//			m_pConf->setValue(Key, Setting.Value.toByteArray().toBase64().replace("+","-").replace("/","_").replace("=",""));
+	//		else
+	//			m_pConf->setValue(Key, Setting.Value);
+	//	}
+	//}
 }
 
 CSettings::~CSettings()
@@ -70,14 +67,14 @@ bool CSettings::SetValue(const QString &key, const QVariant &value)
 {
 	QMutexLocker Locker(&m_Mutex);
 
-	if (!m_DefaultValues.isEmpty())
-	{
-		ASSERT(m_pConf->contains(key));
-#ifndef _DEBUG
-		if (!m_DefaultValues[key].Check(value))
-			return false;
-#endif
-	}
+//	if (!m_DefaultValues.isEmpty())
+//	{
+//		ASSERT(m_pConf->contains(key));
+//#ifndef _DEBUG
+//		if (!m_DefaultValues[key].Check(value))
+//			return false;
+//#endif
+//	}
 
 	m_pConf->setValue(key, value);
 
@@ -89,7 +86,7 @@ QVariant CSettings::GetValue(const QString &key, const QVariant& preset)
 {
 	QMutexLocker Locker(&m_Mutex);
 
-	ASSERT(m_DefaultValues.isEmpty() || m_pConf->contains(key));	
+//	ASSERT(m_DefaultValues.isEmpty() || m_pConf->contains(key));	
 
 	return m_pConf->value(key, preset);
 }

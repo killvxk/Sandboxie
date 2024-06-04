@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2022 DavidXanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -20,15 +21,49 @@
 //---------------------------------------------------------------------------
 
 
+#include "dll.h"
+#include <stdio.h>
+#include "../../common/my_xeb.h"
 #include "debug.h"
-#ifdef WITH_DEBUG
 
 
 //---------------------------------------------------------------------------
+// Debug_Wait
+//---------------------------------------------------------------------------
 
 
-#include "dll.h"
-#include <stdio.h>
+_FX void Debug_Wait()
+{
+    BOOL Found = SbieApi_QueryConfBool(NULL, L"WaitForDebuggerAll", FALSE) ||
+        SbieDll_CheckStringInList(Dll_ImageName, NULL, L"WaitForDebugger");
+
+    const WCHAR *CmdLine = GetCommandLine();
+    WCHAR buf[66];
+    ULONG index = 0;
+    while (!Found) {
+        NTSTATUS status = SbieApi_QueryConfAsIs(NULL, L"WaitForDebuggerCmdLine", index, buf, 64 * sizeof(WCHAR));
+        ++index;
+        if (NT_SUCCESS(status)) {
+            if (wcsstr(CmdLine, buf) != 0) {
+                Found = TRUE;
+            }
+        }
+        else if (status != STATUS_BUFFER_TOO_SMALL)
+            break;
+    }
+
+    if (Found) {
+        while (!IsDebuggerPresent()) {
+            OutputDebugString(L"Waiting for Debugger\n");
+            Sleep(500);
+        }
+        if (!SbieApi_QueryConfBool(NULL, L"WaitForDebuggerSilent", TRUE))
+            __debugbreak();
+    }
+}
+
+
+#ifdef WITH_DEBUG
 
 
 //---------------------------------------------------------------------------
@@ -44,7 +79,7 @@
 //#define BREAK_PROC      "ExecSecureObjects"
 //#define BREAK_PROC      "SoftwareDirectorMsiErrorCheck"
 //#define BREAK_PROC      "InstallDriverPackages"
-#define BREAK_PROC        "MSIunzipcore"
+//#define BREAK_PROC        "MSIunzipcore"
 
 #undef  HIDE_SBIEDLL
 
@@ -53,6 +88,13 @@
 // Functions
 //---------------------------------------------------------------------------
 
+static NTSTATUS Debug_NtRaiseHardError(
+    NTSTATUS ErrorStatus,
+    ULONG NumberOfParameters,
+    ULONG UnicodeBitMask,
+    ULONG_PTR *Parameters,
+    ULONG ErrorOption,
+    ULONG *ErrorReturn);
 
 static void Debug_RtlSetLastWin32Error(ULONG err);
 
@@ -79,6 +121,13 @@ static NTSTATUS Debug_LdrGetDllHandle(
 //---------------------------------------------------------------------------
 
 
+typedef NTSTATUS (*P_NtRaiseHardError)(
+    NTSTATUS ErrorStatus,
+    ULONG NumberOfParameters,
+    ULONG UnicodeBitMask,
+    ULONG_PTR *Parameters,
+    ULONG ErrorOption,
+    ULONG *ErrorReturn);
 typedef void (*P_RtlSetLastWin32Error)(ULONG err);
 typedef void (*P_OutputDebugString)(const void *str);
 typedef BOOL (*P_DebugActiveProcess)(ULONG dwProcessId);
@@ -86,6 +135,7 @@ typedef BOOL (*P_WaitForDebugEvent)(
     LPDEBUG_EVENT lpDebugEvent, DWORD dwMilliseconds);
 
 
+static P_NtRaiseHardError           __sys_NtRaiseHardError          = NULL;
 static P_RtlSetLastWin32Error       __sys_RtlSetLastWin32Error      = NULL;
 static P_OutputDebugString          __sys_OutputDebugStringW        = NULL;
 static P_OutputDebugString          __sys_OutputDebugStringA        = NULL;
@@ -119,6 +169,7 @@ __declspec(dllimport) NTSTATUS LdrGetDllHandle(
 
 _FX int Debug_Init(void)
 {
+    P_NtRaiseHardError NtRaiseHardError;
     P_OutputDebugString OutputDebugStringW;
     P_OutputDebugString OutputDebugStringA;
     P_RtlSetLastWin32Error RtlSetLastWin32Error;
@@ -129,6 +180,14 @@ _FX int Debug_Init(void)
     // intercept NTDLL entry points
     //
 
+    HMODULE module = Dll_Ntdll;
+
+    NtRaiseHardError = (P_NtRaiseHardError)
+        GetProcAddress(Dll_Ntdll, "NtRaiseHardError");
+
+    //SBIEDLL_HOOK(Debug_,NtRaiseHardError);
+
+
     RtlSetLastWin32Error = (P_RtlSetLastWin32Error)
         GetProcAddress(Dll_Ntdll, "RtlSetLastWin32Error");
 
@@ -137,6 +196,8 @@ _FX int Debug_Init(void)
     //
     // intercept KERNEL32 entry points
     //
+
+    module = Dll_Kernel32;
 
     OutputDebugStringW = (P_OutputDebugString)
         GetProcAddress(Dll_Kernel32, "OutputDebugStringW");
@@ -236,6 +297,23 @@ _FX int Debug_Init(void)
 #endif
 
     return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
+// Debug_NtRaiseHardError
+//---------------------------------------------------------------------------
+
+
+ALIGNED NTSTATUS Debug_NtRaiseHardError(    
+    NTSTATUS ErrorStatus,
+    ULONG NumberOfParameters,
+    ULONG UnicodeBitMask,
+    ULONG_PTR *Parameters,
+    ULONG ErrorOption,
+    ULONG *ErrorReturn)
+{
+    return __sys_NtRaiseHardError(ErrorStatus, NumberOfParameters, UnicodeBitMask, Parameters, ErrorOption, ErrorReturn);
 }
 
 
@@ -410,7 +488,7 @@ void DbgPrint(const char* format, ...)
     char tmp1[510];
 
     extern int(*P_vsnprintf)(char *_Buffer, size_t Count, const char * const, va_list Args);
-    P_vsnprintf(tmp1, 510, format, va_args);
+    P_vsnprintf(tmp1, sizeof(tmp1), format, va_args);
 
     OutputDebugStringA(tmp1);
 
@@ -433,11 +511,11 @@ void DbgTrace(const char* format, ...)
     WCHAR tmp2[510];
 
     extern int(*P_vsnprintf)(char *_Buffer, size_t Count, const char * const, va_list Args);
-    P_vsnprintf(tmp1, 510, format, va_args);
+    P_vsnprintf(tmp1, sizeof(tmp1), format, va_args);
 
-    Sbie_snwprintf((WCHAR *)tmp2, 510, L"%S", tmp1);
+    Sbie_snwprintf((WCHAR *)tmp2, sizeof(tmp2)/sizeof(WCHAR), L"%S", tmp1);
 
-    SbieApi_MonitorPut2(MONITOR_OTHER | MONITOR_TRACE, tmp2, FALSE);
+    SbieApi_MonitorPutMsg(MONITOR_OTHER | MONITOR_TRACE, tmp2);
 
     va_end(va_args);
 }

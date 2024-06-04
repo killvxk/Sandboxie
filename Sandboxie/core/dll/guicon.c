@@ -79,13 +79,15 @@ static P_GetMessage                 __sys_GetMessageW               = NULL;
 
 _FX BOOLEAN Gui_InitConsole1(void)
 {
+    HMODULE module = Dll_Kernel32;
+
     // NoSbieCons BEGIN
     if (Dll_CompartmentMode || SbieApi_QueryConfBool(NULL, L"NoSandboxieConsole", FALSE)) {
 
         //
         // We need to set Gui_ConsoleHwnd in order for Gui_InitConsole2 to start up properly,
         // this functions starts a thread which listens for WM_DEVICECHANGE which we need
-        // we could go for a different signaling method in future but for now we stick to this methos
+        // we could go for a different signaling method in future but for now we stick to this method
         //
 
         Gui_ConsoleHwnd = GetConsoleWindow();
@@ -218,6 +220,25 @@ _FX BOOL Gui_ConnectConsole(ULONG ShowFlag)
 
                 if (! AttachConsole(rpl->process_id))
                     status = STATUS_NOT_SAME_DEVICE;
+
+                //
+                // wait for the count to indicate the service has quit
+                //
+
+                typedef DWORD (*P_GetConsoleProcessList)(LPDWORD lpdwProcessList, DWORD dwProcessCount);
+                P_GetConsoleProcessList GetConsoleProcessList = (P_GetConsoleProcessList)
+                    GetProcAddress(Dll_Kernel32, "GetConsoleProcessList");
+
+                DWORD pids[10]; // 2 should be enough but lets go with 10
+
+                while (1) {
+
+                    Sleep(50);
+
+                    ULONG num_pids = GetConsoleProcessList(pids, ARRAYSIZE(pids));
+                    if (num_pids < 2)
+                        break;
+                }
             }
 
             Dll_Free(rpl);
@@ -262,6 +283,7 @@ _FX void Gui_InitConsole2(void)
     HANDLE *Handles;
     HMODULE User32;
 
+    // $Workaround$ - 3rd party fix
     //
     // hack:  the Kaspersky process klwtblfs.exe is protected from
     // termination through TerminateProcess, so make sure we terminate

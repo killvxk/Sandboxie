@@ -103,7 +103,7 @@ static BOOLEAN Gui_HookInit = FALSE;
 //---------------------------------------------------------------------------
 
 
-_FX BOOLEAN Gui_InitWinHooks(void)
+_FX BOOLEAN Gui_InitWinHooks(HMODULE module)
 {
     InitializeCriticalSection(&Gui_HooksCritSec);
     List_Init(&Gui_Hooks);
@@ -219,7 +219,7 @@ _FX HHOOK Gui_SetWindowsHookExW(
     //
     // we also don't care if the target thread is in the same process.
     //
-    // in any other case, the hooker probablys expects their hook dll to
+    // in any other case, the hooker probably expects their hook dll to
     // be injected into target threads, but this will not occur.
     //
     // on Vista and later, UIPI will prevent the dll from loading into
@@ -232,9 +232,9 @@ _FX HHOOK Gui_SetWindowsHookExW(
 
     //
     // the boxed "global" hook mechanism should only be used for global hooks
-    // using it for hooks that specify a thread ID like done in sbie 5.33.6 
-    // and earlier results in a non standard conform behavioure:
-    // the hook in handled as a global one and injectted into all processes.
+    // using it for hooks that specify a thread ID like done in SBIE 5.33.6 
+    // and earlier results in a non standard conform behaviour:
+    // the hook in handled as a global one and injected into all processes.
     //
     // so we let the system handle hooks on a specified thread or once without 
     // a dll module handle always as those are not global
@@ -289,7 +289,7 @@ ULONG CALLBACK Gui_HookHelperProc(LPVOID lpParam)
     // by the service worker for each session, see GuiServer::WndHookNotifySlave
     //
     // whenever a window is created the service gets notified and instructs
-    // the hooking pocess to hook the window's thread this is done using QueueUserAPC
+    // the hooking process to hook the window's thread this is done using QueueUserAPC
     // targeting this helper thread, whenever a APC is scheduled the thread 
     // will resume and execute it, it being Gui_NotifyWinHooksAPC
     //

@@ -58,11 +58,15 @@ struct _PATTERN {
     // a value denoting the match level for the process
     ULONG level;
 
+    // optional auxiliary data to be associated with this pattern
+    PVOID aux;
+
     // array of pointers to constant parts.  the actual number of
     // elements is indicate by info.num_cons, and the strings are
     // allocated as part of this PATTERN object
     struct {
         BOOLEAN hex;
+        BOOLEAN no_bs;
         USHORT len;
         WCHAR *ptr;
     } cons[0];
@@ -100,6 +104,9 @@ _Check_return_ _CRTIMP long   __cdecl wcstol(_In_z_ const wchar_t *_Str, _Out_op
 static const WCHAR *Pattern_wcsnstr(
     const WCHAR *hstr, const WCHAR *nstr, int nlen);
 
+static const WCHAR *Pattern_wcsnstr_ex(
+    const WCHAR *hstr, const WCHAR *nstr, int nlen, int no_bs);
+
 
 //---------------------------------------------------------------------------
 // Variables
@@ -125,6 +132,7 @@ _FX PATTERN *Pattern_Create(
     PATTERN *pat;
     WCHAR *optr;
     BOOLEAN any_hex_cons;
+    ULONG start_count;
 
     //
     // count number of constant parts in the input string, and
@@ -190,8 +198,11 @@ _FX PATTERN *Pattern_Create(
     iptr = string;
     while (iptr) {
 
-        while (*iptr == L'*')
+        start_count = num_cons > 0 ? 1 : 0;
+        while (*iptr == L'*') {
             ++iptr;
+            ++start_count;
+        }
         iptr2 = wcschr(iptr, L'*');
 
         if (iptr2) {
@@ -217,6 +228,8 @@ _FX PATTERN *Pattern_Create(
                 pat->cons[num_cons].hex = TRUE;
             } else
                 pat->cons[num_cons].hex = FALSE;
+
+            pat->cons[num_cons].no_bs = start_count == 2;
 
             ++num_cons;
             optr += len_ptr + 1;
@@ -295,6 +308,40 @@ _FX const WCHAR *Pattern_Source(PATTERN *pat)
 _FX ULONG Pattern_Level(PATTERN *pat)
 {
     return pat->level;
+}
+
+
+//---------------------------------------------------------------------------
+// Pattern_Aux
+//---------------------------------------------------------------------------
+
+
+_FX PVOID* Pattern_Aux(PATTERN *pat)
+{
+    return &pat->aux;
+}
+
+
+//---------------------------------------------------------------------------
+// Pattern_Wildcards
+//---------------------------------------------------------------------------
+
+
+_FX USHORT Pattern_Wildcards(PATTERN *pat)
+{
+    if (pat->info.num_cons == 0) return 0; // empty patterns don't have wildcards
+    return pat->info.num_cons - 1; // between every constant part there is a wildcard
+}
+
+
+//---------------------------------------------------------------------------
+// Pattern_Exact
+//---------------------------------------------------------------------------
+
+
+_FX BOOLEAN Pattern_Exact(PATTERN *pat)
+{
+    return pat->info.f.star_at_tail == 0;
 }
 
 
@@ -381,9 +428,9 @@ _FX int Pattern_Match2(
 
         while (1) {
 
-            const WCHAR *ptr = Pattern_wcsnstr(
+            const WCHAR *ptr = Pattern_wcsnstr_ex(
                 string + str_index,
-                pat->cons[con_index].ptr, pat->cons[con_index].len);
+                pat->cons[con_index].ptr, pat->cons[con_index].len, pat->cons[con_index].no_bs);
 
             if (! ptr) {
 
@@ -585,6 +632,18 @@ _FX int Pattern_wcstol(const WCHAR *text, WCHAR **endptr)
 _FX const WCHAR *Pattern_wcsnstr(
     const WCHAR *hstr, const WCHAR *nstr, int nlen)
 {
+    return Pattern_wcsnstr_ex(hstr, nstr, nlen, FALSE);
+}
+
+
+//---------------------------------------------------------------------------
+// Pattern_wcsnstr_ex
+//---------------------------------------------------------------------------
+
+
+_FX const WCHAR *Pattern_wcsnstr_ex(
+    const WCHAR *hstr, const WCHAR *nstr, int nlen, int no_bs)
+{
     int i;
     while (*hstr) {
         if (*hstr == *nstr || *nstr == L'?') {
@@ -596,7 +655,117 @@ _FX const WCHAR *Pattern_wcsnstr(
             if (i == nlen)
                 return hstr;
         }
+        if (no_bs && *hstr == L'\\')
+            break;
         ++hstr;
     }
     return NULL;
+}
+
+
+//---------------------------------------------------------------------------
+// Pattern_MatchPathList
+//---------------------------------------------------------------------------
+
+
+_FX int Pattern_MatchPathList(
+    WCHAR *path_lwr, ULONG path_len, LIST *list, ULONG* plevel, ULONG* pflags, USHORT* pwildc, PATTERN **found)
+{
+    PATTERN *pat;
+    int match_len = 0;
+    ULONG level = plevel ? *plevel : -1; // lower is better, 3 is max value
+    ULONG flags = pflags ? *pflags : 0;
+    USHORT wildc = pwildc ? *pwildc : -1; // lower is better
+
+    pat = (PATTERN*)List_Head(list);
+    while (pat) {
+
+        ULONG cur_level = Pattern_Level(pat);
+        if (cur_level > level)
+            goto next; // no point testing patterns with a to weak level
+
+        BOOLEAN cur_exact = Pattern_Exact(pat);
+        if (!cur_exact && (flags & MATCH_FLAG_EXACT))
+            goto next;
+
+        USHORT cur_wildc = Pattern_Wildcards(pat);
+
+        int cur_len = Pattern_MatchX(pat, path_lwr, path_len);
+        if (cur_len > match_len) {
+            match_len = cur_len;
+            level = cur_level;
+            flags = cur_exact ? MATCH_FLAG_EXACT : 0;
+            wildc = cur_wildc;
+            if (found) *found = pat;
+            
+            // we need to test all entries to find the best match, so we don't break here
+            // unless we found an exact match, than there can't be a batter one
+            if (cur_exact)
+                break;
+        }
+
+        //
+        // if we have a pattern like C:\Windows\,
+        // we still want it to match a path like C:\Windows,
+        // hence we add a L'\\' to the path and check again
+        //
+
+        else if (path_lwr[path_len - 1] != L'\\') { 
+            path_lwr[path_len] = L'\\';
+            cur_len = Pattern_MatchX(pat, path_lwr, path_len + 1);
+            path_lwr[path_len] = L'\0';
+            if (cur_len > match_len) {
+                match_len = cur_len;
+                level = cur_level;
+                flags = MATCH_FLAG_AUX | (cur_exact ? MATCH_FLAG_EXACT : 0);
+                wildc = cur_wildc;
+                if (found) *found = pat;
+            }
+        }
+
+    next:
+        pat = (PATTERN*)List_Next(pat);
+    }
+
+    if (plevel) *plevel = level;
+    if (pflags) *pflags = flags;
+    if (pwildc) *pwildc = wildc;
+    return match_len;
+}
+
+
+//---------------------------------------------------------------------------
+// Pattern_MatchPathListEx
+//---------------------------------------------------------------------------
+
+
+_FX BOOLEAN Pattern_MatchPathListEx(WCHAR *path_lwr, ULONG path_len, LIST *list, ULONG* plevel, int* pmatch_len, ULONG* pflags, USHORT* pwildc, const WCHAR** patsrc)
+{
+    PATTERN* found;
+    ULONG cur_level;
+    ULONG cur_flags;
+    USHORT cur_wildc;
+    int cur_len;
+
+    if (list && path_len) {
+        cur_level = *plevel;
+        cur_flags = *pflags;
+        cur_wildc = *pwildc;
+        cur_len = Pattern_MatchPathList(path_lwr, path_len, list, &cur_level, &cur_flags, &cur_wildc, &found);
+        if (cur_level <= *plevel && (
+            ((*pflags & MATCH_FLAG_EXACT) == 0 && (cur_flags & MATCH_FLAG_EXACT) != 0) || // an exact match overrules any non exact match
+            ((*pflags & MATCH_FLAG_AUX) != 0 && (cur_flags & MATCH_FLAG_AUX) == 0) || // a rule with a primary match overrules auxiliary matches
+            (cur_len > *pmatch_len) || // the longer the match, the more specific the rule and thus the higher its priority
+            ((cur_len == *pmatch_len && cur_len > 0) && (cur_wildc < *pwildc)) // given the same match length, a rule with less wildcards wins
+          )) {
+            *plevel = cur_level;
+            *pflags = cur_flags;
+            *pwildc = cur_wildc;
+            *pmatch_len = cur_len;
+            if (patsrc) *patsrc = Pattern_Source(found);
+
+            return TRUE;
+        }
+    }
+    return FALSE;
 }

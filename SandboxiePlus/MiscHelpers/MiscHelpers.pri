@@ -12,8 +12,6 @@ HEADERS += ./MiscHelpers.h \
     ./Common/FlexError.h \
     ./Common/FlowLayout.h \
     ./Common/HistoryGraph.h \
-    ./Common/IconExtreactor.h \
-    ./Common/qRC4.h \
     ./Common/Xml.h \
     ./Common/CheckableMessageBox.h \
     ./Common/ComboInputDialog.h \
@@ -34,7 +32,21 @@ HEADERS += ./MiscHelpers.h \
     ./Common/TreeViewEx.h \
     ./Common/TreeWidgetEx.h \
     ./Common/CheckList.h \
-    ./Common/NetworkAccessManager.h
+    ./Common/NeonEffect.h \
+    ./Common/NetworkAccessManager.h \
+    ./Common/MT/ThreadLock.h \
+    ./Common/MultiErrorDialog.h \
+    ./Archive/Archive.h \
+    ./Archive/ArchiveFS.h \
+    ./Archive/ArchiveExtractor.h \
+    ./Archive/ArchiveHelper.h \
+    ./Archive/ArchiveInterface.h \
+    ./Archive/ArchiveIO.h \
+    ./Archive/ArchiveOpener.h \
+    ./Archive/ArchiveThread.h \
+    ./Archive/ArchiveUpdater.h \
+    ./Archive/CachedArchive.h \
+    ./Archive/SplitFile.h
     
 SOURCES += ./MiscHelpers.cpp \
     ./stdafx.cpp \
@@ -45,13 +57,11 @@ SOURCES += ./MiscHelpers.cpp \
     ./Common/DebugHelpers.cpp \
     ./Common/Finder.cpp \
     ./Common/FlowLayout.cpp \
-    ./Common/IconExtreactor.cpp \
     ./Common/ItemChooser.cpp \
     ./Common/KeyValueInputDialog.cpp \
     ./Common/ListItemModel.cpp \
     ./Common/MultiLineInputDialog.cpp \
     ./Common/PanelView.cpp \
-    ./Common/qRC4.cpp \
     ./Common/NetworkAccessManager.cpp \
     ./Common/Settings.cpp \
     ./Common/SettingsWidgets.cpp \
@@ -59,4 +69,17 @@ SOURCES += ./MiscHelpers.cpp \
     ./Common/SplitTreeView.cpp \
     ./Common/TabPanel.cpp \
     ./Common/TreeItemModel.cpp \
-    ./Common/Xml.cpp
+    ./Common/Xml.cpp \
+    ./Common/MT/ThreadLock.cpp \
+    ./Common/MultiErrorDialog.cpp \
+    ./Archive/Archive.cpp \
+    ./Archive/ArchiveFS.cpp \
+    ./Archive/ArchiveExtractor.cpp \
+    ./Archive/ArchiveHelper.cpp \
+    ./Archive/ArchiveInterface.cpp \
+    ./Archive/ArchiveOpener.cpp \
+    ./Archive/ArchiveThread.cpp \
+    ./Archive/ArchiveUpdater.cpp \
+    ./Archive/CachedArchive.cpp \
+    ./Archive/SplitFile.cpp
+    

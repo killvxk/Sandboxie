@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 DavidXanatos, xanasoft.com
+ * Copyright 2020-2024 DavidXanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -21,7 +21,13 @@
 
 #include "dll.h"
 #include "trace.h"
+#include "core/low/lowdata.h"
 
+#include <dbghelp.h>
+
+#ifdef _M_ARM64EC
+void* Hook_GetFFSTarget(void* ptr);
+#endif
 
 //---------------------------------------------------------------------------
 // Defines
@@ -41,17 +47,25 @@ static void Trace_OutputDebugStringW(const WCHAR *str);
 
 static void Trace_OutputDebugStringA(const UCHAR *str);
 
+static NTSTATUS InstallInstrumentationCallback();
+
 
 //---------------------------------------------------------------------------
+// Variables
+//---------------------------------------------------------------------------
+
+extern SBIELOW_DATA* SbieApi_data;
 
 
 typedef void (*P_RtlSetLastWin32Error)(ULONG err);
 typedef void (*P_OutputDebugString)(const void *str);
 
-
 static P_RtlSetLastWin32Error       __sys_RtlSetLastWin32Error      = NULL;
 static P_OutputDebugString          __sys_OutputDebugStringW        = NULL;
 static P_OutputDebugString          __sys_OutputDebugStringA        = NULL;
+
+BOOLEAN Dll_SbieTrace = FALSE;
+BOOLEAN Dll_ApiTrace = FALSE;
 
 
 //---------------------------------------------------------------------------
@@ -61,33 +75,64 @@ static P_OutputDebugString          __sys_OutputDebugStringA        = NULL;
 
 _FX int Trace_Init(void)
 {
-	P_RtlSetLastWin32Error RtlSetLastWin32Error;
-    P_OutputDebugString OutputDebugStringW;
-    P_OutputDebugString OutputDebugStringA;
+    Dll_SbieTrace = SbieApi_QueryConfBool(NULL, L"SbieTrace", FALSE);
 
-    //
-    // intercept NTDLL entry points
-    //
+    Dll_ApiTrace = Config_GetSettingsForImageName_bool(L"ApiTrace", FALSE);
 
     if (SbieApi_QueryConfBool(NULL, L"ErrorTrace", FALSE)) {
-        RtlSetLastWin32Error = (P_RtlSetLastWin32Error)
+
+        //
+        // intercept NTDLL entry points
+        //
+        HMODULE module = Dll_Ntdll;
+
+        P_RtlSetLastWin32Error RtlSetLastWin32Error = (P_RtlSetLastWin32Error)
             GetProcAddress(Dll_Ntdll, "RtlSetLastWin32Error");
         SBIEDLL_HOOK(Trace_, RtlSetLastWin32Error);
     }
 
+    if (SbieApi_QueryConfBool(NULL, L"DebugTrace", FALSE)) {
+
+        //
+        // intercept KERNEL32 entry points
+        //
+        HMODULE module = Dll_Kernel32;
+
+        P_OutputDebugString OutputDebugStringW = (P_OutputDebugString)
+            GetProcAddress(Dll_Kernel32, "OutputDebugStringW");
+        SBIEDLL_HOOK(Trace_, OutputDebugStringW);
+
+        P_OutputDebugString OutputDebugStringA = (P_OutputDebugString)
+            GetProcAddress(Dll_Kernel32, "OutputDebugStringA");
+        SBIEDLL_HOOK(Trace_, OutputDebugStringA);
+
+
+        OutputDebugString(L"SbieDll injected...\n");
+    }
+
     //
-    // intercept KERNEL32 entry points
+    // If there are any CallTrace options set, then install syscall instrumentation
     //
 
-    OutputDebugStringW = (P_OutputDebugString)
-        GetProcAddress(Dll_Kernel32, "OutputDebugStringW");
-	SBIEDLL_HOOK(Trace_, OutputDebugStringW);
-
-    OutputDebugStringA = (P_OutputDebugString)
-        GetProcAddress(Dll_Kernel32, "OutputDebugStringA");
-    SBIEDLL_HOOK(Trace_,OutputDebugStringA);
+    WCHAR wsTraceOptions[4];
+    if (SbieApi_QueryConf(NULL, L"CallTrace", 0, wsTraceOptions, sizeof(wsTraceOptions)) == STATUS_SUCCESS && wsTraceOptions[0] != L'\0') {
+        if (!NT_SUCCESS(InstallInstrumentationCallback()))
+            SbieApi_Log(2205, L"ProcessInstrumentationCallback");
+    }
 
     return TRUE;
+}
+
+//---------------------------------------------------------------------------
+// Trace_Init
+//---------------------------------------------------------------------------
+
+
+_FX void Trace_Entry(void)
+{
+#ifdef WITH_DEBUG
+    DbgTrace("Dll_InitExeEntry completed");
+#endif
 }
 
 
@@ -101,7 +146,7 @@ ALIGNED void Trace_RtlSetLastWin32Error(ULONG err)
     if (err) {
 		WCHAR strW[64];
         Sbie_snwprintf(strW, 64, L"SetError: %d\n", err);
-		SbieApi_MonitorPut2(MONITOR_OTHER | MONITOR_TRACE, strW, FALSE);
+		SbieApi_MonitorPutMsg(MONITOR_OTHER | MONITOR_TRACE, strW);
     }
     __sys_RtlSetLastWin32Error(err);
 }
@@ -114,7 +159,7 @@ ALIGNED void Trace_RtlSetLastWin32Error(ULONG err)
 
 ALIGNED void Trace_OutputDebugStringW(const WCHAR *strW)
 {
-	SbieApi_MonitorPut2(MONITOR_OTHER | MONITOR_TRACE, strW, FALSE);
+	SbieApi_MonitorPutMsg(MONITOR_OTHER | MONITOR_TRACE, strW);
 
     __sys_OutputDebugStringW(strW);
 }
@@ -129,7 +174,7 @@ ALIGNED void Trace_OutputDebugStringA(const UCHAR *strA)
 {
 	WCHAR strW[256 + 1];
 	Sbie_snwprintf(strW, 256 + 1, L"%S", strA); // convert to WCHAR
-	SbieApi_MonitorPut2(MONITOR_OTHER | MONITOR_TRACE, strW, FALSE);
+	SbieApi_MonitorPutMsg(MONITOR_OTHER | MONITOR_TRACE, strW);
 
     __sys_OutputDebugStringA(strA);
 }
@@ -158,7 +203,7 @@ WCHAR* Trace_FindModuleByAddress(void* address)
     {
         Entry = CONTAINING_RECORD(Next, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
 
-        if (Entry->DllBase < address && (UINT_PTR)Entry->DllBase + Entry->SizeOfImage > (UINT_PTR)address)
+        if (Entry->DllBase <= address && (UINT_PTR)Entry->DllBase + Entry->SizeOfImage > (UINT_PTR)address)
         {
             found = Entry->BaseDllName.Buffer;
             break;
@@ -169,6 +214,226 @@ WCHAR* Trace_FindModuleByAddress(void* address)
     LeaveCriticalSection((PRTL_CRITICAL_SECTION)peb->LoaderLock);
 
     return found;
+}
+
+
+//---------------------------------------------------------------------------
+// SetInstrumentationCallbackHook
+//---------------------------------------------------------------------------
+
+typedef void(*CallbackFn)();
+
+typedef struct _PROCESS_INSTRUMENTATION_CALLBACK_INFORMATION
+{
+    ULONG Version;
+    ULONG Reserved;
+    CallbackFn Callback;
+} PROCESS_INSTRUMENTATION_CALLBACK_INFORMATION;
+
+extern void InstrumentationCallbackAsm(void);
+
+void* __sys_RtlCaptureContext = NULL;
+
+// Code inspired by ScyllaHide - https://github.com/x64dbg/ScyllaHide/blob/master/HookLibrary/HookHelper.cpp
+NTSTATUS InstallInstrumentationCallback()
+{
+    HANDLE ProcessHandle = NtCurrentProcess();
+
+    // Windows 10
+    PROCESS_INSTRUMENTATION_CALLBACK_INFORMATION CallbackInfo;
+    CallbackInfo.Reserved = 0;
+    CallbackInfo.Callback = InstrumentationCallbackAsm; // set NULL to disable
+#ifdef _WIN64
+    CallbackInfo.Version = 0; // 0 for x64 and ARM64, 1 for x86
+#else
+    // Windows 7-8.1 do not support x86/WOW64 instrumentation callbacks
+    if (Dll_OsBuild < 10041)
+        return STATUS_NOT_SUPPORTED;
+
+    // Native x86 instrumentation callbacks don't work correctly
+    BOOL Wow64Process = FALSE;
+    if (!IsWow64Process(ProcessHandle, &Wow64Process) || !Wow64Process) {
+        //CallbackInfo.Version = 1; // Value to use if they did
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    // WOW64: set the callback pointer in the version field
+    CallbackInfo.Version = (ULONG)CallbackInfo.Callback;
+#endif
+
+    // Windows 7-8.1 require SE_DEBUG_PRIVILEGE for this to work, even on the current process
+    if (Dll_OsBuild < 10041) // todo: use sbie drv or set privilege in compartment type boxes
+        return STATUS_PRIVILEGE_NOT_HELD;
+
+#if defined(_M_ARM64) || defined(_M_ARM64EC)
+    __sys_RtlCaptureContext = GetProcAddress(Dll_Ntdll, "RtlCaptureContext");
+    if (!__sys_RtlCaptureContext)
+        return STATUS_NOT_SUPPORTED;
+#ifdef _M_ARM64EC
+    //__sys_RtlCaptureContext = Hook_GetFFSTarget(__sys_RtlCaptureContext);
+    // TODO
+    return STATUS_NOT_SUPPORTED;
+#endif
+#endif
+
+    NTSTATUS status = NtSetInformationProcess(ProcessHandle, ProcessInstrumentationCallback, &CallbackInfo, sizeof(CallbackInfo));
+
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// InstrumentationTrace
+//---------------------------------------------------------------------------
+
+
+VOID InstrumentationTrace(ULONG_PTR ReturnAddress, NTSTATUS ReturnStatus)
+{
+#if defined(_M_ARM64) || defined(_M_ARM64EC)
+    ULONG_PTR NtFunction = ReturnAddress - 0x04;
+#elif _WIN64
+    ULONG_PTR NtFunction = ReturnAddress - 0x14;
+    //ULONG SystemCallNumber = *(ULONG*)(ReturnAddress - 0x10);
+#else
+    ULONG_PTR NtFunction = ReturnAddress - 0x0c;
+    //ULONG SystemCallNumber = *(ULONG*)(ReturnAddress - 0x0?);
+#endif
+
+#ifdef _WIN64
+    // Note: this would also be needed in native 32 bit
+    extern SBIELOW_DATA* SbieApi_data;
+    if (NtFunction == (ULONG_PTR)SbieApi_data->NtDeviceIoControlFile_code)
+        return; // this is used by our sys call interface, the driver will log this syscall
+#endif
+    
+    HMODULE aModules[] = { Dll_Ntdll, Dll_Win32u, NULL }; // Note: Dll_Win32u must be last as it might be NULL
+
+    for (HMODULE* ppModule = aModules; *ppModule; ppModule++) {
+
+        HMODULE hModule = *ppModule;
+
+#ifdef _WIN64
+        PIMAGE_NT_HEADERS64 pHeader = ((IMAGE_NT_HEADERS64*)((ULONG_PTR)hModule + ((IMAGE_DOS_HEADER*)hModule)->e_lfanew));
+#else
+        PIMAGE_NT_HEADERS32 pHeader = ((IMAGE_NT_HEADERS32*)((ULONG_PTR)hModule + ((IMAGE_DOS_HEADER*)hModule)->e_lfanew));
+#endif
+
+        DWORD uSize = pHeader->OptionalHeader.SizeOfImage;
+        if (((ULONG_PTR)hModule <= ReturnAddress && ReturnAddress <= (ULONG_PTR)hModule + uSize))
+        {
+            LPCSTR FunctionName = NULL;
+            ULONG_PTR MatchFunction = 0;
+
+            IMAGE_EXPORT_DIRECTORY* EXPORT = (IMAGE_EXPORT_DIRECTORY*)((ULONG_PTR)hModule + pHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+            for (DWORD i = 0; i < EXPORT->NumberOfNames; i++)
+            {
+                WORD Index = *(WORD*)((ULONG_PTR)hModule + EXPORT->AddressOfNameOrdinals + i * 2);
+                ULONG_PTR Function = (ULONG_PTR)hModule + *(DWORD*)((ULONG_PTR)hModule + EXPORT->AddressOfFunctions + Index * 4);
+                if (NtFunction == Function || (ReturnAddress - Function < ReturnAddress - MatchFunction)) {
+                    MatchFunction = Function;
+                    FunctionName = (LPCSTR)((ULONG_PTR)hModule + *(DWORD*)((ULONG_PTR)hModule + EXPORT->AddressOfNames + i * 4));
+                    if(NtFunction == Function)
+                        break;
+                }
+            }
+
+            // Skip "Nt" Prefix
+            if (FunctionName && _strnicmp(FunctionName, "Nt", 2) == 0)
+                FunctionName += 2;
+
+            WCHAR trace_str[128];
+            ULONG len = Sbie_snwprintf(trace_str, 128, L"%S%S%cstatus = 0x%X", 
+                FunctionName ? FunctionName : "Unknown Function", 
+                NtFunction == MatchFunction ? "" : "(?)",
+                '\0',
+                ReturnStatus);
+            SbieApi_MonitorPut2Ex(MONITOR_SYSCALL | MONITOR_TRACE, len, trace_str, FALSE, FALSE);
+
+            //DbgPrint("[TRACKING] %s Called\n", FunctionName ? FunctionName : "Unknown Function");
+            break;
+        }
+    }
+}
+
+
+//---------------------------------------------------------------------------
+// InstrumentationCallback
+//---------------------------------------------------------------------------
+
+
+void InstrumentationCallback(
+#ifdef _WIN64
+    PCONTEXT ctx,
+#endif
+#if defined(_M_ARM64) //|| defined(_M_ARM64EC)
+    ULONG_PTR lr,
+#endif
+    ULONG_PTR ReturnAddress,
+    ULONG_PTR ReturnValue)
+{
+    TEB* pTEB = NtCurrentTeb();
+
+#if defined(_M_ARM64) //|| defined(_M_ARM64EC)
+    ctx->Pc = pTEB->InstrumentationCallbackPreviousPc;
+    ctx->Sp = pTEB->InstrumentationCallbackPreviousSp;
+    ctx->Lr = lr;
+    ctx->X0 = ReturnValue;
+#elif _M_X64
+    ctx->Rip = pTEB->InstrumentationCallbackPreviousPc;
+    ctx->Rsp = pTEB->InstrumentationCallbackPreviousSp;
+    ctx->Rcx = ctx->R10;
+    ctx->R10 = ctx->Rip;
+#endif
+
+    // Prevent recursion
+    if (!pTEB->InstrumentationCallbackDisabled) {
+        pTEB->InstrumentationCallbackDisabled = 1;
+
+        InstrumentationTrace(ReturnAddress, (NTSTATUS)ReturnValue);
+
+        pTEB->InstrumentationCallbackDisabled = 0;
+    }
+
+#ifdef _WIN64
+    RtlRestoreContext(ctx, NULL);
+#endif
+}
+
+#if 0
+ULONG_PTR NTAPI InstrumentationCallback(
+    _In_ ULONG_PTR ReturnAddress, // ECX/R10
+    _Inout_ ULONG_PTR ReturnVal) // EAX/RAX
+{
+    // code
+    return ReturnVal;
+}
+#endif
+
+
+//---------------------------------------------------------------------------
+// ApiInstrumentation
+//---------------------------------------------------------------------------
+
+#ifdef _WIN64
+void ApiInstrumentation(const char* pName, void** pStack)
+#else
+void __fastcall ApiInstrumentation(const char* pName, void** pStack)
+#endif
+{
+    void* ReturnAddress = *(pStack - 1);
+
+    TEB* pTEB = NtCurrentTeb();
+    ULONG_PTR* sbie_deph = (ULONG_PTR*)&pTEB->ReservedForDebuggerInstrumentation[15];
+    if (*sbie_deph)
+        return;
+    *sbie_deph += 1;
+
+    WCHAR trace_str[256];
+    //ULONG len = Sbie_snwprintf(trace_str, 128, L"%S <-- %s%S", pName, CallingModule, pCaller ? pCaller : "");
+    ULONG len = Sbie_snwprintf(trace_str, 128, L"%S", pName);
+    SbieApi_MonitorPut2Ex(MONITOR_APICALL | MONITOR_TRACE, len, trace_str, FALSE, FALSE);
+
+    *sbie_deph -= 1;
 }
 
 
@@ -383,7 +648,6 @@ const wchar_t* Trace_SbieGuiFunc2Str(ULONG func)
         case GUI_WND_HOOK_NOTIFY:               return L"GUI_WND_HOOK_NOTIFY";
         case GUI_WND_HOOK_REGISTER:             return L"GUI_WND_HOOK_REGISTER";
         case GUI_KILL_JOB:                      return L"GUI_KILL_JOB";
-        case GUI_MAX_REQUEST_CODE:              return L"GUI_MAX_REQUEST_CODE";
         default:                                return L"GUI_UNKNOWN";
     }
 }

@@ -34,13 +34,27 @@ void CPanelView::AddPanelItemsToMenu(bool bAddSeparator)
 	m_pCopyPanel = m_pMenu->addAction(m_CopyPanel, this, SLOT(OnCopyPanel()));
 }
 
-void CPanelView::OnMenu(const QPoint& Point)
+void CPanelView::AddCopyMenu(QMenu* pMenu, bool bAddSeparator)
+{
+	if(bAddSeparator)
+		pMenu->addSeparator();
+	pMenu->addAction(m_pCopyCell);
+	pMenu->addAction(m_pCopyRow);
+	pMenu->addAction(m_pCopyPanel);
+}
+
+void CPanelView::UpdateCopyMenu()
 {
 	QModelIndex Index = GetView()->currentIndex();
 	
 	m_pCopyCell->setEnabled(Index.isValid());
 	m_pCopyRow->setEnabled(Index.isValid());
 	m_pCopyPanel->setEnabled(true);
+}
+
+void CPanelView::OnMenu(const QPoint& Point)
+{
+	UpdateCopyMenu();
 
 	m_pMenu->popup(QCursor::pos());	
 }
@@ -98,7 +112,7 @@ QStringList CPanelView::CopyHeader()
 	QAbstractItemModel* pModel = GetModel();
 	QTreeView * pView = GetView();
 
-	QStringList Headder;
+	QStringList Header;
 	for (int i = 0; i < pModel->columnCount(); i++)
 	{
 		if (/*!m_CopyAll &&*/ pView->isColumnHidden(i) && !m_ForcedColumns.contains(i))
@@ -106,9 +120,9 @@ QStringList CPanelView::CopyHeader()
 		QString Cell = pModel->headerData(i, Qt::Horizontal, Qt::DisplayRole).toString();
 		if (!m_SimpleFormat)
 			Cell = "|" + Cell + "|";
-		Headder.append(Cell);
+		Header.append(Cell);
 	}
-	return Headder;
+	return Header;
 }
 
 QStringList CPanelView::CopyRow(const QModelIndex& ModelIndex, int Level)
@@ -143,7 +157,7 @@ void CPanelView::RecursiveCopyPanel(const QModelIndex& ModelIndex, QList<QString
 	}
 }
 
-void CPanelView::OnCopyPanel()
+QList<QStringList> CPanelView::DumpPanel()
 {
 	QAbstractItemModel* pModel = GetModel();
 
@@ -153,14 +167,20 @@ void CPanelView::OnCopyPanel()
 		QModelIndex ModelIndex = pModel->index(i, 0);
 		RecursiveCopyPanel(ModelIndex, Rows);
 	}
-	FormatAndCopy(Rows);
+
+	return Rows;
 }
 
-void CPanelView::FormatAndCopy(QList<QStringList> Rows, bool Headder)
+void CPanelView::OnCopyPanel()
+{
+	FormatAndCopy(DumpPanel());
+}
+
+void CPanelView::FormatAndCopy(QList<QStringList> Rows, bool Header)
 {
 	int RowCount = Rows.length();
 
-	if (Headder)
+	if (Header)
 	{
 		Rows.prepend(QStringList());
 		Rows.prepend(CopyHeader());
@@ -168,14 +188,14 @@ void CPanelView::FormatAndCopy(QList<QStringList> Rows, bool Headder)
 	}
 
 	QStringList TextRows;
-	if (m_SimpleFormat || !Headder)
+	if (m_SimpleFormat || !Header)
 	{
 		foreach(const QStringList& Row, Rows)
 			TextRows.append(Row.join(m_CellSeparator));
 	}
-	else if(Rows.size() > (Headder ? 3 : 0))
+	else if(Rows.size() > (Header ? 3 : 0))
 	{
-		int Columns = Rows[Headder ? 3 : 0].count();
+		int Columns = Rows[Header ? 3 : 0].count();
 		QVector<int> ColumnWidths(Columns, 0);
 
 		foreach(const QStringList& Row, Rows)

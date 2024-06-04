@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
- * Copyright 2020-2021 David Xanatos, xanasoft.com
+ * Copyright 2020-2023 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -73,7 +73,9 @@ typedef struct _COM_IUNKNOWN {
 // Functions
 //---------------------------------------------------------------------------
 
+#ifndef _WIN64
 BOOLEAN SbieDll_IsWow64();
+#endif
 
 static BOOLEAN Com_IsFirewallClsid(REFCLSID rclsid, const WCHAR *BoxName);
 
@@ -93,16 +95,15 @@ static HRESULT Com_CoCreateInstanceEx(
     REFCLSID rclsid, void *pUnkOuter, ULONG clsctx, void *pServerInfo,
     ULONG cmq, MULTI_QI *pmqs);
 
-static BOOLEAN Com_Hook_CoUnmarshalInterface_W8(UCHAR *code);
+#ifndef _M_ARM64
+static BOOLEAN Com_Hook_CoUnmarshalInterface_W8(UCHAR *code, HMODULE module);
 
 static HRESULT __fastcall Com_CoUnmarshalInterface_W8(
     ULONG_PTR StreamAddr, ULONG64 zero, REFIID riid, void **ppv);
 
 static HRESULT __fastcall Com_CoUnmarshalInterface_W81(
     ULONG_PTR StreamAddr, ULONG zero, REFIID riid, void **ppv);
-
-static HRESULT  Com_CoUnmarshalInterface_W10(
-    ULONG_PTR StreamAddr,  REFIID riid,void **ppv);
+#endif
 
 static HRESULT Com_CoUnmarshalInterface(
     IStream *pStream, REFIID riid, void **ppv);
@@ -193,8 +194,6 @@ typedef ULONG (__fastcall *P_CoUnmarshalInterface_W8)(
 typedef ULONG (__fastcall *P_CoUnmarshalInterface_W81)(
     ULONG_PTR StreamAddr, ULONG zero, REFIID riid, void **ppv);
 
-typedef ULONG(*P_CoUnmarshalInterface_W10)(
-    ULONG_PTR StreamAddr, REFIID riid,void **ppv );
 
 typedef ULONG (*P_CoMarshalInterface)(
     IStream *pStream, REFIID riid, IUnknown *pUnknown,
@@ -231,9 +230,10 @@ P_CoGetObject               __sys_CoGetObject               = NULL;
 P_CoCreateInstance          __sys_CoCreateInstance          = NULL;
 P_CoCreateInstanceEx        __sys_CoCreateInstanceEx        = NULL;
 P_CoUnmarshalInterface      __sys_CoUnmarshalInterface      = NULL;
+#ifndef _M_ARM64
 P_CoUnmarshalInterface_W8   __sys_CoUnmarshalInterface_W8   = NULL;
 P_CoUnmarshalInterface_W81  __sys_CoUnmarshalInterface_W81  = NULL;
-P_CoUnmarshalInterface_W10  __sys_CoUnmarshalInterface_W10  = NULL;
+#endif
 P_CoMarshalInterface        __sys_CoMarshalInterface        = NULL;
 
 P_CoGetPSClsid              __sys_CoGetPSClsid              = NULL;
@@ -426,17 +426,13 @@ _FX BOOLEAN SbieDll_IsOpenClsid(
         0x3480A401, 0xBDE9, 0x4407,
                         { 0xBC, 0x02, 0x79, 0x8A, 0x86, 0x6A, 0xC0, 0x51 } };
 
-    static const GUID CLSID_WinInetCache = {
-        0x0358B920, 0x0AC7, 0x461F,
-                        { 0x98, 0xF4, 0x58, 0xE3, 0x2C, 0xD8, 0x91, 0x48 } };
-
     //
     // open the null clsid to open all
     //
 
-    //static const GUID CLSID_Null = {
-    //    0x00000000, 0x0000, 0x0000,
-    //                    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } };
+    static const GUID CLSID_Null = {
+        0x00000000, 0x0000, 0x0000,
+                        { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } };
 
     if (clsctx & CLSCTX_LOCAL_SERVER) {
 
@@ -449,8 +445,7 @@ _FX BOOLEAN SbieDll_IsOpenClsid(
 
         if (memcmp(rclsid, &CLSID_WinMgmt,              sizeof(GUID)) == 0 ||
             memcmp(rclsid, &CLSID_NetworkListManager,   sizeof(GUID)) == 0 ||
-            memcmp(rclsid, &CLSID_ShellServiceHostBrokerProvider, sizeof(GUID)) == 0 ||
-            ((Dll_OsBuild >= 10240) && memcmp(rclsid, &CLSID_WinInetCache, sizeof(GUID)) == 0))
+            memcmp(rclsid, &CLSID_ShellServiceHostBrokerProvider, sizeof(GUID)) == 0)
         {
 
             return TRUE;
@@ -469,7 +464,7 @@ _FX BOOLEAN SbieDll_IsOpenClsid(
 
         for (index = 0; index < Com_NumOpenClsids; ++index) {
             guid = &Com_OpenClsids[index];
-            if (memcmp(guid, rclsid, sizeof(GUID)) == 0 /*|| memcmp(guid, &CLSID_Null, sizeof(GUID)) == 0*/)
+            if (memcmp(guid, rclsid, sizeof(GUID)) == 0 || memcmp(guid, &CLSID_Null, sizeof(GUID)) == 0)
                 return TRUE;
         }
     }
@@ -561,7 +556,7 @@ _FX BOOLEAN Com_IsClosedClsid(REFCLSID rclsid)
 
     //
     // initialize list of user-configured CLSID blocks
-    // Note: the service threads everythign not explicitly open as closed anyways
+    // Note: the service threads everything not explicitly open as closed anyways
     //
 
     static const WCHAR* setting = L"ClosedClsid";
@@ -865,8 +860,8 @@ _FX HRESULT Com_CoCreateInstanceEx(
 // Com_Hook_CoUnmarshalInterface_W8
 //---------------------------------------------------------------------------
 
-
-_FX BOOLEAN Com_Hook_CoUnmarshalInterface_W8(UCHAR *code)
+#ifndef _M_ARM64
+_FX BOOLEAN Com_Hook_CoUnmarshalInterface_W8(UCHAR *code, HMODULE module)
 {
 
     //
@@ -884,15 +879,9 @@ _FX BOOLEAN Com_Hook_CoUnmarshalInterface_W8(UCHAR *code)
     // have to do some __fastcall magic.  see Com_CoUnmarshalInterface_W8
     //
 
-    P_CoUnmarshalInterface_W10 CoUnmarshalInterface_W10 = (P_CoUnmarshalInterface_W10)GetProcAddress(GetModuleHandle(L"combase.dll"), "CoUnmarshalInterface");
-    if (CoUnmarshalInterface_W10) {
-        SBIEDLL_HOOK(Com_, CoUnmarshalInterface_W10);
-        return TRUE;
-    }
-
 #ifdef _WIN64
 
-    if (Dll_OsBuild >= 15002) {
+    if (Dll_OsBuild >= 15002) { // Windows 10 1703 preview
 
         if (code[0x18] == 0xe9) {
 
@@ -904,7 +893,7 @@ _FX BOOLEAN Com_Hook_CoUnmarshalInterface_W8(UCHAR *code)
         }
     }
 
-    else if (Dll_OsBuild >= 14942) {
+    else if (Dll_OsBuild >= 14942) { // Windows 10 1703 preview #7
 
         if (code[0x20] == 0xe9) {
             LONG_PTR jump_target = (LONG_PTR)code + (*(LONG *)(code + 0x21)) + 0x25;
@@ -1100,48 +1089,7 @@ _FX HRESULT __fastcall Com_CoUnmarshalInterface_W81(
 
     return Com_CoUnmarshalInterface_Common(pStream, riid, ppv, &posl);
 }
-
-
-_FX HRESULT  Com_CoUnmarshalInterface_W10(
-    ULONG_PTR StreamAddr, REFIID riid, void **ppv)
-{
-    const HRESULT HR_OR_INVALID_OXID =
-        MAKE_HRESULT(SEVERITY_ERROR, FACILITY_WIN32, OR_INVALID_OXID);
-    HRESULT hr;
-    LARGE_INTEGER posl;
-    ULARGE_INTEGER posu;
-    //
-    // on 32-bit Windows 8.1, combase!_CoUnmarshalInterface is a true
-    // fastcall function which gets its second argument in edx.  this is
-    // unlike the Windows 8 version which gets the second argument on the
-    // stack, which requires a small trick with ULONG64 (see above)
-    //
-
-    IStream *pStream = (IStream *)StreamAddr;
-
-    //
-    // first invoke the COM unmarshaller.  it returns OR_INVALID_OXID
-    // when the interface was marshalled in SbieSvc, because SbieSvc
-    // uses a different epmapper than the sandboxed epmapper
-    //
-
-    posl.QuadPart = 0;
-    hr = IStream_Seek(pStream, posl, STREAM_SEEK_CUR, &posu);
-    if (FAILED(hr))
-        return hr;
-
-    hr = __sys_CoUnmarshalInterface_W10(StreamAddr, riid, ppv);
-    if (hr != HR_OR_INVALID_OXID)
-        return hr;
-
-    posl.QuadPart = posu.QuadPart;
-    hr = IStream_Seek(pStream, posl, STREAM_SEEK_SET, &posu);
-    if (FAILED(hr))
-        return hr;
-
-    return Com_CoUnmarshalInterface_Common(pStream, riid, ppv, &posl);
-}
-
+#endif
 
 //---------------------------------------------------------------------------
 // Com_CoUnmarshalInterface
@@ -1249,12 +1197,12 @@ _FX HRESULT Com_CoUnmarshalInterface_Common(
 
     if (rpl) {
         hr = rpl->h.status;
-        if (hr)
+        if (hr != S_OK)
             Com_Free(rpl);
     } else
         hr = RPC_S_SERVER_UNAVAILABLE;
 
-    if (hr) {
+    if (hr != S_OK) {
         Com_Trace(TraceType, NULL, riid, 0, hr);
         if (hr == RPC_S_SERVER_UNAVAILABLE) {
             IStream_Seek(pStream, *seekpos, STREAM_SEEK_SET, &posu);
@@ -1330,11 +1278,11 @@ static HRESULT Com_CoMarshalInterface(
 
         if (rpl) {
             hr = rpl->h.status;
-            if (hr)
+            if (hr != S_OK)
                 Com_Free(rpl);
         } else
             hr = RPC_S_SERVER_UNAVAILABLE;
-        if (hr) {
+        if (hr != S_OK) {
             Com_Trace(TraceType, NULL, riid, 0, hr);
             Com_RpcRaiseException(hr);
             return E_ABORT;
@@ -1398,13 +1346,16 @@ _FX BOOLEAN Com_Init_ComBase(HMODULE module)
 
     if (!Ipc_OpenCOM) {
         if (Dll_OsBuild >= 8400) {
-            if (!Com_Hook_CoUnmarshalInterface_W8(
-                (UCHAR*)CoUnmarshalInterface))
-                return FALSE;
+            CoUnmarshalInterface = (P_CoUnmarshalInterface)GetProcAddress(GetModuleHandle(L"combase.dll"), "CoUnmarshalInterface");
+#ifndef _M_ARM64
+            // $HookHack$ - Custom, not automated, Hook for windows 8 and 8.1 and early windows 10 builds
+            if (!CoUnmarshalInterface) {
+                if (!Com_Hook_CoUnmarshalInterface_W8((UCHAR*)CoUnmarshalInterface, module))
+                    return FALSE;
+            }
+#endif
         }
-        else {
-            SBIEDLL_HOOK(Com_, CoUnmarshalInterface);
-        }
+        SBIEDLL_HOOK(Com_, CoUnmarshalInterface);
 
         SBIEDLL_HOOK(Com_, CoMarshalInterface);
         SbieDll_IsOpenClsid(&IID_IUnknown, CLSCTX_LOCAL_SERVER, NULL); // trigger list loading
@@ -1422,6 +1373,12 @@ _FX BOOLEAN Com_Init_ComBase(HMODULE module)
     WCHAR wsTraceOptions[4];
     if (SbieApi_QueryConf(NULL, L"ClsidTrace", 0, wsTraceOptions, sizeof(wsTraceOptions)) == STATUS_SUCCESS && wsTraceOptions[0] != L'\0')
         Com_TraceFlag = TRUE;
+
+    if (!__sys_RegOpenKeyExW) {
+        HMODULE module = Dll_KernelBase ? Dll_KernelBase : LoadLibrary(DllName_advapi32);
+        __sys_RegOpenKeyExW = (P_RegOpenKeyEx)GetProcAddress(module, "RegOpenKeyExW");
+        GETPROCADDR_SYS(RegCloseKey);
+    }
 
     return TRUE;
 }
@@ -1441,7 +1398,7 @@ _FX BOOLEAN Com_Init_Ole32(HMODULE module)
         //
         // on Windows 8, core COM functions are in combase.dll which is
         // initialized separately.  on earlier versions of Windows, the
-        // core COM fuctions are part of ole32.dll
+        // core COM functions are part of ole32.dll
         //
 
         if (! Com_Init_ComBase(module))
@@ -2149,7 +2106,7 @@ _FX void Com_IUnknown_Add_Ref_Release(COM_IUNKNOWN *This, UCHAR op)
         Com_Free(rpl);
     } else
         hr = RPC_S_SERVER_UNAVAILABLE;
-    if (hr)
+    if (hr != S_OK)
         Com_RpcRaiseException(hr);
 }
 
@@ -2287,12 +2244,12 @@ _FX HRESULT Com_IClassFactory_CreateInstance(
 
     if (rpl) {
         hr = rpl->h.status;
-        if (hr)
+        if (hr != S_OK)
             Com_Free(rpl);
     } else
         hr = RPC_S_SERVER_UNAVAILABLE;
 
-    if (hr) {
+    if (hr != S_OK) {
         Com_Trace(TraceType, &This->Guid, riid, 0, hr);
         Com_RpcRaiseException(hr);
         return E_ABORT;
@@ -2356,7 +2313,7 @@ _FX HRESULT Com_IClassFactory_New(
 
     if (rpl) {
         hr = rpl->h.status;
-        if (hr) {
+        if (hr != S_OK) {
             Com_Free(rpl);
             if (hr == ERROR_ELEVATION_REQUIRED && StringGUID) {
                 SbieApi_Log(2214, StringGUID);
@@ -2366,7 +2323,7 @@ _FX HRESULT Com_IClassFactory_New(
         }
     } else
         hr = RPC_S_SERVER_UNAVAILABLE;
-    if (hr) {
+    if (hr != S_OK) {
         Com_RpcRaiseException(hr);
         return E_ABORT;
     }
@@ -2460,11 +2417,11 @@ _FX HRESULT Com_OuterIUnknown_QueryInterface(
 
     if (rpl) {
         hr = rpl->h.status;
-        if (hr)
+        if (hr != S_OK)
             Com_Free(rpl);
     } else
         hr = RPC_S_SERVER_UNAVAILABLE;
-    if (hr) {
+    if (hr != S_OK) {
         Com_Trace(TraceType, &This->Guid, riid, 0, hr);
 #ifndef REGHIVE_ALWAYS_MOUNT_NEVER_UNMOUNT // if not sbox build
         Com_RpcRaiseException(hr);
@@ -2631,13 +2588,13 @@ _FX HRESULT Com_IRpcChannelBuffer_SendReceive(
 
     if (rpl) {
         hr = rpl->h.status;
-        if (hr)
+        if (hr != S_OK)
             Com_Free(rpl);
     } else
         hr = RPC_S_SERVER_UNAVAILABLE;
     if (pStatus)
         *pStatus = hr;
-    if (hr) {
+    if (hr != S_OK) {
         Com_Trace(TraceType, NULL, &This->Guid, ProcNum, hr);
         return E_ABORT;
     }
@@ -2774,11 +2731,11 @@ _FX HRESULT Com_IMarshal_MarshalInterface(
 
     if (rpl) {
         hr = rpl->h.status;
-        if (hr)
+        if (hr != S_OK)
             Com_Free(rpl);
     } else
         hr = RPC_S_SERVER_UNAVAILABLE;
-    if (hr) {
+    if (hr != S_OK) {
         Com_Trace(TraceType, NULL, &This->Guid, 0, hr);
         Com_RpcRaiseException(hr);
         return E_ABORT;
@@ -2916,11 +2873,11 @@ _FX HRESULT Com_IClientSecurity_QueryBlanket(
 
     if (rpl) {
         hr = rpl->h.status;
-        if (hr)
+        if (hr != S_OK)
             Com_Free(rpl);
     } else
         hr = RPC_S_SERVER_UNAVAILABLE;
-    if (hr) {
+    if (hr != S_OK) {
         Com_Trace(TraceType, NULL, &This->Guid, 0, hr);
         Com_RpcRaiseException(hr);
         return E_ABORT;
@@ -3001,11 +2958,11 @@ _FX HRESULT Com_IClientSecurity_SetBlanket(
 
     if (rpl) {
         hr = rpl->h.status;
-        if (hr)
+        if (hr != S_OK)
             Com_Free(rpl);
     } else
         hr = RPC_S_SERVER_UNAVAILABLE;
-    if (hr) {
+    if (hr != S_OK) {
         Com_Trace(TraceType, NULL, &This->Guid, 0, hr);
         Com_RpcRaiseException(hr);
         return E_ABORT;
@@ -3039,11 +2996,11 @@ _FX HRESULT Com_IClientSecurity_CopyProxy(
 
     if (rpl) {
         hr = rpl->h.status;
-        if (hr)
+        if (hr != S_OK)
             Com_Free(rpl);
     } else
         hr = RPC_S_SERVER_UNAVAILABLE;
-    if (hr) {
+    if (hr != S_OK) {
         Com_Trace(TraceType, NULL, &This->Guid, 0, hr);
         Com_RpcRaiseException(hr);
         return E_ABORT;
@@ -3403,7 +3360,7 @@ _FX void Com_Trace2(
     //ptr[1] = L'\0';
     //OutputDebugString(text);
     *ptr = L'\0';
-    SbieApi_MonitorPut(MONITOR_COMCLASS | monflag, text);
+    SbieApi_MonitorPut2(MONITOR_COMCLASS | monflag, text, FALSE);
 
     Com_Free(text);
 }
@@ -3420,7 +3377,7 @@ _FX void Com_Monitor(REFCLSID rclsid, ULONG monflag)
 
         WCHAR text[160];
         Com_Trace_Guid(text, rclsid, L"CLSID");
-        SbieApi_MonitorPut(MONITOR_COMCLASS | monflag, text);
+        SbieApi_MonitorPut2(MONITOR_COMCLASS | monflag, text, FALSE);
     }
 }
 
@@ -3506,7 +3463,7 @@ _FX void Com_LoadRTList(const WCHAR* setting, WCHAR** pNames)
 _FX BOOLEAN Com_IsClosedRT(const wchar_t* strClassId)
 {
     //
-    // Even in compartment mode thes things don't work only incombination with open COM its functional
+    // Even in compartment mode, these things are functional only in combination with open COM
     //
 
     if (!(Ipc_OpenCOM && Dll_CompartmentMode) && !SbieApi_QueryConfBool(NULL, L"DisableRTBlacklist", FALSE)) {
@@ -3524,7 +3481,7 @@ _FX BOOLEAN Com_IsClosedRT(const wchar_t* strClassId)
         }
 
         //
-        // ToastNotificationManager requirers open com and original token, with boxed com this causes in a dead lock
+        // ToastNotificationManager requires open com and original token, with boxed com this causes a deadlock
         //
 
         if (wcscmp(strClassId, L"Windows.UI.Notifications.ToastNotificationManager") == 0)
@@ -3557,11 +3514,11 @@ _FX HRESULT Com_RoGetActivationFactory(HSTRING activatableClassId, REFIID  iid, 
     const wchar_t* strClassId = __sys_WindowsGetStringRawBuffer(activatableClassId, NULL);
 
     if (Com_IsClosedRT(strClassId)) {
-        SbieApi_MonitorPut(MONITOR_RTCLASS | MONITOR_DENY, strClassId);
+        SbieApi_MonitorPut2(MONITOR_RTCLASS | MONITOR_DENY, strClassId, FALSE);
         return E_ACCESSDENIED;
     }
 
-    SbieApi_MonitorPut(MONITOR_RTCLASS, strClassId);
+    SbieApi_MonitorPut2(MONITOR_RTCLASS, strClassId, FALSE);
     return __sys_RoGetActivationFactory(activatableClassId, iid, factory);
 }
 

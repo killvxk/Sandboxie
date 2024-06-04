@@ -78,11 +78,11 @@
 //
 //      that proxy window in SbieSvc will actually send the WM_DDE_ACK
 //      to the client, and will present itself as the server for the
-//      DDE conversation, so it can recieve any posted WM_DDE_EXECUTE
+//      DDE conversation, so it can receive any posted WM_DDE_EXECUTE
 //      messages without IL limitations (per the introduction above).
 //
 // 4.   the proxy window in SbieSvc GUI Proxy receives the WM_DDE_EXECUTE
-//      message, extracts the command text gived in the message LPARAM,
+//      message, extracts the command text given in the message LPARAM,
 //      and sends a WM_COPYDATA to the server window in the sandbox.
 //      the Gui_DDE_COPYDATA_Received function gets this message through
 //      the Gui_CanForwardMsg function.
@@ -160,7 +160,7 @@ static ULONG Gui_DDE_REQ_Len;
 //---------------------------------------------------------------------------
 
 
-_FX BOOLEAN Gui_DDE_Init(void)
+_FX BOOLEAN Gui_DDE_Init(HMODULE module)
 {
     __sys_PackDDElParam =
                 Ldr_GetProcAddrNew(DllName_user32, L"PackDDElParam","PackDDElParam");
@@ -355,8 +355,17 @@ _FX BOOLEAN Gui_DDE_COPYDATA_Received(
     Sbie_snwprintf(prop_name, 64, SBIE L"_DDE_%08p", (void*)hWnd);
     hClientWnd = Gui_GetPropCommon((HWND)wParam, prop_name, TRUE, 0);
     if (TlsData->gui_dde_client_hwnd != (HWND)-1) {
-        if ((! hClientWnd) || (hClientWnd != TlsData->gui_dde_client_hwnd))
-            return FALSE;
+#ifdef _WIN64
+		if ((!hClientWnd) || (hClientWnd != TlsData->gui_dde_client_hwnd))
+			return FALSE;
+#else
+		// When a *.xlsx file is double clicked, excel 2016 will run, but Gui_GetPropCommon will return empty.
+		// This is a problem for Office 32-bit only
+		if (hClientWnd == 0)
+			hClientWnd = TlsData->gui_dde_client_hwnd;
+		else if (hClientWnd != TlsData->gui_dde_client_hwnd)
+			return FALSE;
+#endif
     }
 
     //

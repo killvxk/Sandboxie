@@ -49,7 +49,11 @@ static int NetFw_IpCmp(const void * l, const void * r)
 NETFW_RULE* NetFw_AllocRule(POOL* pool, int MatchLevel)
 {
 #ifdef KERNEL_MODE
+#if (NTDDI_VERSION >= NTDDI_WIN10_VB)
+	NETFW_RULE* rule = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(NETFW_RULE), tzuk);
+#else
 	NETFW_RULE* rule = ExAllocatePoolWithTag(NonPagedPool, sizeof(NETFW_RULE), tzuk);
+#endif
 #else
     NETFW_RULE* rule = Pool_Alloc(pool, sizeof(NETFW_RULE));
 #endif
@@ -95,7 +99,11 @@ typedef struct _NETFW_PORTS
 void NetFw_RuleAddPortRange(rbtree_t* tree, USHORT PortBegin, USHORT PortEnd, POOL* pool)
 {
 #ifdef KERNEL_MODE
+#if (NTDDI_VERSION >= NTDDI_WIN10_VB)
+	NETFW_PORTS* node = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(NETFW_PORTS), tzuk);
+#else
 	NETFW_PORTS* node = ExAllocatePoolWithTag(NonPagedPool, sizeof(NETFW_PORTS), tzuk);
+#endif
 #else
 	NETFW_PORTS* node = Pool_Alloc(pool, sizeof(NETFW_PORTS));
 #endif
@@ -136,7 +144,7 @@ BOOLEAN NetFw_MergePortMaps(rbtree_t* dst, rbtree_t* src, POOL* pool)
 {
 	//
 	// search for overlaps, and if found abort
-	// we merge only non overlaping ranges as single entries vs ranges have a different priority
+	// we merge only non overlapping ranges as single entries vs ranges have a different priority
 	//
 
 	for (NETFW_PORTS* src_node = (NETFW_PORTS*)rbtree_first(src); ((rbnode_t*)src_node) != RBTREE_NULL; src_node = (NETFW_PORTS*)rbtree_next((rbnode_t*)src_node)) {
@@ -183,7 +191,11 @@ typedef struct _NETFW_IPS
 void NetFw_RuleAddIpRange(rbtree_t* tree, IP_ADDRESS* IpBegin, IP_ADDRESS* IpEnd, POOL* pool)
 {
 #ifdef KERNEL_MODE
+#if (NTDDI_VERSION >= NTDDI_WIN10_VB)
+	NETFW_IPS* node = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(NETFW_IPS), tzuk);
+#else
 	NETFW_IPS* node = ExAllocatePoolWithTag(NonPagedPool, sizeof(NETFW_IPS), tzuk);
+#endif
 #else
 	NETFW_IPS* node = Pool_Alloc(pool, sizeof(NETFW_IPS));
 #endif
@@ -224,7 +236,7 @@ BOOLEAN NetFw_MergeIPMaps(rbtree_t* dst, rbtree_t* src, POOL* pool)
 {
 	//
 	// search for overlaps, and if found abort
-	// we merge only non overlaping ranges as single entries vs ranges have a different priority
+	// we merge only non overlapping ranges as single entries vs ranges have a different priority
 	//
 
 	for (NETFW_IPS* src_node = (NETFW_IPS*)rbtree_first(src); ((rbnode_t*)src_node) != RBTREE_NULL; src_node = (NETFW_IPS*)rbtree_next((rbnode_t*)src_node)) {
@@ -293,16 +305,16 @@ void NetFw_AddRule(LIST* list, NETFW_RULE* new_rule)
 			goto next; // must be same level and same action
 
 		if ((rule->port_map.count != 0) != (new_rule->port_map.count != 0))
-			goto next; // booth must, or must not, have Ports
+			goto next; // both must, or must not, have Ports
 		
 		if ((rule->ip_map.count != 0) != (new_rule->ip_map.count != 0))
-			goto next; // booth must, or must not, have IPs
+			goto next; // both must, or must not, have IPs
 
 		if (rule->protocol != new_rule->protocol)
 			goto next; // must be same protocol
 
 		//
-		// seams we might be able to marge these rules
+		// it seems we might be able to merge these rules
 		// now we check the convoluted case when rules havs ip's and port's set
 		//
 
@@ -310,7 +322,7 @@ void NetFw_AddRule(LIST* list, NETFW_RULE* new_rule)
 			
 			BOOLEAN same_ports = NetFw_MatchPortMaps(&rule->port_map, &new_rule->port_map);
 			BOOLEAN same_ips = NetFw_MatchIPMaps(&rule->ip_map, &new_rule->ip_map);
-			if (!same_ports && !same_ips) { // if neider Ports nor IP's are same 
+			if (!same_ports && !same_ips) { // if neither Ports nor IPs are same 
 				goto next; // we don't merge
 			}
 			else if (!same_ports) {
@@ -323,7 +335,7 @@ void NetFw_AddRule(LIST* list, NETFW_RULE* new_rule)
 			}
 			
 		}
-		// if we are here it means that booth rules heve eider only ports or only IP's set
+		// if we are here, it means that both rules heve either only ports or only IP's set
 		else if (rule->port_map.count != 0) {
 			if (!NetFw_MergePortMaps(&rule->port_map, &new_rule->port_map, rule->pool))
 				goto next; // merge failed
@@ -334,7 +346,7 @@ void NetFw_AddRule(LIST* list, NETFW_RULE* new_rule)
 		}
 
 		//
-		// if we are here we eider merged the rules or the rules are identical
+		// if we are here, we either merged the rules or the rules are identical
 		//
 
 		NetFw_FreeRule(new_rule);
@@ -438,16 +450,17 @@ const WCHAR* wcsnchr(const WCHAR* str, size_t max, WCHAR ch)
 
 int _inet_pton(int af, const wchar_t* src, void* dst);
 
-int _inet_xton(const WCHAR* src, ULONG max, IP_ADDRESS *dst)
+int _inet_xton(const WCHAR* src, ULONG src_len, IP_ADDRESS *dst, USHORT *type)
 {
-	WCHAR tmp[46]; // INET6_ADDRSTRLEN 
-	wmemcpy(tmp, src, max);
+	WCHAR tmp[46 + 1]; // INET6_ADDRSTRLEN 
+	if (src_len > ARRAYSIZE(tmp) - 1) src_len = ARRAYSIZE(tmp) - 1;
+	wmemcpy(tmp, src, src_len);
+	tmp[src_len] = L'\0';
 	
-    //dst->Type = AF_INET;
-    //if (wcschr(src, L':') != NULL)
-    //    dst->Type = AF_INET6;
-
-    int ret = _inet_pton(wcschr(src, L':') != NULL ? AF_INET6 : AF_INET, tmp, dst->Data);
+	USHORT af = wcschr(tmp, L':') != NULL ? AF_INET6 : AF_INET;
+	//dst->Type = af
+    int ret = _inet_pton(af, tmp, dst->Data);
+	if (type) *type = af;
     return ret;
 }
 
@@ -480,7 +493,7 @@ BOOLEAN NetFw_ParseRule(NETFW_RULE* rule, const WCHAR* found_value)
             if (port_str2) {
                 port_len1 = (ULONG)(port_str2 - port_str1);
                 port_str2++; // skip dash
-                ULONG port_len2 = (ULONG)(port_end - port_str2);
+                ULONG port_len2 = (ULONG)(port_value - port_str2);
 
                 USHORT Port1 = (USHORT)_wntoi(port_str1, port_len1);
                 USHORT Port2 = (USHORT)_wntoi(port_str2, port_len2);
@@ -506,19 +519,19 @@ BOOLEAN NetFw_ParseRule(NETFW_RULE* rule, const WCHAR* found_value)
             if (ip_str2) {
                 ip_len1 = (ULONG)(ip_str2 - ip_str1);
                 ip_str2++; // skip dash
-                ULONG ip_len2 = (ULONG)(ip_end - ip_str2);
+                ULONG ip_len2 = (ULONG)(ip_value - ip_str2);
 
                 IP_ADDRESS ip1;
-                _inet_xton(ip_str1, ip_len1, &ip1);
+                _inet_xton(ip_str1, ip_len1, &ip1, NULL);
                 IP_ADDRESS ip2;
-                _inet_xton(ip_str2, ip_len2, &ip2);
+                _inet_xton(ip_str2, ip_len2, &ip2, NULL);
 
                 NetFw_RuleAddIpRange(&rule->ip_map, &ip1, &ip2, rule->pool);
             }
             else
             {
                 IP_ADDRESS ip;
-                _inet_xton(ip_str1, ip_len1, &ip);
+                _inet_xton(ip_str1, ip_len1, &ip, NULL);
                 NetFw_RuleAddIpRange(&rule->ip_map, &ip, &ip, rule->pool);
             }
         }
@@ -539,12 +552,39 @@ BOOLEAN NetFw_ParseRule(NETFW_RULE* rule, const WCHAR* found_value)
 }
 
 
+BOOLEAN is_localhost(const struct sockaddr* name)
+{
+    if (name->sa_family == AF_INET) {
+        const SOCKADDR_IN* v4 = (const SOCKADDR_IN*)name;
+        return v4->sin_addr.s_net == 0x7f;
+    }
+    if (name->sa_family == AF_INET6) {
+        const SOCKADDR_IN6_LH* v6 = (const SOCKADDR_IN6_LH*)name;
+        return v6->sin6_addr.u.Word[0] == 0 && v6->sin6_addr.u.Word[1] == 0 &&
+            v6->sin6_addr.u.Word[2] == 0 && v6->sin6_addr.u.Word[3] == 0 &&
+            v6->sin6_addr.u.Word[4] == 0 && v6->sin6_addr.u.Word[5] == 0 &&
+            v6->sin6_addr.u.Word[6] == 0 && v6->sin6_addr.u.Byte[14] == 0 &&
+            v6->sin6_addr.u.Byte[15] == 1;
+    }
+    return FALSE;
+}
+
+BOOLEAN is_inet(const struct sockaddr* name)
+{
+    return name->sa_family == AF_INET || name->sa_family == AF_INET6;
+}
+
+
 
 #include <inaddr.h>
 #include <in6addr.h>
 
 static int isdigit_(int c) { return (c >= '0' && c <= '9'); }
 static int isxdigit_(int c) { return (isdigit_(c) || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')); }
+#undef isascii
+static int isascii(int iChar) { return((iChar <= 127) && (iChar >= 0)); }
+static int isalnum_(int c) { return (isdigit_(c) || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')); }
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // from BSD sources: http://code.google.com/p/plan9front/source/browse/sys/src/ape/lib/bsd/?r=320990f52487ae84e28961517a4fa0d02d473bac
@@ -646,14 +686,14 @@ static int delimchar(int c)
 {
 	if(c == '\0')
 		return 1;
-	if(c == ':' || isascii(c) && isalnum(c))
+	if(c == ':' || isascii(c) && isalnum_(c))
 		return 0;
 	return 1;
 }
 
 int _inet_pton(int af, const wchar_t *src, void *dst) // ip is always in network order !!!
 {
-	int i, elipsis = 0;
+	int i, ellipsis = 0;
 	unsigned char *to;
 	unsigned long x;
 	const wchar_t *p, *op;
@@ -691,9 +731,9 @@ int _inet_pton(int af, const wchar_t *src, void *dst) // ip is always in network
 		to[i+1] = (unsigned char)x;
 		if(*p == L':'){
 			if(*++p == L':'){        /* :: is elided zero short(s) */
-				if (elipsis)
+				if (ellipsis)
 					return 0;       /* second :: */
-				elipsis = i+2;
+				ellipsis = i+2;
 				p++;
 			}
 		} else if (p == op)             /* strtoul made no progress? */
@@ -702,8 +742,8 @@ int _inet_pton(int af, const wchar_t *src, void *dst) // ip is always in network
 	if (p == src || !delimchar(*p))
 		return 0;                               /* parse error */
 	if(i < 16){
-		memmove(&to[elipsis+16-i], &to[elipsis], i-elipsis);
-		memset(&to[elipsis], 0, 16-i);
+		memmove(&to[ellipsis+16-i], &to[ellipsis], i-ellipsis);
+		memset(&to[ellipsis], 0, 16-i);
 	}
 	return 1;
 }

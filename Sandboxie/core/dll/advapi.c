@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2024 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -221,9 +222,12 @@ _FX BOOLEAN AdvApi_Init(HMODULE module)
     if (! ok)
         return FALSE;
 
-    ok = Cred_Init_AdvApi(module);
-    if (! ok)
-        return FALSE;
+    if (Dll_OsBuild < 8400) { // Windows 7 or earlier
+
+        ok = Cred_Init(module);
+        if (!ok)
+            return FALSE;
+    }
 
     LookupAccountNameW = __sys_LookupAccountNameW;
     SBIEDLL_HOOK(AdvApi_,LookupAccountNameW);
@@ -240,7 +244,8 @@ _FX BOOLEAN AdvApi_Init(HMODULE module)
     // only hook SetSecurityInfo if this is Chrome.  Outlook 2013 uses delayed loading and will cause infinite callbacks
     // Starting with Win 10, we only want to hook ntmarta!SetSecurityInfo. Do NOT hook advapi!SetSecurityInfo. Delay loading for advapi will cause infinite recursion.
     // Note: the infinite recursion issue has been resolved int 5.43
-    if (((Dll_ImageType == DLL_IMAGE_GOOGLE_CHROME) || (Dll_ImageType == DLL_IMAGE_ACROBAT_READER)) && (Dll_Windows < 10)) {
+    if (Config_GetSettingsForImageName_bool(L"UseSbieDeskHack", TRUE) 
+		|| (Dll_ImageType == DLL_IMAGE_GOOGLE_CHROME) || (Dll_ImageType == DLL_IMAGE_MOZILLA_FIREFOX) || (Dll_ImageType == DLL_IMAGE_ACROBAT_READER)) {
         SetSecurityInfo = __sys_SetSecurityInfo;
         GetSecurityInfo = __sys_GetSecurityInfo;
         SBIEDLL_HOOK(AdvApi_, SetSecurityInfo);
@@ -533,7 +538,7 @@ _FX DWORD AdvApi_GetSecurityInfo(
 
     if (rc && ObjectType == SE_WINDOW_OBJECT && SecurityInfo == DACL_SECURITY_INFORMATION) {
         __sys_EnumWindowStationsW = (P_EnumWindowStations)Ldr_GetProcAddrNew(L"User32.dll", L"EnumWindowStationsW", "EnumWindowStationsW");
-        __sys_OpenWindowStationW = (P_OpenWindowStationW)Ldr_GetProcAddrNew(L"User32.dll", L"OpenWindowStationW", "OpenWindowStationW");
+        __sys_OpenWindowStationW = (P_OpenWindowStationW)Ldr_GetProcAddrNew(L"User32.dll", L"OpenWindowStationW", "OpenWindowStationW"); // used by myEnumWindowStationProc
         if (!Sandboxie_WinSta) {
             if (__sys_EnumWindowStationsW) {
                 rc = __sys_EnumWindowStationsW(myEnumWindowStationProc, 0);
@@ -633,9 +638,10 @@ _FX BOOLEAN AdvApi_EnableDisableSRP(BOOLEAN Enable)
     if (! AdvApi_Module)
         return FALSE;
     if (! __sys_SaferComputeTokenFromLevel) {
+        HMODULE module = AdvApi_Module;
         P_SaferComputeTokenFromLevel SaferComputeTokenFromLevel =
             (P_SaferComputeTokenFromLevel)GetProcAddress(
-                AdvApi_Module, "SaferComputeTokenFromLevel");
+                module, "SaferComputeTokenFromLevel");
         if (SaferComputeTokenFromLevel) {
             SBIEDLL_HOOK(AdvApi_,SaferComputeTokenFromLevel);
         }
@@ -656,7 +662,7 @@ _FX ULONG AdvApi_GetEffectiveRightsFromAclW(
     PACL pacl, void *pTrustee, PACCESS_MASK pAccessRights)
 {
     //
-    // some programs (e.g HP printer software intaller) use
+    // some programs (e.g HP printer software installer) use
     // GetEffectiveRightsFromAcl to confirm that an object (like a
     // registry key) was created with appropriate rights, so fake
     // a return value that always shows full access
@@ -688,7 +694,7 @@ DWORD Ntmarta_GetSecurityInfo(
 
 #define SBIEDLL_HOOK2(pfx,proc)                  \
     *(ULONG_PTR *)&__sys_##pfx##proc = (ULONG_PTR)   \
-    SbieDll_Hook(#proc, proc, pfx##proc);   \
+    SbieDll_Hook(#proc, proc, pfx##proc, module);   \
     if (! __sys_##pfx##proc) return FALSE;
 
 _FX BOOLEAN Ntmarta_Init(HMODULE module)
@@ -700,7 +706,8 @@ _FX BOOLEAN Ntmarta_Init(HMODULE module)
 #define GETPROC2(x,s) __sys_Ntmarta_##x##s = (P_##x) Ldr_GetProcAddrNew(DllName_ntmarta, L#x L#s,#x #s);
 
     GETPROC2(GetSecurityInfo, );
-    if ((Dll_ImageType == DLL_IMAGE_GOOGLE_CHROME) || (Dll_ImageType == DLL_IMAGE_ACROBAT_READER)) {
+    if (Config_GetSettingsForImageName_bool(L"UseSbieDeskHack", TRUE)
+		|| (Dll_ImageType == DLL_IMAGE_GOOGLE_CHROME) || (Dll_ImageType == DLL_IMAGE_MOZILLA_FIREFOX) || (Dll_ImageType == DLL_IMAGE_ACROBAT_READER)) {
 
         GetSecurityInfo = __sys_Ntmarta_GetSecurityInfo;
         if (GetSecurityInfo)
@@ -754,7 +761,7 @@ _FX DWORD Ntmarta_GetSecurityInfo(
 
     if (rc && ObjectType == SE_WINDOW_OBJECT && SecurityInfo == DACL_SECURITY_INFORMATION) {
         __sys_EnumWindowStationsW = (P_EnumWindowStations)Ldr_GetProcAddrNew(L"User32.dll", L"EnumWindowStationsW", "EnumWindowStationsW");
-        __sys_OpenWindowStationW = (P_OpenWindowStationW)Ldr_GetProcAddrNew(L"User32.dll", L"OpenWindowStationW", "OpenWindowStationW");
+        __sys_OpenWindowStationW = (P_OpenWindowStationW)Ldr_GetProcAddrNew(L"User32.dll", L"OpenWindowStationW", "OpenWindowStationW"); // used by myEnumWindowStationProc
         if (!Sandboxie_WinSta) {
             if (__sys_EnumWindowStationsW) {
                 rc = __sys_EnumWindowStationsW(myEnumWindowStationProc, 0);

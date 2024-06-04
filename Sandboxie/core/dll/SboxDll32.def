@@ -19,10 +19,11 @@ SbieApi_DisableForceProcess=_SbieApi_DisableForceProcess@8
 SbieApi_EnumBoxes=_SbieApi_EnumBoxes@8
 SbieApi_EnumProcessEx=_SbieApi_EnumProcessEx@20
 
-SbieApi_GetFileName=_SbieApi_GetFileName@12
+SbieApi_GetFileName=_SbieApi_GetFileName@16
 SbieApi_GetHomePath=_SbieApi_GetHomePath@16
 SbieApi_GetUnmountHive=_SbieApi_GetUnmountHive@4
 SbieApi_GetVersion=_SbieApi_GetVersion@4
+SbieApi_GetVersionEx=_SbieApi_GetVersionEx@8
 ;;; SbieApi_GetWork=_SbieApi_GetWork@12
 SbieApi_GetMessage=_SbieApi_GetMessage@24
 
@@ -46,6 +47,8 @@ SbieApi_QueryProcess=_SbieApi_QueryProcess@20
 SbieApi_QueryProcessEx=_SbieApi_QueryProcessEx@24
 SbieApi_QueryProcessInfo=_SbieApi_QueryProcessInfo@8
 SbieApi_QueryProcessPath=_SbieApi_QueryProcessPath@28
+
+SbieApi_QueryDrvInfo=_SbieApi_QueryDrvInfo@12
 
 SbieApi_ReloadConf=_SbieApi_ReloadConf@8
 
@@ -80,7 +83,7 @@ SbieDll_GetStartError=_SbieDll_GetStartError@0
 SbieDll_GetTokenElevationType=_SbieDll_GetTokenElevationType@0
 SbieDll_GetUserPathEx=_SbieDll_GetUserPathEx@4
 
-SbieDll_Hook=_SbieDll_Hook@12
+SbieDll_Hook=_SbieDll_Hook@16
 
 SbieDll_InitPStore=_SbieDll_InitPStore@0
 SbieDll_IsBoxedService=_SbieDll_IsBoxedService@4
@@ -103,6 +106,9 @@ SbieDll_AssocQueryProgram=_SbieDll_AssocQueryProgram@4
 
 SbieDll_KillAll=_SbieDll_KillAll@8
 SbieDll_KillOne=_SbieDll_KillOne@4
+
+SbieDll_Mount=_SbieDll_Mount@12
+SbieDll_Unmount=_SbieDll_Unmount@4
 
 SbieDll_RegisterDllCallback=_SbieDll_RegisterDllCallback@4
 SbieDll_RunFromHome=_SbieDll_RunFromHome@16

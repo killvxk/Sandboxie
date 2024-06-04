@@ -324,6 +324,7 @@ void PrepareRunAsAdmin(HWND hwnd, const WCHAR *BoxName, BOOLEAN JustAdmin)
     if (BoxName) {
 
         if ((BoxName == (WCHAR *)-1) ||
+                SbieApi_QueryConfBool(BoxName, L"UseSecurityMode", FALSE) ||
                 SbieApi_QueryConfBool(BoxName, L"DropAdminRights", FALSE)) {
 
             run_elevated_2 = FALSE;
@@ -487,7 +488,7 @@ INT_PTR RunDialogProc(
     static HWND hwndToolTip = NULL;
     HWND ctrl;
     OPENFILENAME ofn;
-    WCHAR boxname[64];
+    WCHAR boxname[BOXNAME_COUNT];
     WCHAR title[128];
     TOOLINFO ti;
 

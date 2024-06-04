@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC
- * Copyright 2020 David Xanatos, xanasoft.com
+ * Copyright 2020-2023 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -22,6 +22,7 @@
 
 
 #include "dll.h"
+#include "core/low/lowdata.h"
 #include <stdio.h>
 
 
@@ -30,13 +31,22 @@
 //---------------------------------------------------------------------------
 
 
-#ifdef _WIN64
+#ifdef _M_ARM64
+
+
+#define LDR_INJECT_SETTING_NAME             L"InjectDllARM64"
+#define LDR_HOST_INJECT_SETTING_NAME        L"HostInjectDllARM64"
+//#define LDR_INJECT_NUM_SAVE_BYTES   16
+#define LDR_INJECT_NUM_SAVE_BYTES   20
+
+
+#elif _WIN64
 
 
 #define LDR_INJECT_SETTING_NAME             L"InjectDll64"
 #define LDR_HOST_INJECT_SETTING_NAME        L"HostInjectDll64"
 #define LDR_INJECT_NUM_SAVE_BYTES   12
-
+//#define LDR_INJECT_NUM_SAVE_BYTES   19
 
 
 #else ! _WIN64
@@ -154,7 +164,6 @@ static const WCHAR *Ldr_InjectDll       = LDR_INJECT_SETTING_NAME;
 static const WCHAR *Ldr_HostInjectDll   = LDR_HOST_INJECT_SETTING_NAME;
 
 static ULONG_PTR Ldr_ImageBase = 0;
-static ULONG_PTR Ldr_ImportDescriptor = 0;
 
 BOOLEAN Ldr_BoxedImage = FALSE;
 
@@ -496,7 +505,7 @@ _FX WCHAR *Ldr_FixImagePath_2(void)
 
     //
     // Windows is caching loaded modules, when after being run a binary is moved
-    // and run again, NtQueryVirtualMemory wil return the original location
+    // and run again, NtQueryVirtualMemory will return the original location
     // and not the valid up to date current location.
     // Hence we use NtQueryInformationProcess instead it also returns the reparsed path
     //
@@ -748,13 +757,37 @@ _FX void Ldr_Inject_Init(BOOLEAN bHostInject)
     if (VirtualProtect(entrypoint, LDR_INJECT_NUM_SAVE_BYTES,
                        PAGE_EXECUTE_READWRITE, &Ldr_Inject_OldProtect)) {
 
-#ifdef _WIN64
+#ifdef _M_ARM64
+
+        ULONG* aCode = (ULONG*)entrypoint;
+        *aCode++ = 0x10000000;	// adr x0, 0 - copy pc to x0
+	    *aCode++ = 0x58000048;	// ldr x8, 8
+        *aCode++ = 0xD61F0100;	// br x8
+        *(ULONG_PTR*)aCode = (ULONG_PTR)Ldr_Inject_Entry64;
+
+        NtFlushInstructionCache(GetCurrentProcess(), entrypoint, LDR_INJECT_NUM_SAVE_BYTES);
+
+#elif _WIN64
 
         entrypoint[0] = 0x48;           // mov rax, Ldr_Inject_Entry64
         entrypoint[1] = 0xB8;
         *(ULONG_PTR *)(entrypoint + 2) = (ULONG_PTR)Ldr_Inject_Entry64;
-        entrypoint[10] = 0xFF;          // call rax
-        entrypoint[11] = 0xD0;
+
+//        entrypoint[10] = 0xFF;          // call rax
+//        entrypoint[11] = 0xD0;
+
+        // using 19 bytes breaks Antidote11
+
+        //entrypoint[10] = 0x48;          // lea rcx, [rip - 0x11]
+        //entrypoint[11] = 0x8d;
+        //entrypoint[12] = 0x0d;
+        //*(ULONG*)(entrypoint + 13) = -0x11;
+        //
+        //entrypoint[17] = 0xFF;          // jmp rax
+        //entrypoint[18] = 0xE0;
+
+        entrypoint[10] = 0xFF;          // jmp rax
+        entrypoint[11] = 0xE0;
 
 #else ! _WIN64
 
@@ -773,7 +806,8 @@ _FX void Ldr_Inject_Init(BOOLEAN bHostInject)
 //---------------------------------------------------------------------------
 
 
-_FX void Ldr_Inject_Entry(ULONG_PTR *pRetAddr)
+//_FX void Ldr_Inject_Entry(ULONG_PTR *pRetAddr)
+_FX void* Ldr_Inject_Entry(ULONG_PTR *pPtr)
 {
     UCHAR *entrypoint;
     ULONG dummy_prot;
@@ -782,8 +816,21 @@ _FX void Ldr_Inject_Entry(ULONG_PTR *pRetAddr)
     // restore correct code sequence at the entrypoint
     //
 
-    entrypoint = ((UCHAR *)*pRetAddr) - LDR_INJECT_NUM_SAVE_BYTES;
-    *pRetAddr = (ULONG_PTR)entrypoint;
+//#ifdef _M_ARM64
+//    entrypoint = ((UCHAR *)*pRetAddr) - (LDR_INJECT_NUM_SAVE_BYTES - sizeof(ULONG_PTR)); // after blr comes the 64bit address
+//#else
+//    entrypoint = ((UCHAR *)*pRetAddr) - LDR_INJECT_NUM_SAVE_BYTES;
+//#endif
+//    *pRetAddr = (ULONG_PTR)entrypoint;
+#ifdef _M_ARM64
+    entrypoint = (UCHAR*)pPtr;
+#elif _WIN64
+    // entrypoint = (UCHAR*)pPtr;
+    entrypoint = (UCHAR*)g_entrypoint;
+#else // x86
+    entrypoint = ((UCHAR *)*pPtr) - LDR_INJECT_NUM_SAVE_BYTES;
+    *pPtr = (ULONG_PTR)entrypoint;
+#endif
 
     // If entrypoint hook is different, need to adjust offset. Copying the original byets won't have the correct offset.
     // MS UEV also hooks exe entry.
@@ -805,6 +852,10 @@ _FX void Ldr_Inject_Entry(ULONG_PTR *pRetAddr)
 
     VirtualProtect(entrypoint, LDR_INJECT_NUM_SAVE_BYTES,
                    Ldr_Inject_OldProtect, &dummy_prot);
+
+#ifdef _M_ARM64
+    NtFlushInstructionCache(GetCurrentProcess(), entrypoint, LDR_INJECT_NUM_SAVE_BYTES);
+#endif
 
     if (!g_bHostInject)
     {
@@ -830,4 +881,22 @@ _FX void Ldr_Inject_Entry(ULONG_PTR *pRetAddr)
     {
         Ldr_LoadInjectDlls(g_bHostInject);
     }
+    
+	
+    //
+    // free the syscall/inject data area which is no longer needed
+    //
+
+#ifdef _M_ARM64EC
+    extern ULONG* SbieApi_SyscallPtr;
+    SbieApi_SyscallPtr = NULL;
+#endif
+    extern SBIELOW_DATA* SbieApi_data;
+    VirtualFree((void*)SbieApi_data->syscall_data, 0, MEM_RELEASE);
+
+    //
+    // return original entry point address to jump to
+    //
+
+    return entrypoint;
 }

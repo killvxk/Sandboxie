@@ -36,16 +36,13 @@ signals:
 protected:
 	struct SListNode
 	{
-		SListNode(const QVariant& Id)
-		{
+		SListNode(const QVariant& Id) {
 			ID = Id;
 
 			IsBold = false;
 			IsGray = false;
 		}
-		virtual ~SListNode() 
-		{
-		}
+		virtual ~SListNode() {}
 
 		QVariant			ID;
 
@@ -56,12 +53,13 @@ protected:
 		struct SValue
 		{
 			QVariant Raw;
-			QVariant Formated;
+			QVariant Formatted;
 		};
 		QVector<SValue>		Values;
 	};
 
 	virtual SListNode* MkNode(const QVariant& Id) = 0; // { return new SListNode(Id); }
+	virtual void	FreeNode(SListNode* pNode) = 0;
 
 	void Sync(QList<SListNode*>& New, QHash<QVariant, SListNode*>& Old);
 
@@ -93,6 +91,7 @@ public:
 
 protected:
 	virtual SListNode* MkNode(const QVariant& Id) { return new SListNode(Id); }
+	virtual void	FreeNode(SListNode* pNode) { delete pNode; }
 
 	QStringList		m_Headers;
 };

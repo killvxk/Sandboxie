@@ -1,6 +1,19 @@
 #include "stdafx.h"
 #include "SbieProcess.h"
 
+#include <ntstatus.h>
+#define WIN32_NO_STATUS
+typedef long NTSTATUS;
+
+#include <windows.h>
+#include "..\..\Sandboxie\common\win32_ntddk.h"
+
+#include <winnt.h>
+
+CSbieProcess::CSbieProcess(quint32 ProcessId, class CSandBox* pBox) 
+	: CBoxedProcess(ProcessId, pBox) 
+{
+}
 
 QString CSbieProcess::ImageTypeToStr(quint32 type)
 {
@@ -80,21 +93,24 @@ QString CSbieProcess::ImageTypeToStr(quint32 type)
 QString CSbieProcess::GetStatusStr() const
 {
 	QString Status;
+
 	if (m_uTerminated != 0)
 		Status = tr("Terminated");
-	//else if (m_bSuspended)
-	//	Status = tr("Suspended");
+	else if (m_bSuspended)
+		Status = tr("Suspended");
 	else {
 		Status = tr("Running");
 		if ((m_ProcessFlags & 0x00000002) != 0) // SBIE_FLAG_FORCED_PROCESS
 			Status.prepend(tr("Forced "));
 	}
 
-	if(m_SessionId != theAPI->GetSessionID())
-		Status += tr(" in session %1").arg(m_SessionId);
+	if (m_ProcessInfo.IsElevated)
+		Status += tr(" Elevated");
+	if (m_ProcessInfo.IsSystem)
+		Status += tr(" as System");
 
-	if (m_bIsWoW64)
-		Status += " *32";
+	if(m_SessionId != theAPI->GetSessionID() && m_SessionId != -1)
+		Status += tr(" in session %1").arg(m_SessionId);
 
 	quint32 ImageType = GetImageType();
 	if (ImageType != -1) {
@@ -105,3 +121,8 @@ QString CSbieProcess::GetStatusStr() const
 
 	return Status;
 }
+
+//void CSbieProcess::InitProcessInfoImpl(void* ProcessHandle)
+//{
+//	CBoxedProcess::InitProcessInfoImpl(ProcessHandle);
+//}

@@ -1,7 +1,7 @@
 #----------------------------------------------------------------------------
 # SbieDrv
 #
-# Initialization errors issued to to the System event Log
+# Initialization errors issued to the System event Log
 #----------------------------------------------------------------------------
 
 1101;evt;inf;01
@@ -3695,6 +3695,10 @@ Pretende manter o ficheiro de configuração Sandboxie.ini?
 Selecione Sim para manter as definições de configuração no ficheiro Sandboxie.ini.
 
 Selecione NÃO para eliminar o ficheiro Sandboxie.ini e perder as suas definições de configuração.
+.
+
+8055;ins;01
+Existe uma atualização online do Templates.ini e/ou das traduções para esta versão do sandboxie disponível, você deseja instalá-lo?
 .
 
 #----------------------------------------------------------------------------

@@ -2,7 +2,6 @@
 root = true
 
 [*]
-charset = utf-8
 trim_trailing_whitespace = true
 insert_final_newline = true
 
@@ -10,6 +9,13 @@ insert_final_newline = true
 charset = utf-8-bom
 indent_style = space
 indent_size = 4
+
+[my_version.h]
+charset = utf-8-bom
+
+[*.{c,h,cpp}]
+indent_style = tab
+indent_size = unset
 
 [*.{yaml,yml,rc}]
 charset = utf-8
@@ -22,15 +28,8 @@ end_of_line = lf
 indent_style = tab
 indent_size = unset
 
-[*.{c,h,cpp}]
-charset = utf-8
-end_of_line = crlf
-indent_style = tab
-indent_size = unset
-
 [*.{txt,cmd,bat}]
 charset = utf-8
-end_of_line = crlf
 
 # Xml files
 [*.{xml,stylecop,resx,ruleset}]
@@ -70,4 +69,3 @@ charset = utf-8-bom
 # .sln files require tabs or the solution won't load
 indent_style = tab
 indent_size = 4
-end_of_line = crlf

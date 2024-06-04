@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
- * Copyright 2020 David Xanatos, xanasoft.com
+ * Copyright 2020-2023 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -32,6 +32,12 @@
 #include "core/drv/api_defs.h"
 #include "core/svc/InteractiveWire.h"
 
+#define PATTERN XPATTERN
+#define _MY_POOL_H          // prevent inclusion of pool.h by pattern.h
+typedef void *POOL;
+#include "common/list.h"
+#include "common/pattern.h"
+
 
 //---------------------------------------------------------------------------
 // Structures and Types
@@ -50,8 +56,8 @@ struct MsgEntry {
 struct HideEntry {
 
     ULONG code;
-    CString detail;
-
+    //CString detail;
+    PATTERN* pattern;
 };
 
 
@@ -143,6 +149,8 @@ void CMessageDialog::ReloadConf()
 
     while (m_hidden.GetSize()) {
         entry = (HideEntry *)m_hidden.GetAt(0);
+        if(entry->pattern)
+            Pattern_Free(entry->pattern);
         delete entry;
         m_hidden.RemoveAt(0);
     }
@@ -175,8 +183,12 @@ void CMessageDialog::ReloadConf()
         }
 
         int pos = head.Find(L',');
-        if (pos != -1)
-            entry->detail = head.Mid(pos + 1);
+        if (pos != -1) {
+            //entry->detail = head.Mid(pos + 1);
+            entry->pattern = Pattern_Create(NULL, head.Mid(pos + 1), TRUE, 0);
+        }
+        else
+            entry->pattern = NULL;
 
         if (entry->code)
             m_hidden.Add(entry);
@@ -222,8 +234,11 @@ BOOL CMessageDialog::IsHiddenMessage(
         if (entry->code == code) {
             if (entry->code == MSG_1319)    // hide MSG_1319 for all detail
                 return TRUE;
-            BOOL match = (! entry->detail.GetLength()) ||
-                         (entry->detail.CompareNoCase(detail_1) == 0);
+            //BOOL match = (! entry->detail.GetLength()) ||
+            //             (entry->detail.CompareNoCase(detail_1) == 0);
+            CString Detail_1 = detail_1;
+            Detail_1.MakeLower();
+            BOOL match = !entry->pattern || Pattern_Match(entry->pattern, Detail_1, Detail_1.GetLength());
             if (match)
                 return TRUE;
         }
@@ -629,9 +644,13 @@ void CMessageDialog::DiscardMessages(
 
 void CMessageDialog::OnHelp()
 {
-    CString sbie = GetSBIExxxx(NULL, NULL);
-    if (! sbie.IsEmpty())
-        CRunBrowser::OpenHelp(this, sbie);
+    CString Detail;
+    CString sbie = GetSBIExxxx(NULL, &Detail);
+    if (!sbie.IsEmpty()) {
+        CString url = L"https://sandboxie-plus.com/go.php?to=sbie-" + sbie + "&detail=" + CRunBrowser::EscapeForURL(Detail);
+        CRunBrowser x(this, url);
+        //CRunBrowser::OpenHelp(this, sbie);
+    }
 }
 
 

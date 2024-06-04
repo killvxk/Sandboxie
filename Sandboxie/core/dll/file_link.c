@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2020-2022 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -46,6 +47,15 @@ struct _FILE_LINK {
     ULONG dst_len;      // in characters, excluding NULL
     WCHAR *dst;
     WCHAR src[1];
+
+};
+
+struct _FILE_GUID {
+    
+    LIST_ELEM list_elem;
+    WCHAR guid[38 + 1];
+    ULONG len;          // in characters, excluding NULL
+    WCHAR path[0];
 
 };
 
@@ -98,6 +108,7 @@ static FILE_DRIVE **File_Drives = NULL;
 
 static LIST *File_PermLinks = NULL;
 static LIST *File_TempLinks = NULL;
+static LIST *File_GuidLinks = NULL;
 
 
 //---------------------------------------------------------------------------
@@ -244,6 +255,109 @@ _FX FILE_DRIVE *File_GetDriveForLetter(WCHAR drive_letter)
         LeaveCriticalSection(File_DrivesAndLinks_CritSec);
 
     return drive;
+}
+
+
+//---------------------------------------------------------------------------
+// File_GetGuidForPath
+//---------------------------------------------------------------------------
+
+
+_FX FILE_GUID *File_GetGuidForPath(const WCHAR *Path, ULONG PathLen)
+{
+    FILE_GUID *guid;
+
+    EnterCriticalSection(File_DrivesAndLinks_CritSec);
+
+    guid = List_Head(File_GuidLinks);
+    while (guid) {
+
+        if (PathLen >= guid->len
+                && _wcsnicmp(Path, guid->path, guid->len) == 0) {
+
+            //
+            // make sure access to \Device\HarddiskVolume10 (for M:),
+            // for instance, is not matched by \Device\HarddiskVolume1
+            // (for C:), by requiring a backslash or null character
+            // to follow the matching drive path
+            //
+
+            const WCHAR *ptr = Path + guid->len;
+            if (*ptr == L'\\' || *ptr == L'\0')
+                break;
+        }
+
+        guid = List_Next(guid);
+    }
+
+    if(!guid)
+        LeaveCriticalSection(File_DrivesAndLinks_CritSec);
+
+    return guid;
+}
+
+
+//---------------------------------------------------------------------------
+// File_GetLinkForGuid
+//---------------------------------------------------------------------------
+
+
+_FX FILE_GUID *File_GetLinkForGuid(const WCHAR* guid_str)
+{
+    FILE_GUID *guid;
+
+    EnterCriticalSection(File_DrivesAndLinks_CritSec);
+
+    guid = List_Head(File_GuidLinks);
+    while (guid) {
+        if (_wcsnicmp(guid->guid, guid_str, 38) == 0)
+            break;
+        guid = List_Next(guid);
+    }
+
+    if(!guid)
+        LeaveCriticalSection(File_DrivesAndLinks_CritSec);
+
+    return guid;
+}
+
+
+//---------------------------------------------------------------------------
+// File_TranslateGuidToNtPath2
+//---------------------------------------------------------------------------
+
+
+_FX WCHAR* File_TranslateGuidToNtPath2(const WCHAR* GuidPath, ULONG GuidPathLen)
+{
+    WCHAR* NtPath = NULL;
+
+    if (GuidPath && GuidPathLen >= 48 && _wcsnicmp(GuidPath, L"\\??\\Volume{", 11) == 0) {
+
+        //
+        // guid path
+        //
+
+        FILE_GUID* guid = File_GetLinkForGuid(&GuidPath[10]);
+        if (guid) {
+
+            File_ConcatPath2(guid->path, guid->len, GuidPath + 48, GuidPathLen - 48);
+
+            LeaveCriticalSection(File_DrivesAndLinks_CritSec);
+        }
+    }
+    
+    return NtPath;
+}
+
+
+//---------------------------------------------------------------------------
+// File_TranslateGuidToNtPath
+//---------------------------------------------------------------------------
+
+
+_FX WCHAR* File_TranslateGuidToNtPath(const WCHAR* GuidPath)
+{
+    return File_TranslateGuidToNtPath2(GuidPath, GuidPath ? wcslen(GuidPath) : 0);
 }
 
 
@@ -458,6 +572,36 @@ _FX void File_RemovePermLinks(const WCHAR *path)
 
 
 //---------------------------------------------------------------------------
+// File_GetDrivePrefixLength
+//---------------------------------------------------------------------------
+
+
+_FX ULONG File_GetDrivePrefixLength(const WCHAR *work_str, ULONG work_len)
+{
+    ULONG prefix_len = 0;
+
+    if (!FILE_IS_REDIRECTOR_OR_MUP(work_str, work_len)) {
+        const FILE_DRIVE *drive = File_GetDriveForPath(work_str, work_len);
+        if (drive) {
+            prefix_len = drive->len;
+            LeaveCriticalSection(File_DrivesAndLinks_CritSec);
+        }
+        else {
+            const FILE_GUID* guid = File_GetGuidForPath(work_str, work_len);
+            if (guid) {
+                prefix_len = guid->len;
+                LeaveCriticalSection(File_DrivesAndLinks_CritSec);
+            }
+        }
+    }
+
+    if (prefix_len == work_len)
+        prefix_len = 0;
+    return prefix_len;
+}
+
+
+//---------------------------------------------------------------------------
 // File_TranslateTempLinks
 //---------------------------------------------------------------------------
 
@@ -499,20 +643,8 @@ _FX WCHAR *File_TranslateTempLinks(
     // make sure the path is for a local drive
     //
 
-    if (1) {
-        const FILE_DRIVE *drive;
-        if (FILE_IS_REDIRECTOR_OR_MUP(TruePath, TruePath_len))
-            drive = NULL;
-        else
-            drive = File_GetDriveForPath(TruePath, TruePath_len);
-        if (drive) {
-            if (drive->len == TruePath_len)
-                drive = NULL;
-            LeaveCriticalSection(File_DrivesAndLinks_CritSec);
-        }
-        if (! drive)
-            return NULL;
-    }
+    if(!File_GetDrivePrefixLength(TruePath, TruePath_len))
+        return NULL;
 
     ret = NULL;
 
@@ -736,20 +868,8 @@ _FX WCHAR *File_TranslateTempLinks_2(WCHAR *input_str, ULONG input_len)
             // otherwise make sure we are dealing with a local drive
             //
 
-            const FILE_DRIVE *drive;
-            if (FILE_IS_REDIRECTOR_OR_MUP(work_str, work_len))
-                drive = NULL;
-            else {
-                drive = File_GetDriveForPath(work_str, work_len);
-                if (drive) {
-                    prefix_len = drive->len;
-                    LeaveCriticalSection(File_DrivesAndLinks_CritSec);
-                    if (prefix_len == work_len)
-                        drive = NULL;
-                }
-            }
-
-            if (! drive)
+            prefix_len = File_GetDrivePrefixLength(work_str, work_len);
+            if (!prefix_len)
                 break;
         }
 
@@ -794,12 +914,90 @@ _FX WCHAR *File_TranslateTempLinks_2(WCHAR *input_str, ULONG input_len)
 
 _FX NTSTATUS File_GetFileName(HANDLE FileHandle, ULONG NameLen, WCHAR* NameBuf)
 {
-    //extern P_GetFinalPathNameByHandle __sys_GetFinalPathNameByHandleW;
-    //if (__sys_GetFinalPathNameByHandleW(FileHandle, NameBuf, NameLen, VOLUME_NAME_NT) > 0)
-    //    return STATUS_SUCCESS;
-    //return STATUS_UNSUCCESSFUL;
+    NTSTATUS status;
 
-    return SbieApi_GetFileName(FileHandle, NameLen, NameBuf);
+    status = SbieApi_GetFileName(FileHandle, NameBuf, &NameLen, NULL);
+
+    if (NT_SUCCESS(status) && !*NameBuf)
+        status = STATUS_OBJECT_PATH_NOT_FOUND;
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// File_OpenForAddTempLink
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS File_OpenForAddTempLink(HANDLE* handle, WCHAR *path, BOOLEAN OpenReparsePoint)
+{
+    NTSTATUS status;
+    OBJECT_ATTRIBUTES objattrs;
+    UNICODE_STRING objname;
+    IO_STATUS_BLOCK IoStatusBlock;
+
+    P_NtCreateFile pNtCreateFile = __sys_NtCreateFile;
+    // special case for File_InitRecoverFolders as it's called before we hook those functions
+    if (! pNtCreateFile)
+        pNtCreateFile = NtCreateFile;
+
+    InitializeObjectAttributes(
+        &objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+    //
+    // first try the copy path
+    //
+
+    if (_wcsnicmp(path, Dll_BoxFilePath, Dll_BoxFilePathLen) != 0)
+    {
+        WCHAR* CopyPath = NULL;
+
+        THREAD_DATA* TlsData = Dll_GetTlsData(NULL);
+
+        Dll_PushTlsNameBuffer(TlsData);
+
+        File_GetCopyPath(path, &CopyPath);
+
+        //
+        // get template file if present, and reparse the path
+        //
+
+        WCHAR* TmplName = File_FindSnapshotPath(CopyPath);
+        if (TmplName != NULL)
+            RtlInitUnicodeString(&objname, TmplName);
+        else
+            RtlInitUnicodeString(&objname, CopyPath);
+
+        status = pNtCreateFile(
+            handle, (OpenReparsePoint ? FILE_GENERIC_READ : FILE_READ_ATTRIBUTES) | SYNCHRONIZE, &objattrs,
+            &IoStatusBlock, NULL, 0, FILE_SHARE_VALID_FLAGS,
+            FILE_OPEN, 
+            /*FILE_DIRECTORY_FILE |*/ FILE_SYNCHRONOUS_IO_NONALERT | (OpenReparsePoint ? FILE_OPEN_REPARSE_POINT : 0),
+            NULL, 0);
+
+        Dll_PopTlsNameBuffer(TlsData);
+
+    }
+    else // it's already a copy path
+        status = STATUS_BAD_INITIAL_PC;
+
+    //
+    // then try the true path
+    //
+
+    if (!NT_SUCCESS(status)) {
+
+        RtlInitUnicodeString(&objname, path);
+
+        status = pNtCreateFile(
+            handle, (OpenReparsePoint ? FILE_GENERIC_READ : FILE_READ_ATTRIBUTES)  | SYNCHRONIZE, &objattrs,
+            &IoStatusBlock, NULL, 0, FILE_SHARE_VALID_FLAGS,
+            FILE_OPEN, 
+            /*FILE_DIRECTORY_FILE |*/ FILE_SYNCHRONOUS_IO_NONALERT | (OpenReparsePoint ? FILE_OPEN_REPARSE_POINT : 0),
+            NULL, 0);
+    }
+
+    return status;
 }
 
 
@@ -812,8 +1010,6 @@ _FX FILE_LINK *File_AddTempLink(WCHAR *path)
 {
     NTSTATUS status;
     HANDLE handle;
-    OBJECT_ATTRIBUTES objattrs;
-    UNICODE_STRING objname;
     IO_STATUS_BLOCK IoStatusBlock;
     FILE_LINK *link;
     WCHAR *newpath;
@@ -824,95 +1020,187 @@ _FX FILE_LINK *File_AddTempLink(WCHAR *path)
     // try to open the path
     //
 
-    P_NtCreateFile pNtCreateFile = __sys_NtCreateFile;
     P_NtClose pNtClose = __sys_NtClose;
-    if (! pNtCreateFile)
-        pNtCreateFile = NtCreateFile;
+    P_NtFsControlFile pNtFsControlFile = __sys_NtFsControlFile;
+    // special case for File_InitRecoverFolders as it's called before we hook those functions
     if (! pNtClose)
         pNtClose = NtClose;
+    if (! pNtFsControlFile)
+        pNtFsControlFile = NtFsControlFile;
 
     stop = TRUE;
+    newpath = NULL;
+    
+    /*if (wcsstr(path, L"Programme")) {
+        while (! IsDebuggerPresent()) { OutputDebugString(L"BREAK\n"); Sleep(500); }
+        __debugbreak();
+    }*/
 
-    InitializeObjectAttributes(
-        &objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
-
-    RtlInitUnicodeString(&objname, path);
-
-    status = pNtCreateFile(
-        &handle, FILE_READ_ATTRIBUTES | SYNCHRONIZE, &objattrs,
-        &IoStatusBlock, NULL, 0, FILE_SHARE_VALID_FLAGS,
-        FILE_OPEN, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
-        NULL, 0);
+    status = File_OpenForAddTempLink(&handle, path, TRUE);
 
     if (NT_SUCCESS(status)) {
 
-        //
-        // get the reparsed absolute path
-        //
+        REPARSE_DATA_BUFFER* reparseDataBuffer = Dll_AllocTemp(MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
+        status = pNtFsControlFile(handle, NULL, NULL, NULL, &IoStatusBlock, FSCTL_GET_REPARSE_POINT, NULL, 0, reparseDataBuffer, MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
 
-        const ULONG PATH_BUF_LEN = 1024;
-        newpath = Dll_AllocTemp(PATH_BUF_LEN);
+        if (NT_SUCCESS(status)) {
 
-        status = File_GetFileName(handle, PATH_BUF_LEN - 4, newpath);
+            WCHAR* SubstituteNameBuffer = NULL;
+            ULONG SubstituteNameLength = 0;
+            BOOL RelativePath = FALSE;
+
+            if (reparseDataBuffer->ReparseTag == IO_REPARSE_TAG_SYMLINK) {
+
+                SubstituteNameBuffer = &reparseDataBuffer->SymbolicLinkReparseBuffer.PathBuffer[reparseDataBuffer->SymbolicLinkReparseBuffer.SubstituteNameOffset/sizeof(WCHAR)];
+                if (reparseDataBuffer->SymbolicLinkReparseBuffer.Flags & SYMLINK_FLAG_RELATIVE)
+                    RelativePath = TRUE;
+                SubstituteNameLength = reparseDataBuffer->SymbolicLinkReparseBuffer.SubstituteNameLength;
+
+            } else if (reparseDataBuffer->ReparseTag == IO_REPARSE_TAG_MOUNT_POINT) {
+
+                SubstituteNameBuffer = &reparseDataBuffer->MountPointReparseBuffer.PathBuffer[reparseDataBuffer->MountPointReparseBuffer.SubstituteNameOffset/sizeof(WCHAR)];
+                SubstituteNameLength = reparseDataBuffer->MountPointReparseBuffer.SubstituteNameLength;
+            }
+
+            if (SubstituteNameBuffer) {
+
+                WCHAR* input_str = NULL;
+                if (RelativePath) {
+
+                    WCHAR* LinkName = wcsrchr(path, L'\\');
+                    input_str = File_CanonizePath(path, (ULONG)(LinkName - path), SubstituteNameBuffer, SubstituteNameLength / sizeof(WCHAR));
+
+                } else {
+
+                    input_str = SubstituteNameBuffer;
+                    if (_wcsnicmp(input_str, L"\\??\\Volume{", 11) == 0)
+                        input_str = File_TranslateGuidToNtPath2(SubstituteNameBuffer, SubstituteNameLength / sizeof(WCHAR));
+                    else if (_wcsnicmp(input_str, File_BQQB, 4) == 0)
+                        input_str = File_TranslateDosToNtPath2(SubstituteNameBuffer + 4, (SubstituteNameLength / sizeof(WCHAR)) - 4);
+                }
+
+                if (input_str) {
+
+                    ULONG input_len = wcslen(input_str);
+                    while (input_len > 0 && input_str[input_len - 1] == L'\\')
+                        input_len -= 1; // remove trailing backslash
+
+                    newpath = File_TranslateTempLinks_2(input_str, input_len);
+
+                    if (input_str != SubstituteNameBuffer)
+                        Dll_Free(input_str);
+                }
+            }
+        }
+        //else if (status == STATUS_NOT_A_REPARSE_POINT) 
+            
+
+        Dll_Free(reparseDataBuffer);
+
+        pNtClose(handle);
+    }
+    
+    const ULONG PATH_BUF_LEN = 1024;
+
+    if (!newpath) {
+
+        status = File_OpenForAddTempLink(&handle, path, FALSE);
+
         if (NT_SUCCESS(status)) {
 
             //
-            // make sure path does not contain duplicate backslashes
+            // get the reparsed absolute path
             //
 
-            ULONG len = wcslen(newpath);
-            WCHAR *name = newpath;
-            while (name[0]) {
-                if (name[0] == L'\\' && name[1] == L'\\') {
-                    ULONG move_len = len - (ULONG)(name - newpath) + 1;
-                    wmemmove(name, name + 1, move_len);
-                    --len;
-                } else
-                    ++name;
+            newpath = Dll_AllocTemp(PATH_BUF_LEN);
+
+            status = File_GetFileName(handle, PATH_BUF_LEN - 4, newpath);
+
+            if (!NT_SUCCESS(status)) {
+                Dll_Free(newpath);
+                newpath = NULL;
             }
 
-            //
-            // convert permanent links (i.e. drive mount points)
-            //
+            pNtClose(handle);
+        }
+    }
 
-            len = File_FixPermLinksForTempLink(
-                newpath, len, (PATH_BUF_LEN - 4) / sizeof(WCHAR));
+    if (newpath) {
 
-            //
-            // verify the link points to a local drive
-            //
+        //
+        // check if what we got is a copy path and convert it to a true path
+        //
 
-            if (File_FindPermLinksForMatchPath(newpath, len))
-            {
-                // release lock by File_FindPermLinksForMatchPath
-                LeaveCriticalSection(File_DrivesAndLinks_CritSec);
-                bPermLinkPath = TRUE;
-            }
+        THREAD_DATA* TlsData = Dll_GetTlsData(NULL);
 
-            if (! FILE_IS_REDIRECTOR_OR_MUP(newpath, len) && !bPermLinkPath) {
-                const FILE_DRIVE *drive = File_GetDriveForPath(newpath, len);
-                if (drive) {
-                    LeaveCriticalSection(File_DrivesAndLinks_CritSec);
-                    stop = FALSE;
-                }
-            }
+        Dll_PushTlsNameBuffer(TlsData);
 
-        } else {
+        WCHAR* TruePath = NULL;
+        if (NT_SUCCESS(File_GetTruePath(newpath, &TruePath))) {
+
             Dll_Free(newpath);
-            newpath = NULL;
+            newpath = Dll_AllocTemp((wcslen(TruePath) + 1) * sizeof(WCHAR));
+            wcscpy(newpath, TruePath);
         }
 
-        pNtClose(handle);
+        Dll_PopTlsNameBuffer(TlsData);
 
-    } else
-        newpath = NULL;
+        //
+        // make sure path does not contain duplicate backslashes
+        //
+
+        ULONG len = wcslen(newpath);
+        WCHAR *name = newpath;
+        while (name[0]) {
+            if (name[0] == L'\\' && name[1] == L'\\') {
+                ULONG move_len = len - (ULONG)(name - newpath) + 1;
+                wmemmove(name, name + 1, move_len);
+                --len;
+            } else
+                ++name;
+        }
+
+        //
+        // convert permanent links (i.e. drive mount points)
+        //
+
+        len = File_FixPermLinksForTempLink(
+            newpath, len, (PATH_BUF_LEN - 4) / sizeof(WCHAR));
+
+        //
+        // verify the link points to a local drive
+        //
+
+        if (File_FindPermLinksForMatchPath(newpath, len))
+        {
+            // release lock by File_FindPermLinksForMatchPath
+            LeaveCriticalSection(File_DrivesAndLinks_CritSec);
+            bPermLinkPath = TRUE;
+        }
+
+        if (! FILE_IS_REDIRECTOR_OR_MUP(newpath, len) && !bPermLinkPath) {
+            const FILE_DRIVE *drive = File_GetDriveForPath(newpath, len);
+            const FILE_GUID *guid = NULL;
+            if(!drive)
+                guid = File_GetGuidForPath(newpath, len);
+            if (drive || guid) {
+                LeaveCriticalSection(File_DrivesAndLinks_CritSec);
+                stop = FALSE;
+            }
+        }
+
+    } else {
+
+        newpath = path;
+
+        BOOLEAN use_rule_specificity = (Dll_ProcessFlags & SBIE_FLAG_RULE_SPECIFICITY) != 0;
+        if(use_rule_specificity)
+            stop = FALSE;
+    }
 
     //
     // add the new link and return
     //
-
-    if (! newpath)
-        newpath = path;
 
     if (File_AddLink(FALSE, path, newpath)) {
         link = List_Head(File_TempLinks);

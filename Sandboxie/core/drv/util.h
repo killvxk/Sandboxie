@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
- * Copyright 2020 David Xanatos, xanasoft.com
+ * Copyright 2020-2024 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -89,9 +89,17 @@ WCHAR *SearchUnicodeString(PCUNICODE_STRING pString1, PWCHAR pString2, BOOLEAN b
 BOOLEAN UnicodeStringStartsWith(PCUNICODE_STRING pString1, PWCHAR pString2, BOOLEAN boolCaseInSensitive);
 BOOLEAN UnicodeStringEndsWith(PCUNICODE_STRING pString1, PWCHAR pString2, BOOLEAN boolCaseInSensitive);
 BOOLEAN DoesRegValueExist(ULONG RelativeTo, WCHAR *Path, WCHAR *ValueName);
-BOOLEAN GetRegString(ULONG RelativeTo, WCHAR *Path, WCHAR *ValueName, UNICODE_STRING* pData);
+NTSTATUS GetRegString(ULONG RelativeTo, const WCHAR *Path, const WCHAR *ValueName, UNICODE_STRING* pData);
+ULONG GetRegDword(const WCHAR *KeyPath, const WCHAR *ValueName);
+NTSTATUS SetRegValue(const WCHAR *KeyPath, const WCHAR *ValueName, const void *Data, ULONG uSize);
+NTSTATUS GetRegValue(const WCHAR *KeyPath, const WCHAR *ValueName, PVOID* pData, ULONG* pSize);
 void *memmem(const void *pSearchBuf, size_t nBufSize, const void *pPattern, size_t nPatternSize);
 
+//
+// return TRUE if the system accepts self signed drivers
+//
+
+BOOLEAN MyIsTestSigning(void);
 
 
 //
@@ -101,6 +109,10 @@ void *memmem(const void *pSearchBuf, size_t nBufSize, const void *pPattern, size
 BOOLEAN MyIsCallerSigned(void);
 
 
+//
+// Validate supporter certificate
+//
+
 NTSTATUS MyValidateCertificate(void);
 
 //
@@ -109,10 +121,22 @@ NTSTATUS MyValidateCertificate(void);
 
 HANDLE Util_GetProcessPidByName(const WCHAR* name);
 
+BOOLEAN Util_IsCsrssProcess(HANDLE pid);
+
+BOOLEAN Util_IsProtectedProcess(HANDLE pid);
+
+LARGE_INTEGER Util_GetTimestamp(void);
+
+
+// Sensible limit that may or may not correspond to the actual Windows value.
+#define MAX_STACK_DEPTH 256
+
+#define RTL_WALK_USER_MODE_STACK 0x00000001
+#define RTL_WALK_VALID_FLAGS 0x00000001
+
+ULONG Util_CaptureStack(_Out_ PVOID* Frames, _In_ ULONG Count);
 
 //---------------------------------------------------------------------------
 
-
-extern BOOLEAN Driver_Certified;
 
 #endif // _MY_UTIL_H

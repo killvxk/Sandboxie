@@ -73,14 +73,6 @@
 
 HWND WindowFromPointEx(POINT pt, BOOL fShowHidden);
 
-#if _MSC_VER == 1200        // Visual C++ 6.0
-#define GetWindowLongPtr    GetWindowLong
-#define SetWindowLongPtr    SetWindowLong
-#define GWLP_USERDATA       GWL_USERDATA
-#define GWLP_WNDPROC        GWL_WNDPROC
-typedef LONG                LONG_PTR;
-#endif
-
 static LONG    lRefCount = 0;
 
 static HCURSOR hOldCursor;
@@ -502,8 +494,8 @@ static BOOL CALLBACK FindBestChildProc(HWND hwnd, LPARAM lParam)
 //  ourselves, and find the one that best fits under the mouse -
 //  the smallest window that fits, in fact.
 //
-//  I've tested this on alot of different apps, and it seems
-//  to work flawlessly - in fact, I havn't found a situation yet
+//  I've tested this on a lot of different apps, and it seems
+//  to work flawlessly - in fact, I haven't found a situation yet
 //  that this method doesn't work on.....we'll see!
 //
 //  Inputs:

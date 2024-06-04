@@ -34,6 +34,8 @@
 
 //---------------------------------------------------------------------------
 
+void Debug_Wait();
+
 
 #ifdef  WITH_DEBUG
 
@@ -41,9 +43,6 @@
 #define  BREAK_IMAGE_1      L"TestTarget.exe" 
 
 int Debug_Init(void);
-
-void DbgPrint(const char* format, ...);
-void DbgTrace(const char* format, ...);
 
 #endif  WITH_DEBUG
 

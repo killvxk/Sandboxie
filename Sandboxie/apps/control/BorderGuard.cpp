@@ -35,7 +35,7 @@
 
 struct BoxBorderParms {
 
-    WCHAR boxname[48];
+    WCHAR boxname[BOXNAME_COUNT];
     COLORREF color;
     BOOL title;
     int width;
@@ -176,7 +176,7 @@ void CBorderGuard::Refresh()
     HWND hwnd;
     ULONG style;
     ULONG pid = NULL;
-    WCHAR boxname[48];
+    WCHAR boxname[BOXNAME_COUNT];
     boxname[0] = L'\0';
 
     hwnd = GetForegroundWindow();
@@ -246,7 +246,7 @@ void CBorderGuard::Refresh()
                 //
                 // window rect is same as last recorded window rect
                 // but if we track title area for border then also
-                // check the cursor is stil in the title area
+                // check the cursor is still in the title area
                 //
 
                 refresh = FALSE;
@@ -568,6 +568,7 @@ void CBorderGuard::RefreshBorder(
 
     HRGN hrgn = CreatePolygonRgn(points, num_points, ALTERNATE);
     SetWindowRgn(m_border_hwnd, hrgn, TRUE);
+    DeleteObject(hrgn);
     SetWindowPos(m_border_hwnd, NULL, ax, ay, aw, ah,
                  SWP_SHOWWINDOW | SWP_NOACTIVATE);
 

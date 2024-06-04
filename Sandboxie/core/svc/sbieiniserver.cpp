@@ -33,6 +33,9 @@
 #include "common/my_version.h"
 #define CRC_HEADER_ONLY
 #include "common/crc.c"
+#define RC4_HEADER_ONLY
+#include "common/rc4.c"
+#include "core/drv/api_defs.h"
 
 #ifdef NEW_INI_MODE
 extern "C" {
@@ -75,13 +78,16 @@ SbieIniServer::SbieIniServer(PipeServer *pipeServer)
 
 SbieIniServer::~SbieIniServer()
 {
-    m_instance = this; // fix-me: potential race condition, but this does nto mater as we dont use teh destructor anyways
+    m_instance = this; // fix-me: potential race condition, but this does not matter as we don't use the destructor anyways
 
     EnterCriticalSection(&m_instance->m_critsec);
     
     delete m_pConfigIni;
 
     LeaveCriticalSection(&m_instance->m_critsec);
+
+	// cleanup CS
+	DeleteCriticalSection(&m_instance->m_critsec);
 }
 
 
@@ -141,7 +147,12 @@ MSG_HEADER *SbieIniServer::Handler2(MSG_HEADER *msg)
 
     if (msg->msgid == MSGID_SBIE_INI_RUN_SBIE_CTRL) {
 
-        return RunSbieCtrl(idProcess, NT_SUCCESS(status));
+        return RunSbieCtrl(msg, idProcess, NT_SUCCESS(status));
+    }
+
+    if (msg->msgid == MSGID_SBIE_INI_RC4_CRYPT) {
+
+        return RC4Crypt(msg, idProcess, NT_SUCCESS(status));
     }
 
     if (NT_SUCCESS(status))     // if sandboxed
@@ -292,7 +303,7 @@ MSG_HEADER *SbieIniServer::Handler2(MSG_HEADER *msg)
 MSG_HEADER *SbieIniServer::GetVersion(MSG_HEADER *msg)
 {
     WCHAR ver_str[16];
-    wsprintf(ver_str, L"%S", MY_VERSION_COMPAT);
+    wsprintf(ver_str, L"%S", MY_VERSION_STRING);
 
     ULONG ver_len = wcslen(ver_str);
     ULONG rpl_len = sizeof(SBIE_INI_GET_USER_RPL)
@@ -303,7 +314,7 @@ MSG_HEADER *SbieIniServer::GetVersion(MSG_HEADER *msg)
         return SHORT_REPLY(STATUS_INSUFFICIENT_RESOURCES);
 
     wcscpy(rpl->version, ver_str);
-    rpl->version_len = ver_len;
+    rpl->abi_ver = MY_ABI_VERSION;
 
     return &rpl->h;
 }
@@ -360,7 +371,7 @@ MSG_HEADER *SbieIniServer::GetUser(MSG_HEADER *msg)
     bool ok2 = SetUserSettingsSectionName(hToken);
 
     BOOLEAN admin = FALSE;
-    if (ok2 && TokenIsAdmin(hToken))
+    if (ok2 && TokenIsAdmin(hToken, true))
         admin = TRUE;
 
     CloseHandle(hToken);
@@ -458,7 +469,7 @@ ULONG SbieIniServer::CheckRequest(MSG_HEADER *msg)
 
     } else {
 
-        ULONG status = IsCallerAuthorized(hToken, req->password);
+        ULONG status = IsCallerAuthorized(hToken, req->password, req->section);
         if (status != 0)
             return status;
     }
@@ -707,7 +718,7 @@ finish:
 //---------------------------------------------------------------------------
 
 
-ULONG SbieIniServer::IsCallerAuthorized(HANDLE hToken, const WCHAR *Password)
+ULONG SbieIniServer::IsCallerAuthorized(HANDLE hToken, const WCHAR *Password, const WCHAR *Section)
 {
     WCHAR buf[42], buf2[42];
 
@@ -715,9 +726,9 @@ ULONG SbieIniServer::IsCallerAuthorized(HANDLE hToken, const WCHAR *Password)
     // check for Administrator-only access
     //
 
-    if (SbieApi_QueryConfBool(NULL, L"EditAdminOnly", FALSE)) {
+    if (SbieApi_QueryConfBool(Section, L"EditAdminOnly", FALSE)) {
 
-        if (! TokenIsAdmin(hToken)) {
+        if (! TokenIsAdmin(hToken, true)) {
             CloseHandle(hToken);
             return STATUS_LOGON_NOT_GRANTED;
         }
@@ -935,7 +946,7 @@ finish:
         // set a ini header with a descriptive comment
         m_pConfigIni->Sections.push_back(SIniSection{ L"" });
         m_pConfigIni->Sections.back().Entries.push_back(SIniEntry{ L"", L"#" });
-        m_pConfigIni->Sections.back().Entries.push_back(SIniEntry{ L"", L"# Sandboxie-Plus configuration file" });
+        m_pConfigIni->Sections.back().Entries.push_back(SIniEntry{ L"", L"# Sandboxie configuration file" });
         m_pConfigIni->Sections.back().Entries.push_back(SIniEntry{ L"", L"#" });
 
         m_pConfigIni->Sections.push_back(SIniSection{ L"GlobalSettings" });
@@ -1011,7 +1022,7 @@ MSG_HEADER *SbieIniServer::GetSetting(MSG_HEADER *msg)
     }
 
     //
-    // preapre the reply
+    // prepare the reply
     //
 
     ULONG rpl_len = sizeof(SBIE_INI_SETTING_RPL) + (iniData.size() + 1) * sizeof(WCHAR);
@@ -1062,7 +1073,7 @@ ULONG SbieIniServer::SetSetting(MSG_HEADER* msg)
     SIniSection* pSection = GetIniSection(req->section, true);
 
     //
-    // Check if this is a repalce section request and if so execute it
+    // Check if this is a replace section request and if so execute it
     //
 
     if (wcslen(req->setting) == 0 && have_value) 
@@ -1071,7 +1082,7 @@ ULONG SbieIniServer::SetSetting(MSG_HEADER* msg)
 
         WCHAR* iniDataPtr = req->value;
         Ini_Read_ConfigSection(iniDataPtr, entries);
-        if (*iniDataPtr != L'\0') // there must be no sections inside an otehr section
+        if (*iniDataPtr != L'\0') // there must be no sections inside another section
             return STATUS_INVALID_PARAMETER;
 
         pSection->Entries = entries;
@@ -1171,10 +1182,12 @@ ULONG SbieIniServer::AddSetting(MSG_HEADER* msg, bool insert)
     {
         if (_wcsicmp(I->Name.c_str(), req->setting) == 0) {
             // !insert -> append -> find last entry
-            if(!insert || pos == pSection->Entries.end())
+            if (!insert || pos == pSection->Entries.end()) {
                 pos = I;
+                if (!insert) pos++;
+            }
             if (_wcsicmp(I->Value.c_str(), req->value) == 0) {
-                // this value is already present, so lets abbort right here
+                // this value is already present, so let's abort right here
                 return STATUS_SUCCESS;
             }
         }
@@ -1222,7 +1235,7 @@ ULONG SbieIniServer::DelSetting(MSG_HEADER* msg)
     {
         if (_wcsicmp(I->Name.c_str(), req->setting) == 0 && _wcsicmp(I->Value.c_str(), req->value) == 0) {
             I = pSection->Entries.erase(I);
-            // Note: we could brak here but lets finish in case tehre is a duplicate
+            // Note: we could break here, but let's finish in case there is a duplicate
         }
         else
             ++I;
@@ -1990,12 +2003,18 @@ ULONG SbieIniServer::RefreshConf()
 
     UnlockConf();
 
+    int retryCnt = 0;
+retry:
     hFile = CreateFile(
         IniPath, FILE_GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
     if (hFile == INVALID_HANDLE_VALUE) {
+        if (GetLastError() == ERROR_SHARING_VIOLATION && retryCnt++ < 10) {
+            Sleep(100);
+            goto retry;
+        }
         SbieApi_LogEx(m_session_id, 2322, L"[15 / %d]", GetLastError());
         goto finish;
     }
@@ -2004,7 +2023,7 @@ ULONG SbieIniServer::RefreshConf()
 
     //
     // rebuild the ini from the cache with new values, if present, 
-    // and keeping coments and most of the formating
+    // and keeping comments and most of the formatting
     //
 
     for (auto I = m_pConfigIni->Sections.begin(); I != m_pConfigIni->Sections.end(); ++I)
@@ -2124,8 +2143,13 @@ bool SbieIniServer::GetIniPath(WCHAR **IniPath,
             *IsUTF8 = TRUE;
     }
 
-    LONG rc = SbieApi_QueryConfAsIs(NULL, L"IniLocation", 0, path, 8);
-    if (rc == 0 && *path == L'H') {
+    LONG rc = SbieApi_QueryConfAsIs(NULL, L"IniLocation", 0, path, 260 * sizeof(WCHAR));
+    if (rc == 0 && *path == L'\\') {
+
+        if (wcsnicmp(path, L"\\??\\", 4) == 0)
+            wmemmove(path, path + 4, wcslen(path)+1 - 4);
+    }
+    else if (rc == 0 && *path == L'H') {
 
         //
         // Sandboxie.ini was last read from Sandboxie home directory
@@ -2216,12 +2240,12 @@ void SbieIniServer::UnlockConf()
 //---------------------------------------------------------------------------
 
 
-MSG_HEADER *SbieIniServer::RunSbieCtrl(HANDLE idProcess, bool isSandboxed)
+MSG_HEADER *SbieIniServer::RunSbieCtrl(MSG_HEADER *msg, HANDLE idProcess, bool isSandboxed)
 {
     NTSTATUS status = STATUS_UNSUCCESSFUL;
     HANDLE hToken = NULL;
     BOOL ok = TRUE;
-    WCHAR ctrlName[64] = { 0 };
+    WCHAR ctrlCmd[128] = { 0 };
 
     //
     // get token from caller session or caller process.  note that on
@@ -2265,31 +2289,49 @@ MSG_HEADER *SbieIniServer::RunSbieCtrl(HANDLE idProcess, bool isSandboxed)
     if (ok && isSandboxed) {
 
         const WCHAR *_Setting = SBIECTRL_ L"EnableAutoStart";
-        const WCHAR* _Setting2 = SBIECTRL_ L"AutoStartAgent";
         WCHAR buf[10], ch = 0;
         bool ok2 = SetUserSettingsSectionName(hToken);
         if (ok2) {
             SbieApi_QueryConfAsIs(
                 m_sectionname, _Setting, 0, buf, sizeof(buf) - 2);
             ch = towlower(buf[0]);
-
-            SbieApi_QueryConfAsIs(
-                m_sectionname, _Setting2, 0, ctrlName, sizeof(ctrlName) - 2);
         }
         if (! ch) {
             wcscpy(m_sectionname + 13, L"Default");   // UserSettings_Default
             SbieApi_QueryConfAsIs(
                 m_sectionname, _Setting, 0, buf, 8 * sizeof(WCHAR));
             ch = towlower(buf[0]);
-
-            SbieApi_QueryConfAsIs(
-                m_sectionname, _Setting2, 0, ctrlName, sizeof(ctrlName) - 2);
         }
 
         if (ch == L'n') {
             status = STATUS_LOGON_NOT_GRANTED;
             ok = FALSE;
         }
+    }
+
+    //
+    // get the agent binary name
+    //
+
+    if (isSandboxed) {
+
+        const WCHAR* _Setting2 = SBIECTRL_ L"AutoStartAgent";
+        bool ok2 = SetUserSettingsSectionName(hToken);
+        if (ok2) {
+            SbieApi_QueryConfAsIs(
+                m_sectionname, _Setting2, 0, ctrlCmd, sizeof(ctrlCmd) - 2);
+        }
+        else {
+            wcscpy(m_sectionname + 13, L"Default");   // UserSettings_Default
+            SbieApi_QueryConfAsIs(
+                m_sectionname, _Setting2, 0, ctrlCmd, sizeof(ctrlCmd) - 2);
+        }
+
+    } else if (msg->length > sizeof(MSG_HEADER)) {
+
+        ULONG len = (ULONG)(msg->length - sizeof(MSG_HEADER));
+        memcpy(ctrlCmd, (UCHAR*)msg + sizeof(MSG_HEADER), len);
+        ctrlCmd[len / sizeof(WCHAR)] = L'\0';
     }
 
     //
@@ -2300,17 +2342,24 @@ MSG_HEADER *SbieIniServer::RunSbieCtrl(HANDLE idProcess, bool isSandboxed)
 
         STARTUPINFO si;
         PROCESS_INFORMATION pi;
+        WCHAR *args = NULL;
 
-        WCHAR *args;
-        if (isSandboxed) {
-            if (*ctrlName)
-                args = L" -autorun";
-            else 
-                args = NULL;
-        } else
-            args = L" /open /sync";
+        //
+        // split the agent executable name from the arguments
+        //
 
-        if (SbieDll_RunFromHome(*ctrlName ? ctrlName : SBIECTRL_EXE, args, &si, NULL)) {
+        WCHAR* end = (WCHAR*)SbieDll_FindArgumentEnd(ctrlCmd);
+        if (*end) {
+            *end++ = 0;
+            args = end;
+        }
+
+        //
+        // run the agent executable from the sbie home directory,
+        // when none was specified fallback to SBIECTRL_EXE
+        //
+
+        if (SbieDll_RunFromHome(*ctrlCmd ? ctrlCmd : SBIECTRL_EXE, args, &si, NULL)) {
 
             WCHAR *CmdLine = (WCHAR *)si.lpReserved;
 
@@ -2350,4 +2399,49 @@ MSG_HEADER *SbieIniServer::RunSbieCtrl(HANDLE idProcess, bool isSandboxed)
         CloseHandle(hToken);
 
     return SHORT_REPLY(status);
+}
+
+
+//---------------------------------------------------------------------------
+// RC4Crypt
+//---------------------------------------------------------------------------
+
+
+MSG_HEADER *SbieIniServer::RC4Crypt(MSG_HEADER *msg, HANDLE idProcess, bool isSandboxed)
+{
+    //
+    // The purpose of this function is to provide a simple machine bound obfuscation
+    // for example to store passwords which are required in plain text.
+    // To this end we use a Random 64 bit key which is generated once and stored in the registry
+    // as well as the rc4 algorithm for the encryption, applying the same transformation twice 
+    // yealds the original plaintext, hence only one function is sufficient.
+    // 
+    // Please note that neither the mechanism nor the use of the rc4 algorithm can be considered 
+    // cryptographically secure by any means.
+    // This mechanism is only good for simple obfuscation of non critical data.
+    //
+
+    SBIE_INI_RC4_CRYPT_REQ *req = (SBIE_INI_RC4_CRYPT_REQ *)msg;
+    if (req->h.length < sizeof(SBIE_INI_RC4_CRYPT_REQ))
+        return SHORT_REPLY(STATUS_INVALID_PARAMETER);
+
+    ULONG rpl_len = sizeof(SBIE_INI_RC4_CRYPT_RPL) + req->value_len;
+    SBIE_INI_RC4_CRYPT_RPL *rpl = (SBIE_INI_RC4_CRYPT_RPL *)LONG_REPLY(rpl_len);
+    if (!rpl) 
+        return SHORT_REPLY(STATUS_INSUFFICIENT_RESOURCES);
+
+    rpl->value_len = req->value_len;
+    memcpy(rpl->value, req->value, req->value_len);
+
+    ULONG64 RandID = 0;
+    SbieApi_Call(API_GET_SECURE_PARAM, 3, L"RandID", (ULONG_PTR)&RandID, sizeof(RandID));
+    if (RandID == 0) {
+		srand(GetTickCount());
+        RandID = ULONG64(rand() & 0xFFFF) | (ULONG64(rand() & 0xFFFF) << 16) | (ULONG64(rand() & 0xFFFF) << 32) | (ULONG64(rand() & 0xFFFF) << 48);
+        SbieApi_Call(API_SET_SECURE_PARAM, 3, L"RandID", (ULONG_PTR)&RandID, sizeof(RandID));
+    }
+
+    rc4_crypt((BYTE*)&RandID, sizeof(RandID), 0x1000, rpl->value, rpl->value_len);
+
+    return (MSG_HEADER*)rpl;
 }

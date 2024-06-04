@@ -5,7 +5,7 @@
 #  Latest update by RockyTDR on 2022-01-10
 # SbieDrv
 #
-# Initialization errors issued to to the System event Log
+# Initialization errors issued to the System event Log
 #----------------------------------------------------------------------------
 
 1101;evt;inf;01
@@ -3476,7 +3476,7 @@ Wilt u Sandboxie-Plus nu downloaden?
 .
 
 6002;txt;01
-Bezoek <a ID="whats_new">sandboxie-plus.com</a> voor meer informatie over de nieuwe functies van Sanboxie-Plus,
+Bezoek <a ID="whats_new">sandboxie-plus.com</a> voor meer informatie over de nieuwe functies van Sandboxie-Plus,
 of klik <a ID="upgrade">hier</a> om de laatste versie van het Sandboxie-Plus-installatiebestand te downloaden.
 .
 
@@ -3952,6 +3952,10 @@ Wilt u uw Sandboxie.ini-configuratiebestand houden?
 Selecteer ja om configuratie-instellingen in het Sandboxie.ini-bestand te houden.
 
 Selecteer nee om het Sandboxie.ini-bestand te verwijderen en uw configuratie-instellingen kwijt te raken.
+.
+
+8055;ins;01
+Er is een online update van de Templates.ini en/of de vertalingen voor deze versie van sandboxie beschikbaar, wil je deze installeren?
 .
 
 #----------------------------------------------------------------------------

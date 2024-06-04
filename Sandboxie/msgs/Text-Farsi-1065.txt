@@ -1,7 +1,7 @@
 #----------------------------------------------------------------------------
 # SbieDrv
 #
-# Initialization errors issued to to the System event Log
+# Initialization errors issued to the System event Log
 #---------------------------------------------------------------------------- 
 
 1101;evt;inf;01
@@ -3720,6 +3720,10 @@ SBIE9234 خطاى استارت آپ سرويس %2
 روى بله براى حفظ تنظيمات پيکربندى موجود در فايل Sandboxie.ini کليک کنيد
 
 روى خير براى حذف فايل Sandboxie.ini و حذف تنظيمات پيکربندى کليک کنيد
+.
+
+8055;ins;01
+There is an online update of the Templates.ini and/or the translations for this version of sandboxie available, do you want to install it?
 .
 
 #----------------------------------------------------------------------------

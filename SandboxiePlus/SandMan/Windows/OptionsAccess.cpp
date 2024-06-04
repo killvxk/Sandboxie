@@ -6,6 +6,7 @@
 #include "../MiscHelpers/Common/Common.h"
 #include "../MiscHelpers/Common/ComboInputDialog.h"
 #include "../MiscHelpers/Common/SettingsWidgets.h"
+#include "../MiscHelpers/Common/CheckableMessageBox.h"
 #include "Helpers/WinAdmin.h"
 
 
@@ -24,25 +25,46 @@ void COptionsWindow::CreateAccess()
 	pFileBtnMenu->addAction(tr("Browse for Folder"), this, SLOT(OnBrowseFolder()));
 	ui.btnAddFile->setPopupMode(QToolButton::MenuButtonPopup);
 	ui.btnAddFile->setMenu(pFileBtnMenu);
+	connect(ui.chkShowFilesTmpl, SIGNAL(clicked(bool)), this, SLOT(OnShowFilesTmpl()));
+	connect(ui.btnDelFile, SIGNAL(clicked(bool)), this, SLOT(OnDelFile()));
 	connect(ui.btnAddKey, SIGNAL(clicked(bool)), this, SLOT(OnAddKey()));
+	connect(ui.chkShowKeysTmpl, SIGNAL(clicked(bool)), this, SLOT(OnShowKeysTmpl()));
+	connect(ui.btnDelKey, SIGNAL(clicked(bool)), this, SLOT(OnDelKey()));
 	connect(ui.btnAddIPC, SIGNAL(clicked(bool)), this, SLOT(OnAddIPC()));
+	connect(ui.chkShowIPCTmpl, SIGNAL(clicked(bool)), this, SLOT(OnShowIPCTmpl()));
+	connect(ui.btnDelIPC, SIGNAL(clicked(bool)), this, SLOT(OnDelIPC()));
 	connect(ui.btnAddWnd, SIGNAL(clicked(bool)), this, SLOT(OnAddWnd()));
+	connect(ui.chkShowWndTmpl, SIGNAL(clicked(bool)), this, SLOT(OnShowWndTmpl()));
+	connect(ui.btnDelWnd, SIGNAL(clicked(bool)), this, SLOT(OnDelWnd()));
 	connect(ui.btnAddCOM, SIGNAL(clicked(bool)), this, SLOT(OnAddCOM()));
-	connect(ui.chkShowAccessTmpl, SIGNAL(clicked(bool)), this, SLOT(OnShowAccessTmpl()));
-	connect(ui.btnDelAccess, SIGNAL(clicked(bool)), this, SLOT(OnDelAccess()));
+	connect(ui.chkShowCOMTmpl, SIGNAL(clicked(bool)), this, SLOT(OnShowCOMTmpl()));
+	connect(ui.btnDelCOM, SIGNAL(clicked(bool)), this, SLOT(OnDelCOM()));
+	//connect(ui.chkShowAccessTmpl, SIGNAL(clicked(bool)), this, SLOT(OnShowAccessTmpl()));
+	//connect(ui.btnDelAccess, SIGNAL(clicked(bool)), this, SLOT(OnDelAccess()));
 
-	//connect(ui.treeAccess, SIGNAL(itemClicked(QTreeWidgetItem*, int)), this, SLOT(OnAccessItemClicked(QTreeWidgetItem*, int)));
-	connect(ui.treeAccess, SIGNAL(itemDoubleClicked(QTreeWidgetItem*, int)), this, SLOT(OnAccessItemDoubleClicked(QTreeWidgetItem*, int)));
-	connect(ui.treeAccess, SIGNAL(itemSelectionChanged()), this, SLOT(OnAccessSelectionChanged()));
-	connect(ui.treeAccess, SIGNAL(itemChanged(QTreeWidgetItem *, int)), this, SLOT(OnAccessChanged(QTreeWidgetItem *, int)));
+	QTreeWidget* pTrees[] = { ui.treeFiles, ui.treeKeys , ui.treeIPC, ui.treeWnd, ui.treeCOM, NULL};
+	for (QTreeWidget** pTree = pTrees; *pTree; pTree++) {
+		//connect(*pTree, SIGNAL(itemClicked(QTreeWidgetItem*, int)), this, SLOT(OnAccessItemClicked(QTreeWidgetItem*, int)));
+		connect(*pTree, SIGNAL(itemDoubleClicked(QTreeWidgetItem*, int)), this, SLOT(OnAccessItemDoubleClicked(QTreeWidgetItem*, int)));
+		connect(*pTree, SIGNAL(itemSelectionChanged()), this, SLOT(OnAccessSelectionChanged()));
+		connect(*pTree, SIGNAL(itemChanged(QTreeWidgetItem *, int)), this, SLOT(OnAccessChanged(QTreeWidgetItem *, int)));
+	}
+
+	connect(ui.tabsAccess, SIGNAL(currentChanged(int)), this, SLOT(OnAccessTab()));
 }
 
 void COptionsWindow::OnAccessChanged()
 { 
-	if (ui.chkPrivacy->isChecked() || ui.chkUseSpecificity->isChecked())
-		theGUI->CheckCertificate();
+	if (sender() == ui.chkPrivacy || sender() == ui.chkUseSpecificity) {
+		if (ui.chkPrivacy->isChecked() || (ui.chkUseSpecificity->isEnabled() && ui.chkUseSpecificity->isChecked()))
+			theGUI->CheckCertificate(this);
+	}
 
 	UpdateAccessPolicy();
+
+	if ((sender() == ui.chkPrivacy || sender() == ui.chkRestrictDevices) && !(ui.chkPrivacy->isChecked() || ui.chkRestrictDevices->isChecked())) {
+		ui.chkUseSpecificity->setChecked(m_pBox->GetBool("UseRuleSpecificity", false));
+	}
 
 	m_AccessChanged = true; 
 	OnOptChanged();
@@ -50,35 +72,32 @@ void COptionsWindow::OnAccessChanged()
 
 void COptionsWindow::UpdateAccessPolicy()
 { 
-	if (ui.chkPrivacy->isChecked()) {
-		ui.chkUseSpecificity->setEnabled(false);
+	ui.chkUseSpecificity->setEnabled(!(ui.chkPrivacy->isChecked() || ui.chkRestrictDevices->isChecked()));
+
+	if (ui.chkPrivacy->isChecked() || ui.chkRestrictDevices->isChecked()) {
 		ui.chkUseSpecificity->setChecked(true);
-
-		ui.chkCloseForBox->setEnabled(false);
-		ui.chkCloseForBox->setChecked(false);
-		ui.chkNoOpenForBox->setEnabled(false);
-		ui.chkNoOpenForBox->setChecked(false);
-	}
-	else {
-		ui.chkUseSpecificity->setEnabled(true);
-
-		ui.chkCloseForBox->setEnabled(true);
-		ui.chkNoOpenForBox->setEnabled(true);
 	}
 }
 
 QTreeWidgetItem* COptionsWindow::GetAccessEntry(EAccessType Type, const QString& Program, EAccessMode Mode, const QString& Path)
 {
-	for (int i = 0; i < ui.treeAccess->topLevelItemCount(); i++)
+	QTreeWidget* pTree = GetAccessTree(Type);
+	for (int i = 0; i < pTree->topLevelItemCount(); i++)
 	{
-		QTreeWidgetItem* pItem = ui.treeAccess->topLevelItem(i);
+		QTreeWidgetItem* pItem = pTree->topLevelItem(i);
 		if (pItem->data(0, Qt::UserRole).toInt() == Type
-		 && pItem->data(1, Qt::UserRole).toString().compare(Program, Qt::CaseInsensitive) == 0
-		 && pItem->data(2, Qt::UserRole).toInt() == Mode
-		 && pItem->data(3, Qt::UserRole).toString().compare(Path, Qt::CaseInsensitive) == 0)
+			&& pItem->data(1, Qt::UserRole).toString().compare(Program, Qt::CaseInsensitive) == 0
+			&& pItem->data(2, Qt::UserRole).toInt() == Mode
+			&& pItem->data(3, Qt::UserRole).toString().compare(Path, Qt::CaseInsensitive) == 0)
 			return pItem;
 	}
 	return NULL;
+}
+
+bool COptionsWindow::IsAccessEntrySet(EAccessType Type, const QString& Program, EAccessMode Mode, const QString& Path)
+{
+	QTreeWidgetItem* pItem = GetAccessEntry(Type, Program, Mode, Path);
+	return pItem && pItem->checkState(0) == Qt::Checked;
 }
 
 void COptionsWindow::SetAccessEntry(EAccessType Type, const QString& Program, EAccessMode Mode, const QString& Path)
@@ -121,8 +140,10 @@ QString COptionsWindow::AccessTypeToName(EAccessEntry Type)
 	case eNormalIpcPath:	return "NormalIpcPath";
 	case eOpenIpcPath:		return "OpenIpcPath";
 	case eClosedIpcPath:	return "ClosedIpcPath";
+	case eReadIpcPath:		return "ReadIpcPath";
 
 	case eOpenWinClass:		return "OpenWinClass";
+	case eNoRenameWinClass:	return "NoRenameWinClass";
 
 	case eOpenCOM:			return "OpenClsid";
 	case eClosedCOM:		return "ClosedClsid";
@@ -138,9 +159,11 @@ void COptionsWindow::LoadAccessList()
 	ui.chkCloseForBox->setChecked(m_pBox->GetBool("AlwaysCloseForBoxed", true));
 	ui.chkNoOpenForBox->setChecked(m_pBox->GetBool("DontOpenForBoxed", true));
 
-	ui.treeAccess->clear();
+	QTreeWidget* pTrees[] = { ui.treeFiles, ui.treeKeys , ui.treeIPC, ui.treeWnd, ui.treeCOM, NULL};
+	for (QTreeWidget** pTree = pTrees; *pTree; pTree++)
+		(*pTree )->clear();
 
-	for (int i = 0; i < eMaxAccessType; i++)
+	for (int i = 0; i < eMaxAccessEntry; i++)
 	{
 		foreach(const QString& Value, m_pBox->GetTextList(AccessTypeToName((EAccessEntry)i), m_Template))
 			ParseAndAddAccessEntry((EAccessEntry)i, Value);
@@ -158,22 +181,53 @@ void COptionsWindow::LoadAccessList()
 
 void COptionsWindow::LoadAccessListTmpl(bool bUpdate)
 {
-	if (ui.chkShowAccessTmpl->isChecked())
-	{
-		foreach(const QString& Template, m_pBox->GetTemplates())
+	for (int i = 0; i < eMaxAccessType; i++) {
+		QCheckBox* pCheck = NULL;
+		switch (i)
 		{
-			for (int i = 0; i < eMaxAccessType; i++)
+		case eFile:	pCheck = ui.chkShowFilesTmpl; break;
+		case eKey:	pCheck = ui.chkShowKeysTmpl; break;
+		case eIPC:	pCheck = ui.chkShowIPCTmpl; break;
+		case eWnd:	pCheck = ui.chkShowWndTmpl; break;
+		case eCOM:	pCheck = ui.chkShowCOMTmpl;	break;
+		}
+		LoadAccessListTmpl((EAccessType)i, pCheck->isChecked(), bUpdate);
+	}
+}
+
+QTreeWidget* COptionsWindow::GetAccessTree(EAccessType Type)
+{
+	QTreeWidget* pTree = NULL;
+	switch (Type)
+	{
+	case eFile:	pTree = ui.treeFiles; break;
+	case eKey:	pTree = ui.treeKeys; break;
+	case eIPC:	pTree = ui.treeIPC; break;
+	case eWnd:	pTree = ui.treeWnd; break;
+	case eCOM:	pTree = ui.treeCOM; break;
+	}
+	return pTree;
+}
+
+void COptionsWindow::LoadAccessListTmpl(EAccessType Type, bool bChecked, bool bUpdate)
+{
+	if (bChecked)
+	{
+		foreach(EAccessMode Mode, GetAccessModes((EAccessType)Type))
+		{
+			foreach(const QString & Template, m_pBox->GetTemplates())
 			{
-				foreach(const QString& Value, m_pBox->GetTextListTmpl(AccessTypeToName((EAccessEntry)i), Template))
-					ParseAndAddAccessEntry((EAccessEntry)i, Value, false, Template);
+				foreach(const QString & Value, m_pBox->GetTextListTmpl(MakeAccessStr(Type, Mode), Template))
+					ParseAndAddAccessEntry(Type, Mode, Value, false, Template);
 			}
 		}
 	}
 	else if (bUpdate)
 	{
-		for (int i = 0; i < ui.treeAccess->topLevelItemCount(); )
+		QTreeWidget* pTree = GetAccessTree(Type);
+		for (int i = 0; i < pTree->topLevelItemCount(); )
 		{
-			QTreeWidgetItem* pItem = ui.treeAccess->topLevelItem(i);
+			QTreeWidgetItem* pItem = pTree->topLevelItem(i);
 			int Type = pItem->data(0, Qt::UserRole).toInt();
 			if (Type == -1) {
 				delete pItem;
@@ -184,10 +238,10 @@ void COptionsWindow::LoadAccessListTmpl(bool bUpdate)
 	}
 }
 
-void COptionsWindow::ParseAndAddAccessEntry(EAccessEntry EntryType, const QString& Value, bool disabled, const QString& Template)
+QPair<COptionsWindow::EAccessType, COptionsWindow::EAccessMode> COptionsWindow::SplitAccessType(EAccessEntry EntryType)
 {
-	EAccessType	Type;
-	EAccessMode	Mode;
+	EAccessType	Type = eMaxAccessType;
+	EAccessMode	Mode = eMaxAccessMode;
 	switch (EntryType)
 	{
 	case eNormalFilePath:	Type = eFile;	Mode = eNormal;	break;
@@ -199,7 +253,7 @@ void COptionsWindow::ParseAndAddAccessEntry(EAccessEntry EntryType, const QStrin
 
 	case eNormalKeyPath:	Type = eKey;	Mode = eNormal;	break;
 	case eOpenKeyPath:		Type = eKey;	Mode = eOpen;	break;
-	case eOpenConfPath:		Type = eKey;	Mode = eOpen4All;break;
+	case eOpenConfPath:		Type = eKey;	Mode = eOpen4All; break;
 	case eClosedKeyPath:	Type = eKey;	Mode = eClosed;	break;
 	case eReadKeyPath:		Type = eKey;	Mode = eReadOnly; break;
 	case eWriteKeyPath:		Type = eKey;	Mode = eBoxOnly; break;
@@ -210,14 +264,27 @@ void COptionsWindow::ParseAndAddAccessEntry(EAccessEntry EntryType, const QStrin
 	case eReadIpcPath:		Type = eIPC;	Mode = eReadOnly; break;
 
 	case eOpenWinClass:		Type = eWnd;	Mode = eOpen;	break;
+	case eNoRenameWinClass:	Type = eWnd;	Mode = eNoRename;	break;
 
 	case eOpenCOM:			Type = eCOM;	Mode = eOpen;	break;
 	case eClosedCOM:		Type = eCOM;	Mode = eClosed;	break;
 	case eClosedCOM_RT:		Type = eCOM;	Mode = eClosedRT; break;
-
-	default:				return;
 	}
 
+	return qMakePair(Type, Mode);
+}
+
+void COptionsWindow::ParseAndAddAccessEntry(EAccessEntry EntryType, const QString& Value, bool disabled, const QString& Template)
+{
+	QPair<EAccessType, EAccessMode> Type = SplitAccessType(EntryType);
+	if (Type.first == eMaxAccessType || Type.first == eMaxAccessMode)
+		return;
+
+	ParseAndAddAccessEntry(Type.first, Type.second, Value, disabled, Template);
+}
+
+void COptionsWindow::ParseAndAddAccessEntry(EAccessType Type, EAccessMode Mode, const QString& Value, bool disabled, const QString& Template)
+{
 	//
 	// Mind this special cases
 	// OpenIpcPath=$:program.exe <- full access into the address space of a target process running outside the sandbox. 
@@ -226,10 +293,17 @@ void COptionsWindow::ParseAndAddAccessEntry(EAccessEntry EntryType, const QStrin
 	//
 
 	QStringList Values = Value.split(",");
+
+	if (Type == eWnd && Mode == eOpen) {
+		int pos = Values.count() >= 2 ? 1 : 0;
+		if (Values[pos].right(11).compare("/IgnoreUIPI", Qt::CaseInsensitive) == 0) {
+			Mode = eIgnoreUIPI;
+			Values[pos].truncate(Values[pos].length() - 11);
+		}
+	}
+
 	if (Values.count() >= 2) 
 		AddAccessEntry(Type, Mode, Values[0], Values[1], disabled, Template);
-	else if (Values[0].left(2) == "$:") // special cases
-		AddAccessEntry(Type, Mode, Values[0].mid(2), "$", disabled, Template);
 	else // all programs
 		AddAccessEntry(Type, Mode, "", Values[0], disabled, Template);
 }
@@ -241,10 +315,29 @@ QString COptionsWindow::GetAccessModeStr(EAccessMode Mode)
 	case eNormal:		return tr("Normal");
 	case eOpen:			return tr("Open");
 	case eOpen4All:		return tr("Open for All");
+	case eNoRename:		return tr("No Rename");
 	case eClosed:		return tr("Closed");
 	case eClosedRT:		return tr("Closed RT");
 	case eReadOnly:		return tr("Read Only");
 	case eBoxOnly:		return tr("Box Only (Write Only)");
+	case eIgnoreUIPI:	return tr("Ignore UIPI");
+	}
+	return tr("Unknown");
+}
+
+QString COptionsWindow::GetAccessModeTip(EAccessMode Mode)
+{
+	switch (Mode)
+	{
+	case eNormal:		return tr("Regular Sandboxie behavior - allow read and also copy on write.");
+	case eOpen:			return tr("Allow write-access outside the sandbox.");
+	case eOpen4All:		return tr("Allow write-access outside the sandbox, also for applications installed inside the sandbox.");
+	case eNoRename:		return tr("Don't rename window classes.");
+	case eClosed:		return tr("Deny access to host location and prevent creation of sandboxed copies.");
+	case eClosedRT:		return tr("Block access to WinRT class.");
+	case eReadOnly:		return tr("Allow read-only access only.");
+	case eBoxOnly:		return tr("Hide host files, folders or registry keys from sandboxed processes.");
+	case eIgnoreUIPI:	return tr("Ignore UIPI restrictions for processes.");
 	}
 	return tr("Unknown");
 }
@@ -286,7 +379,21 @@ void COptionsWindow::OnBrowseFolder()
 	OnOptChanged();
 }
 
-void COptionsWindow::AddAccessEntry(EAccessType	Type, EAccessMode Mode, QString Program, const QString& Path, bool disabled, const QString& Template)
+QString COptionsWindow::ExpandPath(EAccessType Type, const QString& Path)
+{
+	QString sPath = Path;
+	if (CSandBox* pBox = qobject_cast<CSandBox*>(m_pBox.data()))
+		sPath = theAPI->Nt2DosPath(pBox->Expand(sPath));
+	if ((Type == eFile || Type == eKey) && !sPath.isEmpty()) { 
+		if (sPath.left(1) == "|")
+			return sPath.mid(1);
+		else if (!sPath.contains("*") && sPath.right(1) != "*")
+			return sPath + "*";
+	}
+	return sPath;
+}
+
+void COptionsWindow::AddAccessEntry(EAccessType Type, EAccessMode Mode, QString Program, const QString& Path, bool disabled, const QString& Template)
 {
 	QTreeWidgetItem* pItem = new QTreeWidgetItem();
 
@@ -309,12 +416,20 @@ void COptionsWindow::AddAccessEntry(EAccessType	Type, EAccessMode Mode, QString 
 	pItem->setText(2, GetAccessModeStr(Mode));
 	pItem->setData(2, Qt::UserRole, (int)Mode);
 
-	pItem->setText(3, Path);
+	//////////////////////////////////////////////////////////
+	// File and Registry entries auto append a '*' wildcard 
+	// when they don't contain any.
+	// Prepending '|' disables this behaviour
+	//
+
+	pItem->setText(3, ExpandPath(Type, Path));
 	pItem->setData(3, Qt::UserRole, Path);
 
 	if(Template.isEmpty())
 		pItem->setCheckState(0, disabled ? Qt::Unchecked : Qt::Checked);
-	ui.treeAccess->addTopLevelItem(pItem);
+
+	QTreeWidget* pTree = GetAccessTree(Type);
+	pTree->addTopLevelItem(pItem);
 }
 
 QString COptionsWindow::MakeAccessStr(EAccessType Type, EAccessMode Mode)
@@ -356,6 +471,7 @@ QString COptionsWindow::MakeAccessStr(EAccessType Type, EAccessMode Mode)
 		switch (Mode)
 		{
 		case eOpen:			return "OpenWinClass";
+		case eNoRename:		return "NoRenameWinClass";
 		}
 		break;
 	case eCOM:
@@ -380,39 +496,47 @@ QString COptionsWindow::MakeAccessStr(EAccessType Type, EAccessMode Mode)
 
 void COptionsWindow::CloseAccessEdit(bool bSave)
 {
-	for (int i = 0; i < ui.treeAccess->topLevelItemCount(); i++)
-	{
-		QTreeWidgetItem* pItem = ui.treeAccess->topLevelItem(i);
-		CloseAccessEdit(pItem, bSave);
+	QTreeWidget* pTrees[] = { ui.treeFiles, ui.treeKeys , ui.treeIPC, ui.treeWnd, ui.treeCOM, NULL};
+	for (QTreeWidget** pTree = pTrees; *pTree; pTree++) {
+		for (int i = 0; i < (*pTree)->topLevelItemCount(); i++)
+		{
+			QTreeWidgetItem* pItem = (*pTree)->topLevelItem(i);
+			CloseAccessEdit(pItem, bSave);
+		}
 	}
 }
 
 void COptionsWindow::CloseAccessEdit(QTreeWidgetItem* pItem, bool bSave)
 {
-	QWidget* pProgram = ui.treeAccess->itemWidget(pItem, 1);
+	QTreeWidget* pTree = pItem->treeWidget();
+
+	QWidget* pProgram = pTree->itemWidget(pItem, 1);
 	if (!pProgram)
 		return;
 
-	QHBoxLayout* pLayout = (QHBoxLayout*)pProgram->layout();
-	QToolButton* pNot = (QToolButton*)pLayout->itemAt(0)->widget();
-	QComboBox* pCombo = (QComboBox*)pLayout->itemAt(1)->widget();
-
-	QComboBox* pMode = (QComboBox*)ui.treeAccess->itemWidget(pItem, 2);
-	QLineEdit* pPath = (QLineEdit*)ui.treeAccess->itemWidget(pItem, 3);
-
-	QString Program = pCombo->currentText();
-	int Index = pCombo->findText(Program);
-	if (Index != -1)
-		Program = pCombo->itemData(Index, Qt::UserRole).toString();
-	if (!Program.isEmpty() && Program.left(1) != "<")
-		m_Programs.insert(Program);
-
 	if (bSave)
 	{
-		if (pItem->data(0, Qt::UserRole).toInt() == eCOM && !pPath->text().isEmpty())
+		QHBoxLayout* pLayout = (QHBoxLayout*)pProgram->layout();
+		QToolButton* pNot = (QToolButton*)pLayout->itemAt(0)->widget();
+		QComboBox* pCombo = (QComboBox*)pLayout->itemAt(1)->widget();
+
+		QComboBox* pMode = (QComboBox*)pTree->itemWidget(pItem, 2);
+		QLineEdit* pPath = (QLineEdit*)pTree->itemWidget(pItem, 3);
+
+		QString Program = pCombo->currentText();
+		int Index = pCombo->findText(Program);
+		if (Index != -1)
+			Program = pCombo->itemData(Index, Qt::UserRole).toString();
+		if (!Program.isEmpty() && Program.left(1) != "<")
+			m_Programs.insert(Program);
+
+		EAccessMode Mode = (EAccessMode)pMode->currentData().toInt();
+		QString Path = pPath->text();
+
+		if (pItem->data(0, Qt::UserRole).toInt() == eCOM && !Path.isEmpty())
 		{
-			bool isGUID = pPath->text().length() == 38 && pPath->text().left(1) == "{" && pPath->text().right(1) == "}";
-			switch (pMode->currentData().toInt())
+			bool isGUID = Path.length() == 38 && Path.left(1) == "{" && Path.right(1) == "}";
+			switch (Mode)
 			{
 			case eOpen:
 			case eClosed:
@@ -430,20 +554,43 @@ void COptionsWindow::CloseAccessEdit(QTreeWidgetItem* pItem, bool bSave)
 			}
 		}
 
+		if (pItem->data(0, Qt::UserRole).toInt() == eIPC && Mode == eOpen 
+		  && ((Path == "*" && pItem->data(3, Qt::UserRole).toString() != "*") 
+		   || (Path == "\\*" && pItem->data(3, Qt::UserRole).toString() != "\\*"))
+		  && !m_BoxTemplates.contains("BoxedCOM"))  
+		{
+ 			if (theConf->GetInt("Options/WarnOpenCOM", -1) == -1) {
+				bool State = false;
+				if (CCheckableMessageBox::question(this, "Sandboxie-Plus", tr("Opening all IPC access also opens COM access, do you still want to restrict COM to the sandbox?")
+				 , tr("Don't ask in future"), &State, QDialogButtonBox::Yes | QDialogButtonBox::No, QDialogButtonBox::Yes) == QDialogButtonBox::Yes)
+					SetTemplate("BoxedCOM", true); // Normal overrides Open even without rule specificity :D
+				if (State)
+					theConf->SetValue("Options/WarnOpenCOM", 1);
+			}
+		}
+
+		if (pItem->data(0, Qt::UserRole).toInt() == eWnd && Mode == eOpen && Path == "#" && !Program.isEmpty())
+		{
+			QMessageBox::warning(this, "Sandboxie-Plus", tr("'OpenWinClass=program.exe,#' is not supported, use 'NoRenameWinClass=program.exe,*' instead"));
+			Mode = eNoRename;
+			Path = "*";
+		}
+
+		EAccessType Type = (EAccessType)pItem->data(0, Qt::UserRole).toInt();
 		pItem->setText(1, (pNot->isChecked() ? "NOT " : "") + pCombo->currentText());
 		pItem->setData(1, Qt::UserRole, (pNot->isChecked() ? "!" : "") + Program);
-		pItem->setText(2, GetAccessModeStr((EAccessMode)pMode->currentData().toInt()));
-		pItem->setData(2, Qt::UserRole, pMode->currentData());
-		pItem->setText(3, pPath->text());
-		pItem->setData(3, Qt::UserRole, pPath->text());
+		pItem->setText(2, GetAccessModeStr(Mode));
+		pItem->setData(2, Qt::UserRole, (int)Mode);
+		pItem->setText(3, ExpandPath(Type, Path));
+		pItem->setData(3, Qt::UserRole, Path);
 
 		m_AccessChanged = true;
 		OnOptChanged();
 	}
 
-	ui.treeAccess->setItemWidget(pItem, 1, NULL);
-	ui.treeAccess->setItemWidget(pItem, 2, NULL);
-	ui.treeAccess->setItemWidget(pItem, 3, NULL);
+	pTree->setItemWidget(pItem, 1, NULL);
+	pTree->setItemWidget(pItem, 2, NULL);
+	pTree->setItemWidget(pItem, 3, NULL);
 }
 
 QList<COptionsWindow::EAccessMode> COptionsWindow::GetAccessModes(EAccessType Type)
@@ -452,8 +599,8 @@ QList<COptionsWindow::EAccessMode> COptionsWindow::GetAccessModes(EAccessType Ty
 	{
 	case eFile:			return QList<EAccessMode>() << eNormal << eOpen << eOpen4All << eClosed << eReadOnly << eBoxOnly;
 	case eKey:			return QList<EAccessMode>() << eNormal << eOpen << eOpen4All << eClosed << eReadOnly << eBoxOnly;
-	case eIPC:			return QList<EAccessMode>() << eNormal << eOpen << eClosed;
-	case eWnd:			return QList<EAccessMode>() << eOpen;
+	case eIPC:			return QList<EAccessMode>() << eNormal << eOpen << eClosed << eReadOnly;
+	case eWnd:			return QList<EAccessMode>() << eOpen << eNoRename << eIgnoreUIPI;
 	case eCOM:			return QList<EAccessMode>() << eOpen << eClosed << eClosedRT;
 	}
 	return QList<EAccessMode>();
@@ -463,6 +610,8 @@ void COptionsWindow::OnAccessItemDoubleClicked(QTreeWidgetItem* pItem, int Colum
 {
 	//if (Column == 0)
 	//	return;
+
+	QTreeWidget* pTree = (QTreeWidget*)sender();
 
 	int Type = pItem->data(0, Qt::UserRole).toInt();
 	if (Type == -1) {
@@ -475,7 +624,7 @@ void COptionsWindow::OnAccessItemDoubleClicked(QTreeWidgetItem* pItem, int Colum
 	QWidget* pProgram = new QWidget();
 	pProgram->setAutoFillBackground(true);
 	QHBoxLayout* pLayout = new QHBoxLayout();
-	pLayout->setMargin(0);
+	pLayout->setContentsMargins(0,0,0,0);
 	pLayout->setSpacing(0);
 	pProgram->setLayout(pLayout);
 	QToolButton* pNot = new QToolButton(pProgram);
@@ -504,17 +653,19 @@ void COptionsWindow::OnAccessItemDoubleClicked(QTreeWidgetItem* pItem, int Colum
 		pCombo->setCurrentText(Program);
 	pLayout->addWidget(pCombo);
 
-	ui.treeAccess->setItemWidget(pItem, 1, pProgram);
+	pTree->setItemWidget(pItem, 1, pProgram);
 
 	QComboBox* pMode = new QComboBox();
-	foreach(EAccessMode Mode, GetAccessModes((EAccessType)Type))
+	foreach(EAccessMode Mode, GetAccessModes((EAccessType)Type)) {
 		pMode->addItem(GetAccessModeStr(Mode), (int)Mode);
+		pMode->setItemData(pMode->count() - 1, GetAccessModeTip(Mode), Qt::ToolTipRole);
+	}
 	pMode->setCurrentIndex(pMode->findData(pItem->data(2, Qt::UserRole)));
-	ui.treeAccess->setItemWidget(pItem, 2, pMode);
+	pTree->setItemWidget(pItem, 2, pMode);
 
 	QLineEdit* pPath = new QLineEdit();
 	pPath->setText(pItem->data(3, Qt::UserRole).toString());
-	ui.treeAccess->setItemWidget(pItem, 3, pPath);
+	pTree->setItemWidget(pItem, 3, pPath);
 }
 
 void COptionsWindow::OnAccessChanged(QTreeWidgetItem* pItem, int Column)
@@ -526,24 +677,17 @@ void COptionsWindow::OnAccessChanged(QTreeWidgetItem* pItem, int Column)
 	OnOptChanged();
 }
 
-void COptionsWindow::DeleteAccessEntry(QTreeWidgetItem* pItem)
+void COptionsWindow::DeleteAccessEntry(QTreeWidgetItem* pItem, int Column)
 {
 	if (!pItem)
 		return;
 
-	if (pItem->data(0, Qt::UserRole).toInt() == -1) {
+	if (pItem->data(Column, Qt::UserRole).toInt() == -1) {
 		QMessageBox::warning(this, "SandboxiePlus", tr("Template values can not be removed."));
 		return;
 	}
 
 	delete pItem;
-}
-
-void COptionsWindow::OnDelAccess()
-{
-	DeleteAccessEntry(ui.treeAccess->currentItem());
-	m_AccessChanged = true;
-	OnOptChanged();
 }
 
 void COptionsWindow::SaveAccessList()
@@ -558,27 +702,38 @@ void COptionsWindow::SaveAccessList()
 	QStringList Keys = QStringList() 
 		<< "NormalFilePath" << "OpenFilePath" << "OpenPipePath" << "ClosedFilePath" << "ReadFilePath" << "WriteFilePath"
 		<< "NormalKeyPath" << "OpenKeyPath" << "OpenConfPath" << "ClosedKeyPath" << "ReadKeyPath" << "WriteKeyPath"
-		<< "NormalIpcPath"<< "OpenIpcPath" << "ClosedIpcPath" << "ReadIpcPath" << "OpenWinClass" << "OpenClsid" << "ClosedClsid" << "ClosedRT";
+		<< "NormalIpcPath"<< "OpenIpcPath" << "ClosedIpcPath" << "ReadIpcPath" 
+		<< "OpenWinClass" << "NoRenameWinClass"
+		<< "OpenClsid" << "ClosedClsid" << "ClosedRT";
 
 	QMap<QString, QList<QString>> AccessMap;
-	for (int i = 0; i < ui.treeAccess->topLevelItemCount(); i++)
-	{
-		QTreeWidgetItem* pItem = ui.treeAccess->topLevelItem(i);
-		int Type = pItem->data(0, Qt::UserRole).toInt();
-		if (Type == -1)
-			continue; // entry from template
-		int Mode = pItem->data(2, Qt::UserRole).toInt();
-		QString Program = pItem->data(1, Qt::UserRole).toString();
-		QString Value = pItem->data(3, Qt::UserRole).toString();
-		if (Value == "$") // special cases
-			Value = "$:" + Program;
-		else if (!Program.isEmpty())
-			Value.prepend(Program + ",");
 
-		QString AccessStr = MakeAccessStr((EAccessType)Type, (EAccessMode)Mode);
-		if (pItem->checkState(0) == Qt::Unchecked)
-			AccessStr += "Disabled";
-		AccessMap[AccessStr].append(Value);
+
+	QTreeWidget* pTrees[] = { ui.treeFiles, ui.treeKeys , ui.treeIPC, ui.treeWnd, ui.treeCOM, NULL};
+	for (QTreeWidget** pTree = pTrees; *pTree; pTree++)
+	{
+		for (int i = 0; i < (*pTree)->topLevelItemCount(); i++)
+		{
+			QTreeWidgetItem* pItem = (*pTree)->topLevelItem(i);
+			int Type = pItem->data(0, Qt::UserRole).toInt();
+			if (Type == -1)
+				continue; // entry from template
+			int Mode = pItem->data(2, Qt::UserRole).toInt();
+			QString Program = pItem->data(1, Qt::UserRole).toString();
+			QString Value = pItem->data(3, Qt::UserRole).toString();
+			if (!Program.isEmpty())
+				Value.prepend(Program + ",");
+
+			if (Type == eWnd && Mode == eIgnoreUIPI) {
+				Mode = eOpen;
+				Value.append("/IgnoreUIPI");
+			}
+
+			QString AccessStr = MakeAccessStr((EAccessType)Type, (EAccessMode)Mode);
+			if (pItem->checkState(0) == Qt::Unchecked)
+				AccessStr += "Disabled";
+			AccessMap[AccessStr].append(Value);
+		}
 	}
 
 	foreach(const QString & Key, Keys) {

@@ -160,7 +160,7 @@ _FX void *Syscall_GetServiceTable(void)
     if (ShadowTable)
         return ShadowTable;
 
-    // Hard Offset Dependency
+    // $Offset$ - Hard Offset Dependency
 
     //Set flags2 offset
     if (Driver_OsBuild > 21286) { // 21H2
@@ -251,8 +251,7 @@ _FX void *Syscall_GetServiceTable(void)
 //---------------------------------------------------------------------------
 
 
-_FX ULONG Syscall_GetIndexFromNtdll(
-    UCHAR *code, const UCHAR *name, ULONG name_len)
+_FX ULONG Syscall_GetIndexFromNtdll(UCHAR *code)
 {
     ULONG index = -1;
 

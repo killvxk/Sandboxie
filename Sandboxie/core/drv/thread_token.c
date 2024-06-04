@@ -1467,8 +1467,7 @@ _FX NTSTATUS Thread_SetInformationThread_ChangeNotifyToken(PROCESS *proc)
         //
 
         FilteredTokenObject = Token_Restrict(
-                CurrentToken, DISABLE_MAX_PRIVILEGE, NULL,
-                proc);
+                CurrentToken, DISABLE_MAX_PRIVILEGE, proc);
 
         ObDereferenceObject(CurrentToken);
 
@@ -1594,7 +1593,7 @@ _FX NTSTATUS Thread_CheckTokenObject(
     //
     // this function is called from Syscall_DuplicateHandle_2 to check
     // access granted to a token object.  if none of the special permissions
-    // were requested, we can immmediately approve the request
+    // were requested, we can immediately approve the request
     //
 
     if (! (GrantedAccess & TOKEN_DENIED_ACCESS_MASK))

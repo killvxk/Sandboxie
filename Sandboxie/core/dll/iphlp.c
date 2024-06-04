@@ -190,7 +190,7 @@ _FX BOOLEAN IpHlp_Init(HMODULE module)
     void *NotifyRouteChange2;
     void *CancelMibChangeNotify2;
 
-    if (Dll_CompartmentMode || Dll_OsBuild < 6000) { // in compartment mode we have a full token so no need to hook anythign here
+    if (Dll_CompartmentMode || Dll_OsBuild < 6000) { // in compartment mode we have a full token so no need to hook anything here
 
         //
         // earlier than Windows Vista, don't hook
@@ -447,7 +447,9 @@ _FX ULONG IpHlp_CommonSend(         ULONG_PTR IcmpHandle,
     req->h.length = len;
     req->h.msgid = MSGID_IPHLP_SEND_ECHO;
 
+#ifndef _WIN64
     req->iswow64 = Dll_IsWow64;
+#endif
 
     req->ip6 = ip6;
     req->ex2 = ex2;

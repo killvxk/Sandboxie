@@ -25,13 +25,14 @@ UninstallDisplayIcon={app}\SandMan.exe
 OutputBaseFilename={#MyAppName}-{#MyAppArch}-v{#MyAppVersion}
 Compression=lzma
 ArchitecturesAllowed={#MyAppArch}
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64 arm64
 AllowNoIcons=yes
 AlwaysRestart=no
-LicenseFile=.\license.txt
+LicenseFile=license.txt
 UsedUserAreasWarning=no
-VersionInfoCopyright=Copyright (C) 2020-2022 by David Xanatos (xanasoft.com)
+VersionInfoCopyright=Copyright (C) 2020-2024 by David Xanatos (xanasoft.com)
 VersionInfoVersion={#MyAppVersion}
+SetupIconFile=SandManInstall.ico
 
 ; Handled in code section as always want DirPage for portable mode.
 DisableDirPage=no
@@ -42,16 +43,18 @@ PrivilegesRequiredOverridesAllowed=commandline
 
 [Tasks]
 Name: "DesktopIcon"; Description: "{cm:CreateDesktopIcon}"; MinVersion: 0.0,5.0; Check: not IsPortable
-Name: "DesktopIcon2"; Description: "{cm:AddSandboxedBrowser}"; MinVersion: 0.0,5.0; Check: not IsPortable
-Name: "AutoStartEntry"; Description: "{cm:AutoStartProgram,{#MyAppName}}"; MinVersion: 0.0,5.0; Check: not IsPortable
-Name: "AddRunSandboxed"; Description: "{cm:AddSandboxedMenu}"; MinVersion: 0.0,5.0; Check: not IsPortable
+;Name: "DesktopIcon2"; Description: "{cm:AddSandboxedBrowser}"; MinVersion: 0.0,5.0; Check: not IsPortable
+;Name: "AutoStartEntry"; Description: "{cm:AutoStartProgram,{#MyAppName}}"; MinVersion: 0.0,5.0; Check: not IsPortable
+;Name: "AddRunSandboxed"; Description: "{cm:AddSandboxedMenu}"; MinVersion: 0.0,5.0; Check: not IsPortable
+Name: "RefreshBuild"; Description: "{cm:RefreshBuild}"; MinVersion: 0.0,5.0; Check: not IsPortable
 
 
 [Files]
 ; Both portable and install.
 Source: ".\Release\{#MyAppSrc}\*"; DestDir: "{app}"; MinVersion: 0.0,5.0; Flags: recursesubdirs ignoreversion; Excludes: "*.pdb"
 ; include the driver pdb
-;Source: ".\Release\{#MyAppSrc}\SbieDrv.pdb"; DestDir: "{app}"; MinVersion: 0.0,5.0; Flags: ignoreversion
+Source: ".\Release\{#MyAppSrc}\SbieDrv.pdb"; DestDir: "{app}"; MinVersion: 0.0,5.0; Flags: ignoreversion
+Source: ".\Release\{#MyAppSrc}\SbieDll.pdb"; DestDir: "{app}"; MinVersion: 0.0,5.0; Flags: ignoreversion
 
 ; Only if portable.
 Source: ".\Sandboxie.ini"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist; Check: IsPortable
@@ -66,44 +69,47 @@ Name: "{group}\{cm:SandboxieStartMenu1}"; Filename: "{app}\Start.exe"; Parameter
 Name: "{group}\{cm:SandboxieStartMenu2}"; Filename: "{app}\Start.exe"; Parameters: "default_browser"; MinVersion: 0.0,5.0
 Name: "{group}\{cm:SandboxieStartMenu3}"; Filename: "{app}\Start.exe"; Parameters: "/box:__ask__ start_menu"; MinVersion: 0.0,5.0
 Name: "{userdesktop}\Sandboxie-Plus"; Filename: "{app}\SandMan.exe"; Tasks: DesktopIcon; MinVersion: 0.0,5.0
-Name: "{userdesktop}\{cm:SandboxedBrowser}"; Filename: "{app}\Start.exe"; Parameters: "default_browser"; Tasks: DesktopIcon2; MinVersion: 0.0,5.0
+;Name: "{userdesktop}\{cm:SandboxedBrowser}"; Filename: "{app}\Start.exe"; Parameters: "default_browser"; Tasks: DesktopIcon2; MinVersion: 0.0,5.0
 
 
 [INI]
 ; Set Sandman language.
-Filename: "{localappdata}\{#MyAppName}\{#MyAppName}.ini"; Section: "Options"; Key: "UiLanguage"; String: "{code:SandmanLanguage|{language}}"; Check: not IsPortable
+Filename: "{localappdata}\{#MyAppName}\{#MyAppName}.ini"; Section: "Options"; Key: "UiLanguage"; String: "{code:SandmanLanguage|{language}}"; Check: (not IsPortable) and (not IsUpgrade)
 Filename: "{app}\{#MyAppName}.ini"; Section: "Options"; Key: "UiLanguage"; String: "{code:SandmanLanguage|{language}}"; Check: IsPortable
 
 
 [InstallDelete]
 ; Remove deprecated files at install time.
-Type: files; Name: "{app}\translations\sandman_zh-CN.qm"
-Type: files; Name: "{app}\translations\sandman_zh-TW.qm"
-Type: files; Name: "{app}\translations\sandman_pt.qm"
-Type: files; Name: "{app}\translations\sandman_ua.qm"
+Type: filesandordirs; Name: "{app}\translations"
+Type: files; Name: "{app}\SbieDrv.sys.w10"
+Type: files; Name: "{app}\SbieDrv.sys.rc4"
+Type: files; Name: "{app}\SbieIni.exe.sig"
 
 
 [Registry]
 ; Autostart Sandman.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "SandboxiePlus_AutoRun"; ValueType: string; ValueData: """{app}\SandMan.exe"" -autorun"; Flags: uninsdeletevalue; Tasks: AutoStartEntry
+;Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "SandboxiePlus_AutoRun"; ValueType: string; ValueData: """{app}\SandMan.exe"" -autorun"; Flags: uninsdeletevalue; Tasks: AutoStartEntry
 
 ; AddRunSandboxed all files.
-Root: HKCU; Subkey: "Software\Classes\*\shell"; Flags: uninsdeletekeyifempty; Tasks: AddRunSandboxed
-Root: HKCU; Subkey: "Software\Classes\*\shell\sandbox"; ValueName: ""; ValueType: string; ValueData: "{cm:RunSandboxedMenu}"; Flags: uninsdeletekey; Tasks: AddRunSandboxed
-Root: HKCU; Subkey: "Software\Classes\*\shell\sandbox"; ValueName: "Icon"; ValueType: string; ValueData: """{app}\start.exe"""; Tasks: AddRunSandboxed
-Root: HKCU; Subkey: "Software\Classes\*\shell\sandbox\command"; ValueName: ""; ValueType: string; ValueData: """{app}\SandMan.exe"" /box:__ask__ ""%1"" %*"; Tasks: AddRunSandboxed
+;Root: HKCU; Subkey: "Software\Classes\*\shell"; Flags: uninsdeletekeyifempty; Tasks: AddRunSandboxed
+;Root: HKCU; Subkey: "Software\Classes\*\shell\sandbox"; ValueName: ""; ValueType: string; ValueData: "{cm:RunSandboxedMenu}"; Flags: uninsdeletekey; Tasks: AddRunSandboxed
+;Root: HKCU; Subkey: "Software\Classes\*\shell\sandbox"; ValueName: "Icon"; ValueType: string; ValueData: """{app}\start.exe"""; Tasks: AddRunSandboxed
+;Root: HKCU; Subkey: "Software\Classes\*\shell\sandbox\command"; ValueName: ""; ValueType: string; ValueData: """{app}\SandMan.exe"" /box:__ask__ ""%1"" %*"; Tasks: AddRunSandboxed
 
 ; AddRunSandboxed folder.
-Root: HKCU; Subkey: "Software\Classes\Folder\shell"; Flags: uninsdeletekeyifempty; Tasks: AddRunSandboxed
-Root: HKCU; Subkey: "Software\Classes\Folder\shell\sandbox"; ValueName: ""; ValueType: string; ValueData: "{cm:RunSandboxedMenu}"; Flags: uninsdeletekey; Tasks: AddRunSandboxed
-Root: HKCU; Subkey: "Software\Classes\Folder\shell\sandbox"; ValueName: "Icon"; ValueType: string; ValueData: """{app}\start.exe"""; Tasks: AddRunSandboxed
-Root: HKCU; Subkey: "Software\Classes\Folder\shell\sandbox\command"; ValueName: ""; ValueType: string; ValueData: """{app}\SandMan.exe"" /box:__ask__ ""%1"" %*"; Tasks: AddRunSandboxed
+;Root: HKCU; Subkey: "Software\Classes\Folder\shell"; Flags: uninsdeletekeyifempty; Tasks: AddRunSandboxed
+;Root: HKCU; Subkey: "Software\Classes\Folder\shell\sandbox"; ValueName: ""; ValueType: string; ValueData: "{cm:RunSandboxedMenu}"; Flags: uninsdeletekey; Tasks: AddRunSandboxed
+;Root: HKCU; Subkey: "Software\Classes\Folder\shell\sandbox"; ValueName: "Icon"; ValueType: string; ValueData: """{app}\start.exe"""; Tasks: AddRunSandboxed
+;Root: HKCU; Subkey: "Software\Classes\Folder\shell\sandbox\command"; ValueName: ""; ValueType: string; ValueData: """{app}\SandMan.exe"" /box:__ask__ ""%1"" %*"; Tasks: AddRunSandboxed
 
 ; External manifest for Sbie service.
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\SbieSvc"; ValueName: "PreferExternalManifest"; ValueType: dword; ValueData: "1"; Check: not IsPortable
 
 ; Set language for Sbie service.
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\SbieSvc"; ValueType: dword; ValueName: "Language"; ValueData: "{code:SystemLanguage}"; Check: not IsPortable
+
+; Set IniPath for Sbie driver.
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\SbieDrv"; ValueType: string; ValueName: "IniPath"; ValueData: "{code:GetIniPath}"; Check: IsUpgrade and IsIniPathSet
 
 
 [Run]
@@ -113,17 +119,18 @@ Filename: "{app}\KmdUtil.exe"; Parameters: "install SbieDrv ""{app}\SbieDrv.sys"
 ; Install the Sbie service.
 Filename: "{app}\KmdUtil.exe"; Parameters: "install SbieSvc ""{app}\SbieSvc.exe"" type=own start=auto msgfile=""{app}\SbieMsg.dll"" display=""Sandboxie Service"" group=UIGroup"; StatusMsg: "KmdUtil install SbieSvc..."; Check: not IsPortable
 
+; Update metadata (templates and translations)
+Filename: "{app}\UpdUtil.exe"; Parameters: {code:GetParams}; StatusMsg: "UpdUtill checking for updates..."; Check: IsRefresh
+
 ; Start the Sbie service.
 Filename: "{app}\KmdUtil.exe"; Parameters: "start SbieSvc"; StatusMsg: "KmdUtil start SbieSvc"; Check: not IsPortable
 
 ; Start the Sandman UI.
-Filename: "{app}\SandMan.exe"; StatusMsg: "Launch SandMan UI..."; Flags: postinstall nowait; Check: (not IsPortable) and (not WizardSilent)
+Filename: "{app}\Start.exe"; Parameters: "open_agent:sandman.exe"; Description: "Start Sandboxie-Plus UI"; StatusMsg: "Launch SandMan UI..."; Flags: postinstall nowait; Check: IsOpenSandMan
 ;Filename: "{app}\SandMan.exe"; Parameters: "-autorun"; StatusMsg: "Launch SandMan UI..."; Flags: runasoriginaluser nowait; Check: not IsPortable
 
 
 [UninstallDelete]
-Type: files; Name: "{app}\SbieDrv.sys.w10"
-Type: files; Name: "{app}\SbieDrv.sys.rc4"
 Type: dirifempty; Name: "{app}"
 Type: dirifempty; Name: "{localappdata}\{#MyAppName}"
 
@@ -138,7 +145,8 @@ var
   CustomPage: TInputOptionWizardPage;
   IsInstalled: Boolean;
   Portable: Boolean;
-
+  IniPathExist: Boolean;
+  IniPath: String;
 
 function IsPortable(): Boolean;
 begin
@@ -149,6 +157,14 @@ begin
   end;
 end;
 
+function IsOpenSandMan(): Boolean;
+begin
+
+  // Return True or False for the value of Check.
+  if (ExpandConstant('{param:open_agent|0}') = '1') or ((not IsPortable) and (not WizardSilent)) then begin
+    Result := True;
+  end;
+end;
 
 function IsUpgrade(): Boolean;
 var
@@ -211,14 +227,19 @@ begin
     'dutch': Result := 'nl';
     'french': Result := 'fr';
     'german': Result := 'de';
+    'hungarian': Result := 'hu';
     'italian': Result := 'it';
+    'japanese': Result := 'ja';
+    'korean': Result := 'ko';
     'polish': Result := 'pl';
     'brazilianportuguese': Result := 'pt_BR';
     'portuguese': Result := 'pt_PT';
     'russian': Result := 'ru';
     'spanish': Result := 'es';
+    'swedish': Result := 'sv_SE';
     'turkish': Result := 'tr';
     'ukrainian': Result := 'uk';
+    'vietnamese': Result := 'vi';
   end;
 end;
 
@@ -281,10 +302,6 @@ begin
       exit;
     end;
 
-    // Stop processes.
-    UpdateStatus(OutputProgressPage, 'Taskkill /IM Sandman.exe /IM SbieCtrl.exe /IM Start.exe /F', 30);
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM Sandman.exe /IM SbieCtrl.exe /IM Start.exe /F', '', SW_HIDE, ewWaitUntilTerminated, ExecRet);
-
     // Stop service and driver.
     UpdateStatus(OutputProgressPage, 'KmdUtil stop SbieSvc', 55);
     Exec(ExpandConstant('{app}\KmdUtil.exe'), 'stop SbieSvc', '', SW_SHOWNORMAL, ewWaitUntilTerminated, ExecRet);
@@ -325,6 +342,8 @@ end;
 
 
 function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  ExecRet: Integer;
 begin
 
   // Get mode setting from Custom page and set path for the Dir page.
@@ -343,6 +362,10 @@ begin
   // Shutdown service, driver and processes as ready to install.
   if ((CurPageID = wpReady) and (not IsPortable())) then
   begin
+
+    // Stop processes.
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM Sandman.exe /IM SbieCtrl.exe /IM Start.exe /F', '', SW_HIDE, ewWaitUntilTerminated, ExecRet);
+
     Result := ShutdownSbie();
     exit;
   end;
@@ -439,7 +462,73 @@ begin
       end;
   end;
 
+  begin
+  
+    // Return the path to use for the value of IniPath.
+    if RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Services\SbieDrv', 'IniPath', IniPath) then
+    begin
+      if Copy(IniPath, 1, 4) = '\??\' then
+      begin
+        IniPathExist := True;
+      end;
+    end;
+  end;
+
   Result := True;
+end;
+
+function IsIniPathSet(): Boolean;
+begin
+
+  // Return True or False for the value of Check.
+  if (IniPathExist) then
+  begin
+      Result := True;
+  end;
+end;
+
+function GetIniPath(Dummy: String): String;
+begin
+
+  // Return the path to use for the value of IniPath.
+  if (IniPathExist) then
+  begin
+      Result := IniPath;
+  end;
+end;
+
+//procedure CurStepChanged(CurStep: TSetupStep);
+//var
+//  ExecRet: Integer;
+//  //params: String;
+//begin
+//
+//  // after the installation
+//  if (CurStep <> ssPostInstall) then
+//    exit;
+//
+//  if WizardIsTaskSelected('RefreshBuild') then
+//  begin
+//    SuppressibleMsgBox('test', mbError, MB_OK, MB_OK);
+//  end;
+//
+//end;
+
+function IsRefresh(): Boolean;
+begin
+
+  if WizardIsTaskSelected('RefreshBuild') then begin
+    Result := True;
+  end;
+end;
+
+function GetParams(Value: string): string;
+begin
+  if IsInstalled = True then begin
+    Result := 'upgrade sandboxie-plus /embedded /scope:meta /version:{#MyAppVersion}';
+  end else begin
+    Result := 'install sandboxie-plus /embedded /scope:meta /version:{#MyAppVersion}';
+  end;
 end;
 
 
@@ -464,8 +553,8 @@ begin
     exit;
 
   // Require Sandman.exe to continue.
-  if not FileExists(ExpandConstant('{app}\Sandman.exe')) then
-    exit;
+  //if not FileExists(ExpandConstant('{app}\Sandman.exe')) then
+  //  exit;
 
   // Make a list.
   Paths := TStringList.Create;
@@ -512,14 +601,14 @@ begin
       IDNO: TaskRet := 2;
     end;
 
-    if TaskRet > 1 then begin
-      Log('Debug: Taskkill /IM Sandman.exe /F');
-      Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM Sandman.exe /F', '', SW_HIDE, ewWaitUntilTerminated, ExecRet);
+    if TaskRet > 2 then begin
+      Log('Debug: Start terminate_all');
+      Exec(ExpandConstant('{app}\start.exe'), '/terminate_all', '', SW_SHOWNORMAL, ewWaitUntilTerminated, ExecRet);
     end;
 
     if TaskRet > 2 then begin
-      Log('Debug: Sandman /RemoveSandboxes');
-      Exec(ExpandConstant('{app}\Sandman.exe'), '/RemoveSandboxes', '', SW_SHOWNORMAL, ewWaitUntilTerminated, ExecRet);
+      Log('Debug: Start delete_all_sandboxes');
+      Exec(ExpandConstant('{app}\start.exe'), 'delete_all_sandboxes', '', SW_SHOWNORMAL, ewWaitUntilTerminated, ExecRet);
     end;
 
     if TaskRet > 1 then begin
@@ -535,6 +624,20 @@ begin
   Paths.Free;
 end;
 
+procedure ShellUninstall();
+var
+  ExecRet: Integer;
+begin
+
+  if FileExists(ExpandConstant('{app}\Sandman.exe')) then begin
+    Log('Debug: SandMan /ShellUninstall');
+    Exec(ExpandConstant('{app}\Sandman.exe'), '/ShellUninstall', '', SW_SHOWNORMAL, ewWaitUntilTerminated, ExecRet);
+  end else begin
+    Log('Debug: SbieCtrl /uninstall');
+    Exec(ExpandConstant('{app}\sbiectrl.exe'), '/uninstall', '', SW_SHOWNORMAL, ewWaitUntilTerminated, ExecRet);
+  end;
+end;
+
 
 //////////////////////////////////////////////////////
 // Uninstallation Events
@@ -542,15 +645,20 @@ end;
 
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ExecRet: Integer;
 begin
 
   // Before the uninstallation.
   if (CurUninstallStep <> usUninstall) then
     exit;
 
+  // Stop processes.
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM Sandman.exe /IM SbieCtrl.exe /IM Start.exe /F', '', SW_HIDE, ewWaitUntilTerminated, ExecRet);
+
   // User to confirm extra files to remove.
   if not UninstallSilent then
-    UninstallCleanup(2);
+    UninstallCleanup(3);
 
   // Shutdown service, driver and processes.
   if (ShutdownSbie() = False) then
@@ -558,4 +666,8 @@ begin
     Abort();
     exit;
   end;
+
+  // remove shell integration.
+  ShellUninstall();
+
 end;

@@ -1,7 +1,7 @@
 #----------------------------------------------------------------------------
 # SbieDrv
 #
-# Initialization errors issued to to the System event Log
+# Initialization errors issued to the System event Log
 #----------------------------------------------------------------------------
 
 1101;evt;inf;01
@@ -3693,6 +3693,10 @@ Szeretné megtartani a Sandboxie.ini konfigurációs fájlt?
 Válassza az Igen opciót a Sandboxie.ini fájlban lévő konfigurációs beállítások megtartásához.
 
 Válassza a NEM opciót a Sandboxie.ini fájl törléséhez és a konfigurációs beállítások elvesztéséhez.
+.
+
+8055;ins;01
+Elérhető a Templates.ini online frissítése és/vagy a sandboxie ezen verziójához tartozó fordítások. Szeretné telepíteni?
 .
 
 #----------------------------------------------------------------------------

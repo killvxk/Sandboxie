@@ -1,7 +1,7 @@
 #----------------------------------------------------------------------------
 # SbieDrv
 #
-# Initialization errors issued to to the System event Log
+# Initialization errors issued to the System event Log
 #----------------------------------------------------------------------------
 
 1101;evt;inf;01
@@ -36,9 +36,9 @@ SBIE1106 error %2, detail %3
 SBIE1108 Procedure %2 could not be analysed
 .
 
-1109;evt;err;01
-SBIE1109 Invalid license information:  %2
-.
+# 1109;evt;err;01
+# SBIE1109 Invalid license information:  %2
+# .
 
 1110;evt;err;01
 SBIE1110 Cannot intercept type %3, error %2
@@ -98,6 +98,14 @@ SBIE1152 Trampoline allocation failed %2
 SBIE1153 Sandboxie initialization failed.  Close all programs and then re-install Sandboxie  OR  restart your computer.
 .
 
+1205;evt;pop;err;01
+SBIE1205 Invalid DynData found in registry, error: %2
+.
+
+1206;evt;pop;err;01
+SBIE1206 Your Windows build (%2) is not yet supported by sandboxie, error: %3
+.
+
 #----------------------------------------------------------------------------
 # SbieDrv
 #
@@ -108,9 +116,9 @@ SBIE1153 Sandboxie initialization failed.  Close all programs and then re-instal
 SBIE1201 Not enough memory
 .
 
-1202;pop;err;01
-SBIE1202 Cannot update license information:  %2
-.
+# 1202;pop;err;01
+# SBIE1202 Cannot update license information:  %2
+# .
 
 1203;pop;err;01
 SBIE1203 Cannot build path list (error in %2)
@@ -118,6 +126,10 @@ SBIE1203 Cannot build path list (error in %2)
 
 1204;pop;err;01
 SBIE1204 Sandbox creation failed for %3 %2
+.
+
+1207;pop;err;01
+SBIE1207 Your Windows build (%2) is not yet supported by Sandboxie, which means applications will run without security isolation!
 .
 
 1211;pop;err;01
@@ -190,13 +202,17 @@ SBIE1301 Program '%2' was launched outside of the sandbox
 # SBIE1302 Sandbox '%2' is not defined or not enabled
 # .
 
-1303;pop;inf;01
-SBIE1303 Only one sandbox can be active at a time
-.
+# 1303;pop;inf;01
+# SBIE1303 Only one sandbox can be active at a time
+# .
 
 # 1304;pop;inf;01
 # SBIE1304 Blocked simulated keyboard or mouse input by process '%2'
 # .
+
+1305;pop;inf;02
+SBIE1305 Blocked sandboxed image from being loaded - %2
+.
 
 1306;pop;inf;01
 SBIE1306 Sandboxie driver (SbieDrv) cannot be unloaded now
@@ -214,9 +230,9 @@ SBIE1308 Program cannot start due to restrictions - %2
 SBIE1309 Denied attempt to change account password
 .
 
-1310;pop;inf;01
-SBIE1310 Extended features are disabled until the license is reactivated
-.
+# 1310;pop;inf;01
+# SBIE1310 Extended features are disabled until the license is reactivated
+# .
 
 #1311;pop;inf;01
 #SBIE1311 Blocked request to change desktop wallpaper by process '%2'
@@ -240,6 +256,14 @@ SBIE1314 Blocked request to alter network/firewall settings by process '%2'
 
 1316;pop;inf;01
 SBIE1316 Blocked request to generate device event in the sandbox
+.
+
+1317;pop;inf;02
+SBIE1317 Blocked '%2' from trying to access sandbox file root '%3'
+.
+
+1318;pop;inf;02
+SBIE1318 Blocked '%2' from trying to access sandboxed process '%3'
 .
 
 1319;pop;inf;01
@@ -354,6 +378,34 @@ SBIE2108 Faking successful completion for program '%2'
 # SBIE2110 Preparing WinSxS dependencies for '%2'
 # .
 
+2111;pop;inf;01
+SBIE2111 Process is not accessible: %3, call %2
+.
+
+2112;pop;inf;01
+SBIE2112 Object is not accessible: %3, call %2
+.
+
+2113;pop;inf;01
+SBIE2113 File is too large to copy into sandbox, creating empty file - %2
+.
+
+2114;pop;inf;01
+SBIE2114 File is too large to copy into sandbox, denying access - %2
+.
+
+2115;pop;inf;01
+SBIE2115 File is too large to copy into sandbox, opening in read only - %2
+.
+
+2180;pop;inf;01
+SBIE2180 LowLevel.dll error %2
+.
+
+2181;pop;inf;01
+SBIE2181 LowLevel.dll detour failed to load SbieDll.dll into target process.
+.
+
 # %2 = Mozilla Firefox
 2191;pop;inf;01
 SBIE2191 %2 should not be updated while running under Sandboxie.
@@ -369,6 +421,14 @@ SBIE2193 Make sure to delete the sandbox after completing the update process.
 
 2194;pop;inf;01
 SBIE2194 MSI installer requires %2 option to be set in the ini, what however weakens the isolation.
+.
+
+2195;pop;inf;01
+SBIE2195 To run Explorer.exe sandboxed, the access for COM infrastructure must not be Open.
+.
+
+2196;pop;inf;01
+SBIE2196 To run the MSI Installer sandboxed, the access for COM infrastructure must not be Open.
 .
 
 2198;pop;inf;01
@@ -481,6 +541,85 @@ SBIE2223 To increase the file size limit for copying files, please double-click 
 SBIE2224 Sandboxed program has crashed: %2
 .
 
+2225;pop;wrn;01
+SBIE2225 An attempt was made to access an EFS file: %2
+.
+
+2226;pop;wrn;01
+SBIE2226 Process failed to start due to missing elevation, to resolve add "ApplyElevateCreateProcessFix=y" to the ini section for this box %2
+.
+
+2227;pop;wrn;01
+SBIE2227 '%2' is located on a volume which does not support 8.3 naming. This can cause issues with older applications and installers.
+.
+
+#----------------------------------------------------------------------------
+
+2230;pop;wrn;01
+SBIE2230 Failed to mount root for %2
+.
+
+2231;pop;wrn;01
+SBIE2231 Junction Target mismatch %2
+.
+
+2232;pop;wrn;01
+SBIE2232 The ImDisk Driver is not loaded
+.
+
+2233;pop;wrn;01
+SBIE2233 Cannot control the ImDisk Driver: %2
+.
+
+2234;pop;wrn;01
+SBIE2234 No free Drive letter found for temporary mount
+.
+
+2235;pop;wrn;01
+SBIE2235 Error undefining temporary drive letter: "%2"
+.
+
+2236;pop;wrn;01
+SBIE2236 %2 could not be invoked (perhaps it is not installed?)
+.
+
+2237;pop;wrn;01
+SBIE2237 Failed to unmount root %2
+.
+
+2238;pop;wrn;01
+SBIE2238 Ram Disk size is not configured, or to small, set RamDiskSizeKb=1048576 (1GB in Kilobytes) in the [GlobalSettings] ini section.
+.
+
+2239;pop;wrn;01
+SBIE2239 The root folder of sandbox %2 must be empty in order to mount a volume to it.
+.
+
+2240;pop;wrn;01
+SBIE2240 Timeout when trying to mount ImDisk volume %2
+.
+
+2241;pop;wrn;01
+SBIE2241 Box image file %2 could not be opened
+.
+
+2242;pop;wrn;01
+SBIE2242 Failed to mount box image, The specified cipher is not supported
+.
+
+2243;pop;wrn;01
+SBIE2243 Failed to mount box image, Wrong password
+.
+
+2244;pop;wrn;01
+SBIE2244 Failed to mount box image, Password required
+.
+
+2246;pop;wrn;01
+SBIE2246 Failed to mount box image, ImBox error %2
+.
+
+
 #----------------------------------------------------------------------------
 # SbieDrv
 #
@@ -580,6 +719,10 @@ SBIE2322 Cannot rewrite Sandboxie.ini:  %2
 SBIE2323 Cryptography error:  %2
 .
 
+2325;pop;err;01
+SBIE2325 Debug:  %2
+.
+
 2326;pop;err;01
 SBIE2326 Cannot prepare registry:  %2
 .
@@ -608,12 +751,20 @@ SBIE2332 Cannot access file SbiePst.dat
 SBIE2335 Initialization failed for process %2
 .
 
+2360;pop;err;01
+SBIE2360 Failed to inject SOCKS5 proxy:  %2
+.
+
 2336;pop;err;01
 SBIE2336 Error in GUI server:  %2
 .
 
 2337;pop;err;01
 SBIE2337 Failed to start program:  %2
+.
+
+2338;pop;err;01
+SBIE2338 Encountered unsupported architecture in process:  %2
 .
 
 # 2398;txt;01
@@ -769,6 +920,15 @@ Desktop
 Programs
 .
 
+3198;txt;01
+Do you want to start a new program in the %2 sandbox?
+You received this message because you set AlertBeforeStart=y.
+.
+
+3199;txt;01
+This startup request does not appear to be invoked by the SANDBOXIE component. Are you sure you want to run it? If this is your action, you can ignore it and choose yes.
+.
+
 3202;txt;01
 Invalid command line parameter:  %2
 .
@@ -858,45 +1018,45 @@ Please terminate programs running in the sandbox before deleting its contents
 Delete command failed:  %0
 .
 
-3231;txt;01
-You have installed Sandboxie more than 30 days ago.
-.
+# 3231;txt;01
+# You have installed Sandboxie more than 30 days ago.
+# .
 
-3232;txt;01
-Personal use of Sandboxie is permitted free of charge for as long as you wish.
-.
+#3232;txt;01
+#Personal use of Sandboxie is permitted free of charge for as long as you wish.
+#.
 
-3233;txt;01
-However, the free version will now pause for a few seconds.
-.
+# 3233;txt;01
+# However, the free version will now pause for a few seconds.
+# .
 
-3234;txt;01
-However, the free version permits use of one sandbox at a time.
-.
+# 3234;txt;01
+# However, the free version permits use of one sandbox at a time.
+# .
 
-3235;txt;01
-This restriction is removed in the paid version of Sandboxie.
-.
+# 3235;txt;01
+# This restriction is removed in the paid version of Sandboxie.
+# .
 
-3236;txt;01
-In addition, the paid version enables automatic sandboxing for selected programs.
-.
+# 3236;txt;01
+# In addition, the paid version enables automatic sandboxing for selected programs.
+# .
 
-3237;txt;01
-For more information and to purchase the software, please click the following link:
-.
+# 3237;txt;01
+# For more information and to purchase the software, please click the following link:
+# .
 
-3238;txt;01
-Please wait %2 more seconds
-.
+# 3238;txt;01
+# Please wait %2 more seconds
+# .
 
-3239;txt;01
-Click to close this window and continue
-.
+# 3239;txt;01
+# Click to close this window and continue
+# .
 
-3240;txt;01
-Click to close this window and stop
-.
+# 3240;txt;01
+# Click to close this window and stop
+# .
 
 3241;txt;01
 Sandboxie is requesting Administrator privileges
@@ -1007,6 +1167,22 @@ Unknown user, configuration settings will not be saved
 
 3314;txt;01
 An error occurred while applying default settings for sandbox '%2'
+.
+
+3315;txt;01
+Deleting Sandbox contents
+.
+
+3316;txt;01
+Do you want to abort the operation?
+.
+
+3317;txt;01
+Preparing to delete: %2
+.
+
+3318;txt;01
+Deleting: %2
 .
 
 # 3321;txt;01
@@ -1188,7 +1364,19 @@ Re&load Configuration
 .
 
 3504;txt;01
-&Support Sandboxie
+&Support Sandboxie with Donations
+.
+
+3505;txt;01
+Contribute to Sandboxie
+.
+
+3506;txt;01
+Get Supporter Certificate
+.
+
+3507;txt;01
+Apply Supporter Certificate
 .
 
 3451;txt;01
@@ -1207,9 +1395,9 @@ Getting Started &Tutorial
 Check for &Updates
 .
 
-3455;txt;01
-&Register Sandboxie
-.
+# 3455;txt;01
+# &Register Sandboxie
+# .
 
 3456;txt;01
 &About Sandboxie
@@ -1219,9 +1407,9 @@ Check for &Updates
 &Sandboxie Forum (Web)
 .
 
-3458;txt;01
-Allow direct access to Windows Font Cache
-.
+# 3458;txt;01
+# Allow direct access to Windows Font Cache
+# .
 
 3459;txt;01
 Allow direct access to qWave driver (Google Hangouts)
@@ -1257,6 +1445,14 @@ Run &Windows Explorer
 
 3467;txt;01
 Upgrade to Sandboxie-Plus
+.
+
+3468;txt;01
+Sandboxie-Plus Migration Guide
+.
+
+3469;txt;01
+What's new in Sandboxie-Plus
 .
 
 3471;txt;01
@@ -2105,9 +2301,9 @@ program that is already running.  The settings
 will apply the next time this program starts.
 .
 
-3771;txt;01
-(This feature is only available in the registered version of Sandboxie)
-.
+# 3771;txt;01
+# (This feature is only available in the registered version of Sandboxie)
+# .
 
 3772;txt;02
 Are you sure you want to set %2 as a forced program?
@@ -2660,21 +2856,21 @@ You can always change the Drop Rights setting by opening the Sandbox Settings wi
 # Sandboxie Control:  Sandbox Settings:  Print Spooler
 #----------------------------------------------------------------------------
 
-3950;txt;01
-Print Spooler
-.
+# 3950;txt;01
+# Print Spooler
+# .
 
-3951;txt;01
-The Windows Print Spooler runs outside of Sandboxie's supervision.  A sandboxed application that requests the Print Spooler print to a file will be blocked, because this file will be written outside the sandbox.
-.
+# 3951;txt;01
+# The Windows Print Spooler runs outside of Sandboxie's supervision.  A sandboxed application that requests the Print Spooler print to a file will be blocked, because this file would be written outside the sandbox.
+# .
 
-3952;txt;01
-If you wish to allow the Print Spooler to print to a file, you can enable this setting. It is recommended that you enable this option only when needed.
-.
+# 3952;txt;01
+# If you wish to allow the Print Spooler to print to a file, you can enable this setting. It is recommended that you enable this option only when needed.
+# .
 
-3953;txt;01
-Allow the Windows Print Spooler to print to file.
-.
+# 3953;txt;01
+# Allow the Windows Print Spooler to print to file.
+# .
 
 #----------------------------------------------------------------------------
 # Sandboxie Control:  Sandbox Settings:  Network Files
@@ -3324,6 +3520,10 @@ Allow direct access to %2 session management
 Allow direct access to %2 notes
 .
 
+4342;txt;01
+Enable %2 compatibility workaround
+.
+
 4356;txt;02
 Allow direct access to %2 bookmarks
 .
@@ -3486,7 +3686,7 @@ If you prefer to use a UI to control these options, please upgrade to Sandboxie-
 .
 
 6004;pop;err;01
-The configuration of box %2 requires a supporter certificate.
+The configuration %3 of box %2 requires a supporter certificate. Processes in this box will be terminated after 5 minutes. For prolonged use, please consider supporting this project.
 .
 
 6005;txt;01
@@ -3503,11 +3703,44 @@ If you would prefer to use a UI to control these options, please upgrade to Sand
 .
 
 6007;txt;01
-Sandboxie Plus offers enhanced privacy protection by switching the old behavior from a black-list mode, i.e. allowing read access to the entire drive, except blocked by Closed Path or Write Path, to a white-list mode where sandboxed programs are only allowed to read generic system locations and read access to most user data must be first explicitly granted.
+Sandboxie Plus offers enhanced privacy protection by switching the old behavior from a black-list mode, i.e., allowing read access to the entire drive, except blocked by Closed Path or Write Path, to a white-list mode where sandboxed programs are only allowed to read generic system locations and read access to most user data must be first explicitly granted.
 
 The legacy UI of Sandboxie classic does not implement support for this mode of operation. Although it can be configured using the ini file, it is recommended to use the modern Sandboxie-Plus UI (SandMan.exe) if you want to use privacy enhanced boxes.
 .
 
+6008;pop;err;01
+The configuration %3 of box %2 requires a supporter certificate and can not be used without it.
+.
+
+6009;pop;err;01
+The configuration %3 of box %2 requires an advanced supporter certificate.
+.
+
+6010;txt;01
+You have installed Sandboxie more than %2 days ago.
+
+So, you think David and the contributors are doing a great job?
+
+Why don't you show it by supporting the project and getting a Supporter Certificate?
+
+Sandboxie without a valid supporter certificate will now pause for a few seconds, to give you time to contemplate the possibility of supporting the project.
+.
+
+6011;txt;01
+Wait
+.
+
+6012;txt;01
+Continue
+.
+
+6013;txt;01
+Quit
+.
+
+6014;txt;01
+Get Certificate
+.
 
 #----------------------------------------------------------------------------
 # Getting Started Wizard
@@ -3597,186 +3830,211 @@ The default settings in Sandboxie provide full protection, but you may wish to r
 # License Manager
 #----------------------------------------------------------------------------
 
-7901;txt;01
-Sandboxie License Manager
-.
+# 7901;txt;01
+# Sandboxie License Manager
+# .
 
-7902;txt;01
-System Code %2
-.
+# 7902;txt;01
+# System Code %2
+# .
 
-7903;txt;01
-In the future, activate the license without asking
-.
+# 7903;txt;01
+# In the future, activate the license without asking
+# .
 
 #----------------------------------------------------------------------------
 
-7921;txt;01
-Sandboxie is registered and the license is activated.
-.
+# 7921;txt;01
+# Sandboxie is registered and the license is activated.
+# .
 
-7922;txt;01
-Sandboxie is registered but the license should be reactivated now.
-.
+# 7922;txt;01
+# Sandboxie is registered but the license should be reactivated now.
+# .
 
 # was 3603;txt;01
-7923;txt;01
-Unregistered copy.  Register today!
-.
+# 7923;txt;01
+# Unregistered copy.  Register today!
+# .
 
-7924;txt;01
-The license for Sandboxie will have to be reactivated in %2 days.
-.
+# 7924;txt;01
+# The license for Sandboxie will have to be reactivated in %2 days.
+# .
 
-7925;txt;01
-The license for Sandboxie has now been activated.
-.
+# 7925;txt;01
+# The license for Sandboxie has now been activated.
+# .
 
-7926;txt;01
-The expiration date of your Product Key is %2.
-.
+# 7926;txt;01
+# The expiration date of your Product Key is %2.
+# .
 
-7927;txt;01
-Your Product Key does not have an expiration date.
-.
+# 7927;txt;01
+# Your Product Key does not have an expiration date.
+# .
 
 #----------------------------------------------------------------------------
 
-7931;txt;01
-Your copy of Sandboxie is registered with an obsolete Registration Key.
-.
+# 7931;txt;01
+# Your copy of Sandboxie is registered with an obsolete Registration Key.
+# .
 
-7932;txt;01
-Please permit the License Manager to connect to the License Server and upgrade your old Registration Key to a new Product Key.  You will not be charged any fees for this upgrade.
-.
+# 7932;txt;01
+# Please permit the License Manager to connect to the License Server and upgrade your old Registration Key to a new Product Key.  You will not be charged any fees for this upgrade.
+# .
 
-7933;txt;01
-Your Registration Key is not recognized by the License Server.
-.
+# 7933;txt;01
+# Your Registration Key is not recognized by the License Server.
+# .
 
-7934;txt;01
-For licensing questions please contact: support@sandboxie.com
-.
+# 7934;txt;01
+# For licensing questions please contact: support@sandboxie.com
+# .
 
-7935;txt;01
-Your new Product Key is:
-.
+# 7935;txt;01
+# Your new Product Key is:
+# .
 
-7936;txt;01
-Please make sure to record this Product Key in a safe place for future reference.  Use the button below to copy your Product Key to the clipboard, from which you can paste it into a document and print it.
-.
+# 7936;txt;01
+# Please make sure to record this Product Key in a safe place for future reference.  Use the button below to copy your Product Key to the clipboard, from which you can paste it into a document and print it.
+# .
 
-7937;txt;01
-&Upgrade Registration Key to Product Key
-.
+# 7937;txt;01
+# &Upgrade Registration Key to Product Key
+# .
 
 #----------------------------------------------------------------------------
 
 # was 3612;txt;01
-7941;txt;01
-Sandboxie registration is made through a third-party payment processor.  Begin the registration process by visiting the Sandboxie web site at the link below.
-.
+# 7941;txt;01
+# Sandboxie registration is made through a third-party payment processor.  Begin the registration process by visiting the Sandboxie web site at the link below.
+# .
 
-7942;txt;01
-To activate your license for Sandboxie, enter the Product Key which appears in your receipt for payment, then click the button to activate your license.
-.
+# 7942;txt;01
+# To activate your license for Sandboxie, enter the Product Key which appears in your receipt for payment, then click the button to activate your license.
+# .
 
-7943;txt;01
-Do you wish to enter a new Product Key now?
-.
+# 7943;txt;01
+# Do you wish to enter a new Product Key now?
+# .
 
-7944;txt;01
-&Activate License
-.
+# 7944;txt;01
+# &Activate License
+# .
 
 # was first line of 3617;txt;01
-7945;txt;01
-Your copy of Sandboxie is now registered.
-.
+# 7945;txt;01
+# Your copy of Sandboxie is now registered.
+# .
 
 # was second line of 3617;txt;01
-7946;txt;01
-Thank you for supporting Sandboxie!
-.
+# 7946;txt;01
+# Thank you for supporting Sandboxie!
+# .
 
 #----------------------------------------------------------------------------
 
-7951;txt;01
-Do you wish to activate the license now?
-.
+# 7951;txt;01
+# Do you wish to activate the license now?
+# .
 
-7952;txt;01
-Please visit the Sandboxie web site at the link below to order a new Product Key.
-.
+# 7952;txt;01
+# Please visit the Sandboxie web site at the link below to order a new Product Key.
+# .
 
-7961;txt;01
-Clear License &Information
-.
+# 7961;txt;01
+# Clear License &Information
+# .
 
-7962;txt;01
-Are you sure you wish to clear the license information in Sandboxie?
-
-You can activate your license at any time by entering a Product Key.
-.
+# 7962;txt;01
+# Are you sure you wish to clear the license information in Sandboxie?
+#
+# You can activate your license at any time by entering a Product Key.
+# .
 
 #----------------------------------------------------------------------------
 
-7971;txt;01
-This is not a valid Product Key.
+# 7971;txt;01
+# This is not a valid Product Key.
+# .
+
+# 7972;txt;01
+# This is not a valid System Code.
+# .
+
+# 7973;txt;01
+# This is not a valid Activation Key.  [%2]
+# .
+
+# 7974;txt;01
+# Invalid response from the License Server.
+# .
+
+# 7975;txt;01
+# Product activation failed:
+# .
+
+# 7976;txt;01
+# Would you like to try again now?
+# .
+
+# 7977;txt;01
+# If you need to activate Sandboxie on a computer that does not have Internet access,
+# please see the Sandboxie Licensing FAQ for information about Offline Activation.
+# .
+
+# 7978;txt;01
+# Current date (%2) is later than date sent from the License Server (%3).
+# .
+
+# 7982;txt;01
+# The License Server did not specify reason for failure of activation.
+# .
+
+# 7983;txt;01
+# Product Key is not recognized by the License Server.
+# .
+
+# 7984;txt;01
+# Product Key cannot be used beyond its expiration date of %2.
+# .
+
+# 7985;txt;01
+# Product Key was activated on too many computers.
+# .
+
+# 7986;txt;01
+# Product Key was cancelled because it was made public on the Internet.
+# .
+
+# 7987;txt;01
+# Product Key was cancelled because the order was refunded.
+# .
+
+7988;txt;01
+Your Supporter Certificate is valid, Thank You :-)
 .
 
-7972;txt;01
-This is not a valid System Code.
+7989;txt;01
+The Supporter Certificate has expired :'(
 .
 
-7973;txt;01
-This is not a valid Activation Key.  [%2]
+7990;txt;01
+Please copy the entire Supporter Certificate into the clipboard and press OK.
 .
 
-7974;txt;01
-Invalid response from the License Server.
+7991;txt;01
+Failed to save certificate to file.
 .
 
-7975;txt;01
-Product activation failed:
+7992;txt;01
+The certificate is not valid.
 .
 
-7976;txt;01
-Would you like to try again now?
+7993;txt;01
+The certificate is valid and has been successfully applied.
 .
 
-7977;txt;01
-If you need to activate Sandboxie on a computer that does not have Internet access,
-please see the Sandboxie Licensing FAQ for information about Offline Activation.
-.
-
-7978;txt;01
-Current date (%2) is later than date sent from the License Server (%3).
-.
-
-7982;txt;01
-The License Server did not specify reason for failure of activation.
-.
-
-7983;txt;01
-Product Key is not recognized by the License Server.
-.
-
-7984;txt;01
-Product Key cannot be used beyond its expiration date of %2.
-.
-
-7985;txt;01
-Product Key was activated on too many computers.
-.
-
-7986;txt;01
-Product Key was cancelled because it was made public on the Internet.
-.
-
-7987;txt;01
-Product Key was cancelled because the order was refunded.
-.
 
 #----------------------------------------------------------------------------
 # SandboxieInstall
@@ -3948,6 +4206,10 @@ Would you like to keep your Sandboxie.ini configuration file?
 Select YES to keep configuration settings in the Sandboxie.ini file.
 
 Select NO to delete the Sandboxie.ini file and lose your configuration settings.
+.
+
+8055;ins;01
+There is an online update of the Templates.ini and/or the translations for this version of Sandboxie available, do you want to install it?
 .
 
 #----------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2021 DavidXanatos, xanasoft.com
+ * Copyright 2020-2022 DavidXanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -21,7 +21,7 @@
 #define GDI_HANDLE_BUFFER_SIZE32  34
 #define GDI_HANDLE_BUFFER_SIZE64  60
 
-#if !defined(_M_X64)
+#ifndef _WIN64
 #define GDI_HANDLE_BUFFER_SIZE      GDI_HANDLE_BUFFER_SIZE32
 #else
 #define GDI_HANDLE_BUFFER_SIZE      GDI_HANDLE_BUFFER_SIZE64
@@ -199,6 +199,15 @@ typedef struct _TEB_ACTIVE_FRAME
 	PTEB_ACTIVE_FRAME_CONTEXT Context;
 } TEB_ACTIVE_FRAME, *PTEB_ACTIVE_FRAME;
 
+typedef struct _ACTIVATION_CONTEXT_STACK
+{
+	struct _RTL_ACTIVATION_CONTEXT_STACK_FRAME* ActiveFrame;
+	LIST_ENTRY FrameListCache;
+	ULONG Flags;
+	ULONG NextCookieSequenceNumber;
+	ULONG StackId;
+} ACTIVATION_CONTEXT_STACK, * PACTIVATION_CONTEXT_STACK;
+
 typedef struct _TEB
 {
 	NT_TIB NtTib;
@@ -218,15 +227,40 @@ typedef struct _TEB
 	PVOID WOW32Reserved;
 	LCID CurrentLocale;
 	ULONG FpSoftwareStatusRegister;
-	PVOID SystemReserved1[54];
-	NTSTATUS ExceptionCode;
-	PVOID ActivationContextStackPointer;
-#if defined(_M_X64)
-	UCHAR SpareBytes[24];
+
+	PVOID ReservedForDebuggerInstrumentation[16];
+#ifdef _WIN64
+	PVOID SystemReserved1[30];
 #else
-	UCHAR SpareBytes[36];
+	PVOID SystemReserved1[26];
 #endif
+
+	CHAR PlaceholderCompatibilityMode;
+	BOOLEAN PlaceholderHydrationAlwaysExplicit;
+	CHAR PlaceholderReserved[10];
+
+	ULONG ProxiedProcessId;
+	ACTIVATION_CONTEXT_STACK ActivationStack;
+
+	UCHAR WorkingOnBehalfTicket[8];
+	NTSTATUS ExceptionCode;
+
+	PACTIVATION_CONTEXT_STACK ActivationContextStackPointer;
+	ULONG_PTR InstrumentationCallbackSp;
+	ULONG_PTR InstrumentationCallbackPreviousPc;
+	ULONG_PTR InstrumentationCallbackPreviousSp;
+#ifdef _WIN64
 	ULONG TxFsContext;
+#endif
+
+	BOOLEAN InstrumentationCallbackDisabled;
+#ifdef _WIN64
+	BOOLEAN UnalignedLoadStoreExceptions;
+#endif
+#ifndef _WIN64
+	UCHAR SpareBytes[23];
+	ULONG TxFsContext;
+#endif
 
 	GDI_TEB_BATCH GdiTebBatch;
 	CLIENT_ID RealClientId;
@@ -257,7 +291,7 @@ typedef struct _TEB
 	PVOID DbgSsReserved[2];
 
 	ULONG HardErrorMode;
-#if defined(_M_X64)
+#ifdef _WIN64
 	PVOID Instrumentation[11];
 #else
 	PVOID Instrumentation[9];
@@ -291,7 +325,7 @@ typedef struct _TEB
 	ULONG_PTR SoftPatchPtr1;
 	PVOID ThreadPoolData;
 	PVOID *TlsExpansionSlots;
-#if defined(_M_X64)
+#ifdef _WIN64
 	PVOID DeallocationBStore;
 	PVOID BStoreLimit;
 #endif
@@ -330,7 +364,11 @@ typedef struct _TEB
 			USHORT DisableUserStackWalk : 1;
 			USHORT RtlExceptionAttached : 1;
 			USHORT InitialThread : 1;
-			USHORT SpareSameTebBits : 1;
+            USHORT SessionAware : 1;
+            USHORT LoadOwner : 1;
+            USHORT LoaderWorker : 1;
+            USHORT SkipLoaderInit : 1;
+            USHORT SkipFileAPIBrokering : 1;
 		};
 	};
 
@@ -338,8 +376,14 @@ typedef struct _TEB
 	PVOID TxnScopeExitCallback;
 	PVOID TxnScopeContext;
 	ULONG LockCount;
-	ULONG SpareUlong0;
+	LONG WowTebOffset;
 	PVOID ResourceRetValue;
+	PVOID ReservedForWdf;
+	ULONGLONG ReservedForCrt;
+	GUID EffectiveContainerId;
+	ULONGLONG LastSleepCounter; // Win11
+	ULONG SpinCallCount;
+	ULONGLONG ExtendedFeatureDisableMask;
 } TEB, *PTEB;
 
 
@@ -384,5 +428,35 @@ typedef struct _LDR_DATA_TABLE_ENTRY
 #ifndef NtCurrentPeb
 __inline struct _PEB * NtCurrentPeb() { return NtCurrentTeb()->ProcessEnvironmentBlock; }
 #endif 
+
+#if 0
+// Gets a pointer to the PEB for x86, x64, ARM, ARM64, IA64, Alpha AXP, MIPS, and PowerPC.
+
+// This relies on MS-compiler intrinsics.
+// It has only been tested on x86/x64/ARMv7.
+
+inline PEB* NtCurrentPeb() {
+#ifdef _M_X64
+	return (PEB*)(__readgsqword(0x60));
+#elif _M_IX86
+	return (PEB*)(__readfsdword(0x30));
+#elif _M_ARM
+	return *(PEB**)(_MoveFromCoprocessor(15, 0, 13, 0, 2) + 0x30);
+#elif _M_ARM64
+	return *(PEB**)(__getReg(18) + 0x60); // TEB in x18
+#elif _M_IA64
+	return *(PEB**)((size_t)_rdteb() + 0x60); // TEB in r13
+#elif _M_ALPHA
+	return *(PEB**)((size_t)_rdteb() + 0x30); // TEB pointer returned from callpal 0xAB
+#elif _M_MIPS
+	return *(PEB**)((*(size_t*)(0x7ffff030)) + 0x30); // TEB pointer located at 0x7ffff000 (PCR in user-mode) + 0x30
+#elif _M_PPC
+	// winnt.h of the period uses __builtin_get_gpr13() or __gregister_get(13) depending on _MSC_VER
+	return *(PEB**)(__gregister_get(13) + 0x30); // TEB in r13
+#else
+#error "This architecture is currently unsupported"
+#endif
+}
+#endif
 
 #endif // _XEB_

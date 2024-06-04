@@ -1,7 +1,7 @@
 #----------------------------------------------------------------------------
 # SbieDrv
 #
-# Initialization errors issued to to the System event Log
+# Initialization errors issued to the System event Log
 #----------------------------------------------------------------------------
 
 1101;evt;inf;01
@@ -3201,6 +3201,10 @@ Ellers, så klik Afbryd for at afbryde installationen.
 Vælg Ja for at beholde din konfiguration opsætning i Sandboxie.ini filen.
 
 Vælg Nej for at slette Sandboxie.ini filen. Du mister derved din konfiguration opsætning.
+.
+
+8055;ins;01
+Der er en online opdatering af Templates.ini og/eller oversættelserne til denne version af sandboxie tilgængelig, vil du installere den?
 .
 
 #----------------------------------------------------------------------------

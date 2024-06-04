@@ -74,7 +74,7 @@ Appearance
 Directories
 \endverbatim
 If you would like to use a double colon, which should not be
-interpreted as a path seperator, prefix it with a backslash ("\\::").
+interpreted as a path separator, prefix it with a backslash ("\\::").
 
 To disable tree view mode and use the standard tabbed mode, call
 the SetTreeViewMode() method. This also allows you, to enable page
@@ -169,7 +169,7 @@ public:
         The default value is:
         \code
         DT_CENTER|DT_VCENTER|DT_NOPREFIX|DT_SINGLELINE
-        \endcode
+        \end code
 
     @return
         The previous format.
@@ -197,7 +197,7 @@ public:
         Resource identifier for the bitmap, that contains the default
         images. The resource should contain exactly to images.
     @param cx
-        Width of a singe image in pixels.
+        Width of a single image in pixels.
     @param crMask
         Color that should be interpreted as transparent.
 
@@ -258,7 +258,7 @@ public:
     @param hIcon
         Handle to icon that should be set for the page.
     @param unIconId
-        Ressource identifier for the icon to set.
+        Resource identifier for the icon to set.
     @param Images
         Reference of the image list to extract the icon from.
     @param nImage
@@ -266,7 +266,7 @@ public:
         as an icon.
 
     @return
-        TRUE on success, FALSE if an error occured.
+        TRUE on success, FALSE if an error occurred.
     */
     static BOOL SetPageIcon(CPropertyPage *pPage, HICON hIcon);
     static BOOL SetPageIcon(CPropertyPage *pPage, UINT unIconId);
@@ -338,13 +338,13 @@ protected:
     int AlignButtonsToRight();
 
     /**
-    Moves all childs by the specified amount of pixels.
+    Moves all child's by the specified amount of pixels.
 
     @param nDx
-        Pixels to move the childs in horizontal direction (can be
+        Pixels to move the child's in horizontal direction (can be
         negative).
     @param nDy
-        Pixels to move the childs in vertical direction (can be
+        Pixels to move the child's in vertical direction (can be
         negative).
     */
     void MoveChildWindows(int nDx, int nDy);
@@ -377,7 +377,7 @@ protected:
     CString SplitPageTreePath(CString &strRest);
 
     /**
-    Tries to deactivate the current page, and hides it if successfull,
+    Tries to deactivate the current page, and hides it if successful,
     so that an empty page becomes visible.
 
     @return
@@ -536,6 +536,6 @@ private:
 /////////////////////////////////////////////////////////////////////////////
 
 //{{AFX_INSERT_LOCATION}}
-// Microsoft Visual C++ fügt unmittelbar vor der vorhergehenden Zeile zusätzliche Deklarationen ein.
+// Microsoft Visual C++ fÃ¼gt unmittelbar vor der vorhergehenden Zeile zusÃ¤tzliche Deklarationen ein.
 
 #endif // AFX_TREEPROPSHEET_H__50695CFB_FCE4_4188_ADB4_BF05A5488E41__INCLUDED_

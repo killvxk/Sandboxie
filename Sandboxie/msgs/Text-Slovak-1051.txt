@@ -1,7 +1,7 @@
 #----------------------------------------------------------------------------
 # SbieDrv
 #
-# Initialization errors issued to to the System event Log
+# Initialization errors issued to the System event Log
 #----------------------------------------------------------------------------
 
 1101;evt;inf;01
@@ -3642,6 +3642,10 @@ Prajete si ponechať Váš Sandboxie.ini konfiguračný súbor?
 Vyberte ÁNO na ponechanie konfiguračných nastavení v Sandboxie.ini súbore.
 
 Vyberte NIE na zmazanie súboru Sandboxie.ini a stratu Vaších konfiguračných nastavení.
+.
+
+8055;ins;01
+K dispozícii je online aktualizácia Templates.ini a/alebo prekladov pre túto verziu sandboxie, chcete si ju nainštalovať?
 .
 
 #----------------------------------------------------------------------------

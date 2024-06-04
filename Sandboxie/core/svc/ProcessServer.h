@@ -47,15 +47,15 @@ protected:
 
     BOOL KillProcess(ULONG ProcessId);
 
-    MSG_HEADER *KillOneHandler(HANDLE CallerProcessId, MSG_HEADER *msg);
+    MSG_HEADER *KillOneHandler(MSG_HEADER *msg);
 
-    MSG_HEADER *KillAllHandler(HANDLE CallerProcessId, MSG_HEADER *msg);
+    MSG_HEADER *KillAllHandler(MSG_HEADER *msg);
 
     NTSTATUS KillAllHelper(const WCHAR *BoxName, ULONG SessionId, BOOLEAN TerminateJob = FALSE);
 
-    MSG_HEADER *SetDeviceMap(HANDLE CallerProcessId, MSG_HEADER *msg);
+    MSG_HEADER *SetDeviceMap(MSG_HEADER *msg);
 
-    MSG_HEADER *OpenDeviceMap(HANDLE CallerProcessId, MSG_HEADER *msg);
+    MSG_HEADER *OpenDeviceMap(MSG_HEADER *msg);
 
     //
     // Run Sandboxed
@@ -65,7 +65,7 @@ protected:
     WCHAR *RunSandboxedCopyString(MSG_HEADER *msg, ULONG ofs, ULONG len);
     HANDLE RunSandboxedGetToken(
             HANDLE CallerProcessHandle, bool CallerInSandbox,
-            const WCHAR *BoxName, const WCHAR* cmd);
+            const WCHAR *BoxName, const WCHAR* cmd, HANDLE CallerPid);
     BOOL RunSandboxedStartProcess(
             HANDLE PrimaryTokenHandle, LONG_PTR BoxNameOrModelPid,
             WCHAR *cmd, const WCHAR *dir, WCHAR *env, 
@@ -76,7 +76,21 @@ protected:
             HANDLE CallerProcessHandle, BOOL FilterHandles, ULONG crflags,
             PROCESS_INFORMATION *piInput, PROCESS_INFORMATION *piReply);
 
+    //
+    // Run Updater
+    //
 
+    MSG_HEADER *RunUpdaterHandler(MSG_HEADER *msg);
+
+    //
+    // Process Management
+    //
+
+    MSG_HEADER *ProcInfoHandler(MSG_HEADER *msg);
+
+    MSG_HEADER *SuspendOneHandler(MSG_HEADER *msg);
+
+    MSG_HEADER *SuspendAllHandler(MSG_HEADER *msg);
 };
 
 

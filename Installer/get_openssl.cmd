@@ -1,8 +1,6 @@
+set version=1_1_1p
+
 mkdir %~dp0\OpenSSL
-
-curl --ssl-no-revoke -L http://wiki.overbyte.eu/arch/openssl-1.1.1m-win64.zip -o %~dp0\OpenSSL\openssl-1.1.1m-win64.zip
-"C:\Program Files\7-Zip\7z.exe" x -o%~dp0\OpenSSL\x64\ %~dp0\OpenSSL\openssl-1.1.1m-win64.zip
-
-curl --ssl-no-revoke -L http://wiki.overbyte.eu/arch/openssl-1.1.1m-win32.zip -o %~dp0\OpenSSL\openssl-1.1.1m-win32.zip
-"C:\Program Files\7-Zip\7z.exe" x -o%~dp0\OpenSSL\Win32\ %~dp0\OpenSSL\openssl-1.1.1m-win32.zip
+curl -L --url https://github.com/DavidXanatos/openssl/releases/download/OpenSSL_%version%/OpenSSL-%version%.zip -o %~dp0\OpenSSL\OpenSSL-%version%.zip --ssl-no-revoke
+"C:\Program Files\7-Zip\7z.exe" x -bd -o%~dp0\OpenSSL\ %~dp0\OpenSSL\OpenSSL-%version%.zip
 

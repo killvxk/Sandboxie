@@ -56,6 +56,9 @@
 #define WM_DDE_EXECUTE      (WM_DDE_FIRST+8)
 #define WM_DDE_LAST         (WM_DDE_FIRST+8)
 
+#define GET_WIN_API(name, lib) \
+    P_##name name = Ldr_GetProcAddrNew(lib, L#name, #name); \
+    if(!name) return NULL;
 
 //---------------------------------------------------------------------------
 // Prototypes
@@ -89,6 +92,21 @@ typedef BOOL (*P_ClipCursor)(const RECT *lpRect);
 
 typedef BOOL (*P_GetClipCursor)(RECT *lpRect);
 
+typedef int(*P_ShowCursor)(BOOL bShow);
+
+typedef BOOL(*P_BringWindowToTop)(HWND hWnd);
+
+typedef void (*P_SwitchToThisWindow)(HWND hWnd, BOOL fAlt);
+
+typedef HWND(*P_SetActiveWindow)(HWND hWnd);
+
+typedef UINT_PTR (*P_SetTimer)(
+	 HWND hWnd,
+     UINT_PTR nIDEvent,
+     UINT uElapse,
+	 TIMERPROC lpTimerFunc
+);
+
 typedef BOOL (*P_GetCursorPos)(LPPOINT lpPoint);
 
 typedef BOOL (*P_SetCursorPos)(int x, int y);
@@ -103,7 +121,11 @@ typedef HWND (*P_GetOpenClipboardWindow)(void);
 
 typedef DWORD (*P_GetClipboardSequenceNumber)(void);
 
+typedef HANDLE (*P_SetClipboardData)(UINT uFormat, HANDLE hMem);
+
 typedef HANDLE (*P_GetClipboardData)(UINT uFormat);
+
+typedef BOOL (*P_EmptyClipboard)();
 
 typedef int (*P_GetClipboardFormatName)(
     UINT format, void *lpszFormatName, int cchMaxCount);
@@ -389,6 +411,12 @@ typedef HCURSOR (*P_SetCursor)(HCURSOR hCursor);
 
 typedef BOOL (*P_GetIconInfo)(HICON hIcon, PICONINFO piconinfo);
 
+typedef HICON(*P_CreateIconIndirect)(PICONINFO piconinfo);
+
+typedef COLORREF(*P_GetPixel)(HDC hdc, int x, int y);
+
+typedef COLORREF(*P_SetPixel)(HDC hdc, int x, int y, COLORREF color);
+
 typedef HWND (*P_GetForegroundWindow)(void);
 
 typedef BOOL (*P_SetForegroundWindow)(HWND hWnd);
@@ -407,6 +435,30 @@ typedef int (*P_LoadString)(
 //---------------------------------------------------------------------------
 
 typedef BOOL (*P_SetProcessWindowStation)(HWINSTA hWinSta);
+
+typedef HDC(*P_GetWindowDC)(HWND hWnd);
+
+typedef HDC(*P_GetDC)(HWND hWnd);
+
+typedef HDC(*P_GetDCEx)(HWND hWnd, HRGN hrgnClip,DWORD flags);
+
+typedef BOOL (*P_PrintWindow)(HWND hwnd, HDC hdcBlt,UINT nFlags);
+
+typedef BOOL(*P_DeleteObject)(HGDIOBJ ho);
+
+typedef int (*P_ReleaseDC)(HWND hWnd, HDC hDc);
+
+typedef BOOL(*P_DeleteDC)(HDC hdc);
+
+typedef HDC(*P_CreateCompatibleDC)(HDC hdc);
+
+typedef HGDIOBJ (*P_SelectObject)(_In_ HDC hdc, _In_ HGDIOBJ h);
+
+typedef int (*P_GetDeviceCaps)(_In_opt_ HDC hdc, _In_ int index);
+
+typedef HBITMAP(*P_CreateCompatibleBitmap)(_In_ HDC hdc, _In_ int cx, _In_ int cy);
+
+typedef BOOL (*P_ShutdownBlockReasonCreate)(HWND hWnd, LPCWSTR pwszReason);
 
 typedef BOOL (*P_SetThreadDesktop)(HDESK hDesktop);
 
@@ -452,6 +504,10 @@ typedef BOOL(*P_GetOpenFileNameW)(LPVOID lpofn);
 
 extern BOOLEAN Gui_RenameClasses;
 extern BOOLEAN Gui_OpenAllWinClasses;   // not running in a restricted job
+extern BOOLEAN Gui_UseProtectScreen;
+extern BOOLEAN Gui_UseBlockCapture;
+
+extern BOOLEAN Gui_BlockInterferenceControl;
 
 extern BOOLEAN Gui_UseProxyService;
 
@@ -530,6 +586,11 @@ extern ATOM Gui_WindowProcOldA_Atom;
 #endif
 #define GUI_SYS_VAR_2(nm)       GUI_SYS_VAR_AW(nm,A); GUI_SYS_VAR_AW(nm,W);
 
+GUI_SYS_VAR(GetDC)
+GUI_SYS_VAR(GetDCEx)
+GUI_SYS_VAR(GetWindowDC)
+GUI_SYS_VAR(ReleaseDC)
+GUI_SYS_VAR(PrintWindow)
 
 GUI_SYS_VAR(ClipCursor)
 GUI_SYS_VAR(GetClipCursor)
@@ -555,10 +616,13 @@ GUI_SYS_VAR(IsZoomed)
 GUI_SYS_VAR_2(SendMessage)
 GUI_SYS_VAR_2(SendMessageTimeout)
 //GUI_SYS_VAR_2(SendMessageCallback)
+GUI_SYS_VAR(ShutdownBlockReasonCreate)
 GUI_SYS_VAR_2(SendNotifyMessage)
 GUI_SYS_VAR_2(PostMessage)
 GUI_SYS_VAR_2(PostThreadMessage)
 GUI_SYS_VAR_2(DispatchMessage)
+
+GUI_SYS_VAR(SetTimer)
 
 GUI_SYS_VAR(MapWindowPoints)
 GUI_SYS_VAR(ClientToScreen)
@@ -575,9 +639,16 @@ GUI_SYS_VAR_2(DdeInitialize)
 GUI_SYS_VAR(BlockInput)
 GUI_SYS_VAR(SendInput)
 
+GUI_SYS_VAR(SetActiveWindow);
+GUI_SYS_VAR(BringWindowToTop);
+GUI_SYS_VAR(ShowCursor);
+GUI_SYS_VAR(SwitchToThisWindow);
+
 GUI_SYS_VAR(OpenClipboard)
 GUI_SYS_VAR(CloseClipboard)
+GUI_SYS_VAR(SetClipboardData);
 GUI_SYS_VAR(GetClipboardData);
+GUI_SYS_VAR(EmptyClipboard);
 GUI_SYS_VAR(GetClipboardOwner);
 GUI_SYS_VAR(GetOpenClipboardWindow);
 GUI_SYS_VAR(GetClipboardSequenceNumber);
@@ -740,7 +811,7 @@ extern  P_LoadString                __sys_LoadStringW;
 
 #define SBIEDLL_HOOK_GUI(proc)                              \
     *(ULONG_PTR *)&__sys_##proc = (ULONG_PTR)               \
-        SbieDll_Hook(#proc, __sys_##proc, Gui_##proc);      \
+        SbieDll_Hook(#proc, __sys_##proc, Gui_##proc, module);      \
     if (! __sys_##proc) return FALSE;
 
 
@@ -764,7 +835,7 @@ LRESULT Gui_WindowProcA(
 //---------------------------------------------------------------------------
 
 
-BOOLEAN Gui_InitClass(void);
+BOOLEAN Gui_InitClass(HMODULE module);
 
 void Gui_Hook_CREATESTRUCT_Handler(void);
 
@@ -784,7 +855,7 @@ void Gui_CREATESTRUCT_Restore(LPARAM lParam);
 //---------------------------------------------------------------------------
 
 
-BOOLEAN Gui_InitTitle(void);
+BOOLEAN Gui_InitTitle(HMODULE module);
 
 BOOLEAN Gui_ShouldCreateTitle(HWND hWnd);
 
@@ -800,13 +871,13 @@ int Gui_FixTitleA(HWND hWnd, UCHAR *lpWindowTitle, int len);
 //---------------------------------------------------------------------------
 
 
-BOOLEAN Gui_InitEnum(void);
+BOOLEAN Gui_InitEnum(HMODULE module);
 
 
 //---------------------------------------------------------------------------
 
 
-BOOLEAN Gui_InitProp(void);
+BOOLEAN Gui_InitProp(HMODULE module);
 
 void Gui_SetWindowProc(HWND hWnd, BOOLEAN force);
 
@@ -814,13 +885,13 @@ void Gui_SetWindowProc(HWND hWnd, BOOLEAN force);
 //---------------------------------------------------------------------------
 
 
-BOOLEAN Gui_InitMsg(void);
+BOOLEAN Gui_InitMsg(HMODULE module);
 
 
 //---------------------------------------------------------------------------
 
 
-BOOLEAN Gui_InitWinHooks(void);
+BOOLEAN Gui_InitWinHooks(HMODULE module);
 
 LRESULT Gui_RegisterWinHook(DWORD dwThreadId, ULONG64 ghk);
 
@@ -830,7 +901,7 @@ LRESULT Gui_NotifyWinHooks(void);
 //---------------------------------------------------------------------------
 
 
-BOOLEAN Gui_InitDlgTmpl(void);
+BOOLEAN Gui_InitDlgTmpl(HMODULE module);
 
 
 //---------------------------------------------------------------------------
@@ -842,7 +913,7 @@ BOOLEAN Ole_DoDragDrop(HWND hWnd, WPARAM wParam, LPARAM lParam);
 //---------------------------------------------------------------------------
 
 
-BOOLEAN Gui_InitMisc(void);
+BOOLEAN Gui_InitMisc(HMODULE module);
 
 
 //---------------------------------------------------------------------------
@@ -859,7 +930,7 @@ void *Gui_CallProxyEx(
 //---------------------------------------------------------------------------
 
 
-BOOLEAN Gui_DDE_Init(void);
+BOOLEAN Gui_DDE_Init(HMODULE module);
 
 WPARAM Gui_DDE_INITIATE_Received(HWND hWnd, WPARAM wParam);
 
@@ -888,5 +959,12 @@ static HRESULT Gui_D3D11CreateDevice(
 */
 //---------------------------------------------------------------------------
 
+VOID Gdi_InitDCCache();
+
+HDC Gdi_GetDummyDC(HDC ret, HWND hWnd);
+
+HDC Gdi_OnFreeDC(HDC dc);
+
+//---------------------------------------------------------------------------
 
 #endif // MY_GUI_P_H

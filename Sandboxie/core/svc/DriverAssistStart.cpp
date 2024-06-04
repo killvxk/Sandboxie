@@ -60,8 +60,7 @@ ULONG DriverAssist::StartDriverAsync(void *arg)
 
     bool ok = false;
 
-    WCHAR driver_version[16];
-    LONG rc = SbieApi_GetVersion(driver_version);
+    LONG rc = SbieApi_GetVersionEx(NULL, NULL);
     if (rc == 0) {
         ok = true;
         goto driver_started;
@@ -125,28 +124,78 @@ ULONG DriverAssist::StartDriverAsync(void *arg)
 driver_started:
 
     if (ok) {
+        ULONG drv_abi_ver = 0;
 
         for (ULONG retries = 0; retries < 20; ++retries) {
 
-            rc = SbieApi_GetVersion(driver_version);
+            rc = SbieApi_GetVersionEx(NULL, &drv_abi_ver);
             if (rc == 0)
                 break;
-            driver_version[0] = L'!';
-            driver_version[1] = L'\0';
             Sleep(500);
         }
 
-        WCHAR application_version[16];
-        wsprintf(application_version, L"%S", MY_VERSION_COMPAT);
-
-        if (wcscmp(application_version, driver_version) != 0) {
+        if (drv_abi_ver != MY_ABI_VERSION) {
             LogEvent(MSG_9234, 0x9154, 0);
             ok = false;
         }
     }
 
     //
-    // version numbers match, continue with driver/service init
+    // version numbers match
+    //
+
+    if (ok) {
+        
+	    const char BlockList0[] =
+        // S:
+		    "2687F3F7D9DBF317A05251E2ED3C3D0A" "\r\n" 
+        // F:
+            "45923506432956493562935693478346" "\r\n" 
+        // C:
+		    "6AF28A3722ADC9FDB0F4B298508DD9E6" "\r\n" 
+		    "54F2DF068889C1789AE9D7E948618EB6" "\r\n"
+		    "665FBAD025408A5B9355230EBD3381DC" "\r\n"
+        // X:
+            "63F49D96BDBA28F8428B4A5008D1A587" "\r\n"
+        // R:
+		    "622D831B13B70B7CFFEC12E3778BF740" "\r\n"
+		    "2FDEB3584ED4DA007C2A1D49CFFF1062" "\r\n"
+		    "413616148FA9D3793B0E9BA4A396D3EE" "\r\n"
+		    "CC4DCCD36A13097B4478ADEB0FEF00CD" "\r\n"
+		    "32DE2C3B8E8859B6ECB6FF98BDF8DB15" "\r\n"
+            "A99F919ECD99AB7664CC7C136BDD4CA8" "\r\n"
+            "0CC1B62B7734DEFB4556F9E6E82AAABA" "\r\n"
+            "16B862ACAAA7DF4B79BEDCB4F3323450" "\r\n"
+            "CAD7290FD6068ADD1C5BF550D6EB51D1" "\r\n"
+            "D1C2507AB1C5CF34D04109620E28B69C";
+
+        const unsigned char BlockListSig0[] =  {
+            0x02, 0xb4, 0x8f, 0x32, 0xac, 0x4b, 0xa4, 0xf0,
+            0xd0, 0xbc, 0x02, 0x12, 0x6f, 0x49, 0x52, 0x73,
+            0x92, 0x40, 0xf3, 0x09, 0x32, 0xd2, 0xdd, 0xdd,
+            0x9d, 0x04, 0x8b, 0xe3, 0xd4, 0xcb, 0xee, 0xc7,
+            0x6d, 0xaf, 0x9e, 0x7b, 0x1d, 0xa7, 0x6f, 0x8b,
+            0xad, 0x4f, 0x3e, 0x99, 0x66, 0xbf, 0x35, 0x38,
+            0xaa, 0xcf, 0xa2, 0x75, 0x30, 0xd1, 0xbb, 0x71,
+            0x6a, 0x31, 0x0e, 0xc3, 0x3e, 0x20, 0x0f, 0xa3
+        };
+
+
+        std::string BlockList;
+        BlockList.resize(0x1000, 0);
+        ULONG BlockListLen = 0;
+        SbieApi_Call(API_GET_SECURE_PARAM, 5, L"CertBlockList", (ULONG_PTR)BlockList.c_str(), BlockList.size(), (ULONG_PTR)&BlockListLen, 1);
+
+        if (BlockListLen < sizeof(BlockList0) - 1)
+        {
+            SbieApi_Call(API_SET_SECURE_PARAM, 3, L"CertBlockList", BlockList0, sizeof(BlockList0) - 1);
+            SbieApi_Call(API_SET_SECURE_PARAM, 3, L"CertBlockListSig", BlockListSig0, sizeof(BlockListSig0));
+            BlockList = BlockList0;
+        }
+    }
+
+    //
+    // continue with driver/service init
     //
 
     if (ok) {
@@ -218,6 +267,43 @@ driver_started:
 
     if (ok) {
 
+#ifdef _M_ARM64
+
+        //
+        // Sandboxie on ARM64 requires x86 applications NOT to use the CHPE binaries.
+        // 
+        // So when ever the service starts it uses the global xtajit config to disable the use of CHPE binaries,
+        // for x86 processes and restores the original value on service shutdown.
+        //
+        // See comment in HookImageOptionsEx core/low/init.c for more details.
+        //
+
+        extern BOOLEAN DisableCHPE;
+        DisableCHPE = SbieApi_QueryConfBool(NULL, L"DisableCHPE", TRUE);
+
+        if (DisableCHPE) {
+            HKEY hkey = NULL;
+            LSTATUS rc = RegCreateKeyEx(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Wow64\\x86\\xtajit",
+                0, NULL, 0, KEY_ALL_ACCESS, NULL, &hkey, NULL);
+            if (rc == 0)
+            {
+                DWORD value;
+                DWORD size = sizeof(value);
+                rc = RegQueryValueEx(hkey, L"LoadCHPEBinaries_old", NULL, NULL, (BYTE*)&value, &size);
+                if (rc != 0) { // only save the old value when its not already saved
+                    rc = RegQueryValueEx(hkey, L"LoadCHPEBinaries", NULL, NULL, (BYTE*)&value, &size);
+                    if (rc == 0)
+                        RegSetValueEx(hkey, L"LoadCHPEBinaries_old", NULL, REG_DWORD, (BYTE*)&value, size);
+                }
+
+                value = 0;
+                RegSetValueEx(hkey, L"LoadCHPEBinaries", NULL, REG_DWORD, (BYTE*)&value, sizeof(value));
+
+                RegCloseKey(hkey);
+            }
+        }
+#endif
+
         //
         // trigger manual invocation of LogMessage to collect any
         // messages that were logged while the driver was starting
@@ -232,11 +318,11 @@ driver_started:
         // at system boot and run them on service start
         //
 
-        WCHAR boxname[64];
+        WCHAR boxname[BOXNAME_COUNT];
         for (ULONG i = 0; ; ++i) {
 
             rc = SbieApi_QueryConfAsIs(
-                NULL, L"StartSystemBox", i, boxname, sizeof(WCHAR) * 64);
+                NULL, L"StartSystemBox", i, boxname, (BOXNAME_COUNT - 2) * sizeof(WCHAR));
             if (rc != 0)
                 break;
 

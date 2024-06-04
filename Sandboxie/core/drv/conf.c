@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
- * Copyright 2020-2021 David Xanatos, xanasoft.com
+ * Copyright 2020-2023 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -51,10 +51,10 @@
 //---------------------------------------------------------------------------
 
 //
-// Note: we want to preserver the order of the settings when enumerating
-//          hence we can not replace the list with a hash map entierly
-//          instead we use booth, here the hash map ise used only for lookups
-//          the keys in the map are only pointers to the name fileds in the list entries
+// Note: we want to preserve the order of the settings when enumerating
+//          hence we can not replace the list with a hash map entirely
+//          instead we use both, here the hash map is used only for lookups
+//          the keys in the map are only pointers to the name fields in the list entries
 //
 
 typedef struct _CONF_DATA {
@@ -64,8 +64,9 @@ typedef struct _CONF_DATA {
 #ifdef USE_CONF_MAP
     HASH_MAP sections_map;
 #endif
-    BOOLEAN home;       // TRUE if configuration read from Driver_Home_Path
-    ULONG encoding;     // 0 - unicode, 1 - utf8, 2 - unicode (byte swaped)
+    ULONG home;         // 1 if configuration read from Driver_Home_Path
+    WCHAR* path;
+    ULONG encoding;     // 0 - unicode, 1 - utf8, 2 - unicode (byte swapped)
     volatile ULONG use_count;
 
 } CONF_DATA;
@@ -119,7 +120,7 @@ static NTSTATUS Conf_Merge_Global(
 
 static NTSTATUS Conf_Merge_Template(
     CONF_DATA *data, ULONG session_id,
-    const WCHAR *tmpl_name, CONF_SECTION *section);
+    const WCHAR *tmpl_name, CONF_SECTION *section, const WCHAR* name);
 
 static const WCHAR *Conf_Get_Helper(
     const WCHAR *section_name, const WCHAR *setting_name,
@@ -203,8 +204,8 @@ _FX NTSTATUS Conf_Read(ULONG session_id)
     WCHAR linenum_str[32];
     ULONG path_len;
     WCHAR *path = NULL;
-    BOOLEAN path_home;
-    STREAM *stream;
+    ULONG path_home;
+    STREAM *stream = NULL;
     POOL *pool;
 
     //
@@ -212,29 +213,59 @@ _FX NTSTATUS Conf_Read(ULONG session_id)
     // or (Home Path)\Sandboxie.ini
     //
 
-    path_len = 32;      // room for \SystemRoot
-    if (path_len < wcslen(Driver_HomePathDos) * sizeof(WCHAR))
-        path_len = wcslen(Driver_HomePathDos) * sizeof(WCHAR);
-    path_len += 64;     // room for \Sandboxie.ini
+    path_len = 260 * sizeof(WCHAR);
+    //path_len = 32;      // room for \SystemRoot
+    if (path_len < wcslen(Driver_HomePathDos) * sizeof(WCHAR) + 64)
+        path_len = wcslen(Driver_HomePathDos) * sizeof(WCHAR) + 64;
+    //path_len += 64;     // room for \Sandboxie.ini
+    
 
-    path = ExAllocatePoolWithTag(PagedPool, path_len, tzuk);
-    if (! path)
+    pool = Pool_Create();
+    if (! pool)
         return STATUS_INSUFFICIENT_RESOURCES;
+
+    path = Mem_Alloc(pool, path_len);
+    if (! path) {
+        Pool_Delete(pool);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    //
+    // try open a custom configuration file, if set
+    //
+
+    UNICODE_STRING IniPath = { 0, (USHORT)path_len - (4 * sizeof(WCHAR)), path };
+    status = GetRegString(RTL_REGISTRY_ABSOLUTE, Driver_RegistryPath, L"IniPath", &IniPath);
+    if (NT_SUCCESS(status)) {
+
+        if (path[0] != L'\\') {
+            wmemmove(path + 4, path, (IniPath.Length / sizeof(WCHAR)) + 1);
+            wmemcpy(path, L"\\??\\", 4);
+        }
+
+        path_home = 2;
+        status = Stream_Open(
+            &stream, path,
+            FILE_GENERIC_READ, 0, FILE_SHARE_READ, FILE_OPEN, 0);
+    }
 
     //
     // open the configuration file, try both places, home first
     //
 
-	path_home = TRUE; //  = FALSE;
-	RtlStringCbPrintfW(path, path_len, path_sandboxie, Driver_HomePathDos); // , SystemRoot);
+    if (!NT_SUCCESS(status)) {
 
-    status = Stream_Open(
-        &stream, path, FILE_GENERIC_READ, 0, FILE_SHARE_READ, FILE_OPEN, 0);
+        path_home = 1;
+        RtlStringCbPrintfW(path, path_len, path_sandboxie, Driver_HomePathDos);
+
+        status = Stream_Open(
+            &stream, path, FILE_GENERIC_READ, 0, FILE_SHARE_READ, FILE_OPEN, 0);
+    }
 
     if (status == STATUS_OBJECT_NAME_NOT_FOUND) {
 
-		path_home = FALSE; // = TRUE;
-		RtlStringCbPrintfW(path, path_len, path_sandboxie, SystemRoot); // , Driver_HomePathDos);
+		path_home = 0;
+		RtlStringCbPrintfW(path, path_len, path_sandboxie, SystemRoot);
 
         status = Stream_Open(
             &stream, path,
@@ -247,6 +278,7 @@ _FX NTSTATUS Conf_Read(ULONG session_id)
             status == STATUS_OBJECT_PATH_NOT_FOUND)
         {
             Log_Msg_Session(MSG_CONF_NO_FILE, NULL, NULL, session_id);
+            status = STATUS_SUCCESS; // we need to continue and load the Templates.ini with the defaults
         } else {
             wcscpy(linenum_str, L"(none)");
             Log_Status_Ex_Session(
@@ -255,7 +287,7 @@ _FX NTSTATUS Conf_Read(ULONG session_id)
     }
 
     if (! NT_SUCCESS(status)) {
-        ExFreePoolWithTag(path, tzuk);
+        Pool_Delete(pool);
         return status;
     }
 
@@ -263,23 +295,23 @@ _FX NTSTATUS Conf_Read(ULONG session_id)
     // read data from the file
     //
 
-    pool = Pool_Create();
-    if (! pool)
-        status = STATUS_INSUFFICIENT_RESOURCES;
-
-    else {
-
-        data.pool = pool;
-        List_Init(&data.sections);
+    data.pool = pool;
+    List_Init(&data.sections);
 #ifdef USE_CONF_MAP
-        map_init(&data.sections_map, data.pool);
-        data.sections_map.func_key_size = NULL;
-        data.sections_map.func_match_key = &str_map_match;
-        data.sections_map.func_hash_key = &str_map_hash;
-        map_resize(&data.sections_map, 16); // prepare some buckets for better performance
+    map_init(&data.sections_map, data.pool);
+    data.sections_map.func_key_size = NULL;
+    data.sections_map.func_match_key = &str_map_match;
+    data.sections_map.func_hash_key = &str_map_hash;
+    map_resize(&data.sections_map, 16); // prepare some buckets for better performance
 #endif
-        data.home = path_home;
-        data.use_count = 0;
+    data.home = path_home;
+    if (path_home == 2)
+        data.path = Mem_AllocStringEx(data.pool, path, TRUE);
+    else
+        data.path = NULL;
+    data.use_count = 0;
+
+    if (stream) {
 
         status = Stream_Read_BOM(stream, &data.encoding);
 
@@ -290,7 +322,7 @@ _FX NTSTATUS Conf_Read(ULONG session_id)
             status = STATUS_SUCCESS;
     }
 
-    Stream_Close(stream);
+    if (stream) Stream_Close(stream);
 
     //
     // read (Home Path)\Templates.ini
@@ -366,6 +398,7 @@ _FX NTSTATUS Conf_Read(ULONG session_id)
         }
     }
 
+    Mem_Free(path, path_len);
     if (pool)
         Pool_Delete(pool);  // may be either data.pool or old Conf_Data.pool
 
@@ -395,7 +428,6 @@ _FX NTSTATUS Conf_Read(ULONG session_id)
         }
     }
 
-    ExFreePoolWithTag(path, tzuk);
     return status;
 }
 
@@ -799,7 +831,7 @@ _FX NTSTATUS Conf_Merge_Templates(CONF_DATA *data, ULONG session_id)
 #ifdef USE_CONF_MAP
 
         //
-        // use a keyed itterator to quickly go through all Template=Xxx settings
+        // use a keyed iterator to quickly go through all Template=Xxx settings
         //
 
         map_iter_t iter2 = map_key_iter(&sandbox->settings_map, Conf_Template);
@@ -834,7 +866,7 @@ _FX NTSTATUS Conf_Merge_Templates(CONF_DATA *data, ULONG session_id)
             //
 
             status = Conf_Merge_Template(
-                data, session_id, setting->value, sandbox);
+                data, session_id, setting->value, sandbox, NULL);
 
             if (! NT_SUCCESS(status))
                 return status;
@@ -923,7 +955,7 @@ _FX NTSTATUS Conf_Merge_Global(
             //
 
             status = Conf_Merge_Template(
-                data, session_id, setting->value, sandbox);
+                data, session_id, setting->value, sandbox, L"GlobalSettings");
 
             if (! NT_SUCCESS(status))
                 return status;
@@ -953,7 +985,7 @@ _FX NTSTATUS Conf_Merge_Global(
 
 _FX NTSTATUS Conf_Merge_Template(
     CONF_DATA *data, ULONG session_id,
-    const WCHAR *tmpl_name, CONF_SECTION *section)
+    const WCHAR *tmpl_name, CONF_SECTION *section, const WCHAR* name)
 {
     CONF_SECTION *tmpl = NULL;
 
@@ -1004,7 +1036,7 @@ _FX NTSTATUS Conf_Merge_Template(
     } else {
 
         Log_Msg_Session(MSG_CONF_MISSING_TMPL,
-                        section->name, tmpl_name, session_id);
+                        name ? name : section->name, tmpl_name, session_id);
     }
 
     return STATUS_SUCCESS;
@@ -1047,7 +1079,7 @@ _FX const WCHAR *Conf_Get_Helper(
     if (section) {
 #ifdef USE_CONF_MAP
         //
-        // use a keyed itterator to quickly go through all matching settings
+        // use a keyed iterator to quickly go through all matching settings
         //
 
         map_iter_t iter2 = map_key_iter(&section->settings_map, setting_name);
@@ -1221,7 +1253,8 @@ _FX const WCHAR *Conf_Get(
         // return "H" if configuration file was found in the Sandboxie
         // home directory, or "W" if it was found in Windows directory
 
-        value = (Conf_Data.home) ? Conf_H : Conf_W;
+        if (Conf_Data.path) value = Conf_Data.path;
+        else value = (Conf_Data.home) ? Conf_H : Conf_W;
 
     } else if ((!have_section) && have_setting &&
         _wcsicmp(setting, L"IniEncoding") == 0) {
@@ -1422,6 +1455,7 @@ _FX NTSTATUS Conf_Api_Reload(PROCESS *proc, ULONG64 *parms)
 #endif
 
 		Conf_Data.home = FALSE;
+        Conf_Data.path = NULL;
         Conf_Data.encoding = 0;
 
         ExReleaseResourceLite(Conf_Lock);
@@ -1458,8 +1492,7 @@ _FX NTSTATUS Conf_Api_Reload(PROCESS *proc, ULONG64 *parms)
             }
         }
 
-        BOOLEAN obj_filter_enabled = Conf_Get_Boolean(NULL, L"EnableObjectFiltering", 0, FALSE);
-        extern BOOLEAN Obj_CallbackInstalled;
+        BOOLEAN obj_filter_enabled = Conf_Get_Boolean(NULL, L"EnableObjectFiltering", 0, TRUE);
         if (Obj_CallbackInstalled != obj_filter_enabled && Driver_OsVersion > DRIVER_WINDOWS_VISTA) {
             if (obj_filter_enabled) {
                 Obj_Load_Filter();
@@ -1469,16 +1502,13 @@ _FX NTSTATUS Conf_Api_Reload(PROCESS *proc, ULONG64 *parms)
             }
         }
 
-        extern UCHAR SandboxieLogonSid[SECURITY_MAX_SID_SIZE];
-        if (Conf_Get_Boolean(NULL, L"AllowSandboxieLogon", 0, FALSE) && SandboxieLogonSid[0] == 0) {
-            extern BOOLEAN Token_Init_SbieLogin(void);
-            Token_Init_SbieLogin();
-        }
+        void Syscall_Update_Lockdown();
+        Syscall_Update_Lockdown();
 
         /*
 #ifdef HOOK_WIN32K
         // must be windows 10 or later
-        if (Driver_OsBuild >= 10041) {
+        if (Driver_OsBuild >= 14393) {
             extern ULONG Syscall_MaxIndex32;
             if (Conf_Get_Boolean(NULL, L"EnableWin32kHooks", 0, FALSE) && Syscall_MaxIndex32 == 0) {
                 if(Syscall_Init_List32()){
@@ -1492,7 +1522,13 @@ _FX NTSTATUS Conf_Api_Reload(PROCESS *proc, ULONG64 *parms)
         InterlockedExchange(&reconf_lock, 0);
     }
 
-    Api_SendServiceMessage(SVC_CONFIG_UPDATED, 0, NULL);
+    //
+    // notify service about setting change
+    //
+
+    ULONG process_id = (ULONG)PsGetCurrentProcessId();
+
+    Api_SendServiceMessage(SVC_CONFIG_UPDATED, sizeof(process_id), &process_id);
 
 finish:
     return status;
@@ -1514,6 +1550,10 @@ _FX NTSTATUS Conf_Api_Query(PROCESS *proc, ULONG64 *parms)
     ULONG index;
     const WCHAR *value1;
     WCHAR *value2;
+
+    //
+    // prepare parameters
+    // 
 
     // parms[1] --> WCHAR [66] SectionName
 
@@ -1654,6 +1694,7 @@ _FX BOOLEAN Conf_Init(void)
 #endif
 
     Conf_Data.home = FALSE;
+    Conf_Data.path = NULL;
     Conf_Data.encoding = 0;
 
     if (! Mem_GetLockResource(&Conf_Lock, TRUE))

@@ -14,6 +14,8 @@ public:
 	static void					SetMaxCellWidth(int iMaxWidth) { m_MaxCellWidth = iMaxWidth; }
 	static void					SetCellSeparator(const QString& Sep) { m_CellSeparator = Sep; }
 
+	virtual QList<QStringList>	DumpPanel();
+
 	static QString				m_CopyCell;
 	static QString				m_CopyRow;
 	static QString				m_CopyPanel;
@@ -44,7 +46,9 @@ protected slots:
 	virtual void				RecursiveCopyPanel(const QModelIndex& ModelIndex, QList<QStringList>& Rows, int Level = 0);
 
 protected:
-	void						FormatAndCopy(QList<QStringList> Rows, bool Headder = true);
+	void						UpdateCopyMenu();
+	void						AddCopyMenu(QMenu* pMenu, bool bAddSeparator = true);
+	void						FormatAndCopy(QList<QStringList> Rows, bool Header = true);
 
 	QMenu*						m_pMenu;
 
@@ -67,7 +71,7 @@ public:
 	CPanelWidget(QWidget *parent = 0) : CPanelView(parent)
 	{
 		m_pMainLayout = new QVBoxLayout();
-		m_pMainLayout->setMargin(0);
+		m_pMainLayout->setContentsMargins(0,0,0,0);
 		this->setLayout(m_pMainLayout);
 
 		m_pTreeList = new T();
@@ -107,34 +111,37 @@ class MISCHELPERS_EXPORT CPanelWidgetEx : public CPanelWidget<QTreeWidgetEx>
 public:
 	CPanelWidgetEx(QWidget *parent = 0) : CPanelWidget<QTreeWidgetEx>(parent) 
 	{
-		m_pFinder = new CFinder(NULL, this, false);
+		m_pFinder = new CFinder(NULL, this, CFinder::eRegExp | CFinder::eCaseSens);
 		m_pMainLayout->addWidget(m_pFinder);
-		QObject::connect(m_pFinder, SIGNAL(SetFilter(const QRegExp&, bool, int)), this, SLOT(SetFilter(const QRegExp&, bool, int)));
+		QObject::connect(m_pFinder, SIGNAL(SetFilter(const QString&, int, int)), this, SLOT(SetFilter(const QString&, int, int)));
 	}
 
-	static void ApplyFilter(QTreeWidgetEx* pTree, QTreeWidgetItem* pItem, const QRegExp& Exp/*, bool bHighLight = false, int Col = -1*/)
+	static void ApplyFilter(QTreeWidgetEx* pTree, QTreeWidgetItem* pItem, const QRegularExpression* Exp/*, bool bHighLight = false, int Col = -1*/)
 	{
 		for (int j = 0; j < pTree->columnCount(); j++) {
-			pItem->setForeground(j, (m_DarkMode && !Exp.isEmpty() && pItem->text(j).contains(Exp)) ? Qt::yellow : pTree->palette().color(QPalette::WindowText));
-			pItem->setBackground(j, (!m_DarkMode && !Exp.isEmpty() && pItem->text(j).contains(Exp)) ? Qt::yellow : pTree->palette().color(QPalette::Base));
+			pItem->setForeground(j, (m_DarkMode && Exp && pItem->text(j).contains(*Exp)) ? Qt::yellow : pTree->palette().color(QPalette::WindowText));
+			pItem->setBackground(j, (!m_DarkMode && Exp && pItem->text(j).contains(*Exp)) ? Qt::yellow : pTree->palette().color(QPalette::Base));
 		}
 
 		for (int i = 0; i < pItem->childCount(); i++)
-		{
 			ApplyFilter(pTree, pItem->child(i), Exp/*, bHighLight, Col*/);
-		}
 	}
 
-	static void ApplyFilter(QTreeWidgetEx* pTree, const QRegExp& Exp/*, bool bHighLight = false, int Col = -1*/)
+	static void ApplyFilter(QTreeWidgetEx* pTree, const QRegularExpression* Exp/*, bool bHighLight = false, int Col = -1*/)
 	{
 		for (int i = 0; i < pTree->topLevelItemCount(); i++)
 			ApplyFilter(pTree, pTree->topLevelItem(i), Exp/*, bHighLight, Col*/);
 	}
 
 private slots:
-	void SetFilter(const QRegExp& Exp, bool bHighLight = false, int Col = -1) // -1 = any
+	void SetFilter(const QString& Exp, int iOptions, int Col = -1) // -1 = any
 	{
-		ApplyFilter(m_pTreeList, Exp);
+		QScopedPointer<QRegularExpression> pRegExp;
+		if (!Exp.isEmpty()) {
+			QString ExpStr = ((iOptions & CFinder::eRegExp) == 0) ? Exp : (".*" + QRegularExpression::escape(Exp) + ".*");
+			pRegExp.reset(new QRegularExpression(ExpStr, (iOptions & CFinder::eCaseSens) != 0 ? QRegularExpression::NoPatternOption : QRegularExpression::CaseInsensitiveOption));
+		}
+		ApplyFilter(m_pTreeList, pRegExp.data());
 	}
 
 private:
@@ -152,14 +159,12 @@ public:
 	{
 		m_pModel = pModel;
 
-		m_pSortProxy = new CSortFilterProxyModel(false, this);
+		m_pSortProxy = new CSortFilterProxyModel(this);
 		m_pSortProxy->setSortRole(Qt::EditRole);
 		m_pSortProxy->setSourceModel(m_pModel);
 		m_pSortProxy->setDynamicSortFilter(true);
 
 		m_pTreeList->setModel(m_pSortProxy);
-		((CSortFilterProxyModel*)m_pSortProxy)->setView(m_pTreeList);
-		
 
 		m_pTreeList->setSelectionMode(QAbstractItemView::ExtendedSelection);
 #ifdef WIN32

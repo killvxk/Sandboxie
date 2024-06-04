@@ -12,6 +12,7 @@ public:
 	CBoxJob(QObject* parent = NULL) : QObject(parent) { }
 
 	virtual SB_PROGRESS	Start() = 0;
+	virtual void		Finished() = 0;
 
 	CSbieProgressPtr	GetProgress()	{ return m_pProgress; }
 	QString				GetDescription(){ return m_Description; }
@@ -31,16 +32,17 @@ class CCleanUpJob : public CBoxJob
 {
 protected:
 	friend CSandBoxPlus;
-	CCleanUpJob(CSandBoxPlus* pBox, bool DeleteShapshots = true, bool bOnAutoDelete = false) : CBoxJob((QObject*)pBox) { 
+	CCleanUpJob(CSandBoxPlus* pBox, bool DeleteSnapshots = true, bool bOnAutoDelete = false) : CBoxJob((QObject*)pBox) { 
 		m_Description = tr("Deleting Content");
-		m_DeleteShapshots = DeleteShapshots; 
+		m_DeleteSnapshots = DeleteSnapshots; 
 		m_bOnAutoDelete = bOnAutoDelete;
 	}
 
 	virtual SB_PROGRESS	Start();
+	virtual void		Finished();
 
 protected:
-	bool m_DeleteShapshots;
+	bool m_DeleteSnapshots;
 	bool m_bOnAutoDelete;
 };
 
@@ -58,6 +60,7 @@ protected:
 	}
 
 	virtual SB_PROGRESS	Start();
+	virtual void		Finished() {}
 
 protected:
 	QString m_Command;

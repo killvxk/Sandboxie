@@ -17,25 +17,26 @@ CSnapshotsWindow::CSnapshotsWindow(const CSandBoxPtr& pBox, QWidget *parent)
 	//flags &= ~Qt::WindowCloseButtonHint;
 	setWindowFlags(flags);
 
-	bool bAlwaysOnTop = theConf->GetBool("Options/AlwaysOnTop", false);
-	this->setWindowFlag(Qt::WindowStaysOnTopHint, bAlwaysOnTop);
+	this->setWindowFlag(Qt::WindowStaysOnTopHint, theGUI->IsAlwaysOnTop());
 
 	ui.setupUi(this);
 	this->setWindowTitle(tr("%1 - Snapshots").arg(pBox->GetName()));
 
+	ui.treeSnapshots->setAlternatingRowColors(theConf->GetBool("Options/AltRowColors", false));
+
+
 	m_pBox = pBox;
 	m_SaveInfoPending = 0;
 
-#ifdef WIN32
 	QStyle* pStyle = QStyleFactory::create("windows");
 	ui.treeSnapshots->setStyle(pStyle);
-#endif
+	ui.treeSnapshots->setItemDelegate(new CTreeItemDelegate());
 	ui.treeSnapshots->setExpandsOnDoubleClick(false);
 
-	m_pSnapshotModel = new CSimpleTreeModel();
+	m_pSnapshotModel = new CSimpleTreeModel(this);
 	m_pSnapshotModel->AddColumn(tr("Snapshot"), "Name");
 
-	/*m_pSortProxy = new CSortFilterProxyModel(false, this);
+	/*m_pSortProxy = new CSortFilterProxyModel(this);
 	m_pSortProxy->setSortRole(Qt::EditRole);
 	m_pSortProxy->setSourceModel(m_pSnapshotModel);
 	m_pSortProxy->setDynamicSortFilter(true);*/
@@ -91,8 +92,8 @@ void CSnapshotsWindow::closeEvent(QCloseEvent *e)
 void CSnapshotsWindow::UpdateSnapshots(bool AndSelect)
 {
 	m_SnapshotMap.clear();
-	QList<SBoxSnapshot> SnapshotList = m_pBox->GetSnapshots(&m_CurSnapshot, &m_DefaultSnapshot);
-	foreach(const SBoxSnapshot& Snapshot, SnapshotList)
+	QMap<QString, SBoxSnapshot> Snapshots = m_pBox->GetSnapshots(&m_CurSnapshot, &m_DefaultSnapshot);
+	foreach(const SBoxSnapshot& Snapshot, Snapshots)
 	{
 		QVariantMap BoxSnapshot;
 		BoxSnapshot["ID"] = Snapshot.ID;
@@ -135,7 +136,7 @@ void CSnapshotsWindow::UpdateSnapshot(const QModelIndex& Index)
 	QVariant ID = m_pSnapshotModel->GetItemID(Index);
 
 	OnSaveInfo();
-	m_SellectedID = ID;
+	m_SelectedID = ID;
 
 	QVariantMap BoxSnapshot = m_SnapshotMap[ID];
 
@@ -162,7 +163,7 @@ void CSnapshotsWindow::OnSaveInfo()
 		return;
 	m_SaveInfoPending = 0;
 
-	m_pBox->SetSnapshotInfo(m_SellectedID.toString(), ui.txtName->text(), ui.txtInfo->toPlainText());
+	m_pBox->SetSnapshotInfo(m_SelectedID.toString(), ui.txtName->text(), ui.txtInfo->toPlainText());
 	UpdateSnapshots();
 }
 
@@ -179,10 +180,7 @@ void CSnapshotsWindow::OnTakeSnapshot()
 
 void CSnapshotsWindow::OnSelectSnapshot()
 {
-	QModelIndex Index = ui.treeSnapshots->currentIndex();
-	//QModelIndex ModelIndex = m_pSortProxy->mapToSource(Index);
-	//QVariant ID = m_pSnapshotModel->GetItemID(ModelIndex);
-	QVariant ID = m_pSnapshotModel->GetItemID(Index);
+	QVariant ID = GetCurrentItem();
 
 	SelectSnapshot(ID.toString());
 }
@@ -202,10 +200,7 @@ void CSnapshotsWindow::SelectSnapshot(const QString& ID)
 
 void CSnapshotsWindow::OnChangeDefault()
 {
-	QModelIndex Index = ui.treeSnapshots->currentIndex();
-	//QModelIndex ModelIndex = m_pSortProxy->mapToSource(Index);
-	//QVariant ID = m_pSnapshotModel->GetItemID(ModelIndex);
-	QVariant ID = m_pSnapshotModel->GetItemID(Index);
+	QVariant ID = GetCurrentItem();
 
 	if (ui.chkDefault->isChecked())
 		m_DefaultSnapshot = ID.toString();
@@ -217,12 +212,19 @@ void CSnapshotsWindow::OnChangeDefault()
 	UpdateSnapshots();
 }
 
-void CSnapshotsWindow::OnRemoveSnapshot()
+QVariant CSnapshotsWindow::GetCurrentItem()
 {
 	QModelIndex Index = ui.treeSnapshots->currentIndex();
+	if (!Index.isValid() && !ui.treeSnapshots->selectionModel()->selectedIndexes().isEmpty())
+		Index = ui.treeSnapshots->selectionModel()->selectedIndexes().first();
 	//QModelIndex ModelIndex = m_pSortProxy->mapToSource(Index);
 	//QVariant ID = m_pSnapshotModel->GetItemID(ModelIndex);
-	QVariant ID = m_pSnapshotModel->GetItemID(Index);
+	return m_pSnapshotModel->GetItemID(Index);
+}
+
+void CSnapshotsWindow::OnRemoveSnapshot()
+{
+	QVariant ID = GetCurrentItem();
 
 	if (QMessageBox("Sandboxie-Plus", tr("Do you really want to delete the selected snapshot?"), QMessageBox::Question, QMessageBox::Yes, QMessageBox::No | QMessageBox::Default | QMessageBox::Escape, QMessageBox::NoButton, this).exec() != QMessageBox::Yes)
 		return;
@@ -239,9 +241,9 @@ void CSnapshotsWindow::HandleResult(SB_PROGRESS Status)
 	if (Status.GetStatus() == OP_ASYNC)
 	{
 		connect(Status.GetValue().data(), SIGNAL(Finished()), this, SLOT(UpdateSnapshots()));
-		theGUI->AddAsyncOp(Status.GetValue());
+		theGUI->AddAsyncOp(Status.GetValue(), false, tr("Performing Snapshot operation..."), this);
 	}
 	else if (Status.IsError())
-		CSandMan::CheckResults(QList<SB_STATUS>() << Status);
+		theGUI->CheckResults(QList<SB_STATUS>() << Status, this);
 	UpdateSnapshots();
 }

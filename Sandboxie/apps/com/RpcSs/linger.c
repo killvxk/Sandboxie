@@ -400,7 +400,7 @@ int DoLingerLeader(void)
         process_count += 128;
 
         ULONG* pids = HeapAlloc(
-            GetProcessHeap(), HEAP_GENERATE_EXCEPTIONS, sizeof(ULONG) * (process_count + 1)); // allocate oen more for the -1 marker
+            GetProcessHeap(), HEAP_GENERATE_EXCEPTIONS, sizeof(ULONG) * (process_count + 1)); // allocate one more for the -1 marker
         SbieApi_EnumProcessEx(NULL, FALSE, -1, pids, &process_count); // query pids
         pids[process_count] = -1; // set the end marker
 
@@ -451,7 +451,7 @@ int DoLingerLeader(void)
                     // (via forced mechanism or as a child of start.exe)
                     // and then don't terminate it as a linger
                     //
-                    // (note that sevice processes running as local system
+                    // (note that service processes running as local system
                     // are also children of start.exe, but in that case,
                     // is_local_system_sid would be TRUE and we would not
                     // reach this point.)
@@ -538,7 +538,7 @@ int DoLingerLeader(void)
         // don't terminate if a lingering process has an open window
         //
 
-        if (terminate_and_stop) {
+        if (terminate_and_stop && SbieApi_QueryConfBool(NULL, L"LingerExemptWnds", TRUE)) {
 
             //
             // if a process in the PID list has a window LingerEnumWindowsProc will return FALSE
@@ -554,7 +554,7 @@ int DoLingerLeader(void)
         // don't terminate if a lingering process has just started recently
         //
 
-        if (terminate_and_stop) {
+        if (terminate_and_stop && SbieApi_QueryConfBool(NULL, L"LingerLeniency", TRUE)) {
             for (i = 0; i < process_count; ++i) {
                 HANDLE hProcess = NULL;
                 ULONG64 ProcessFlags = SbieApi_QueryProcessInfo(
@@ -600,6 +600,9 @@ do_kill_all:
             break;
         }
     }
+
+	// cleanup CS
+	DeleteCriticalSection(&ProcessCritSec);
 
     // this process is no longer needed
 

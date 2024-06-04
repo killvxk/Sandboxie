@@ -2,7 +2,6 @@
 #include "PopUpWindow.h"
 #include <windows.h>
 #include <QWindow>
-#include "SandMan.h"
 #include "../MiscHelpers/Common/Common.h"
 #include "../MiscHelpers/Common/Settings.h"
 #include "../SbiePlusAPI.h"
@@ -11,6 +10,8 @@ bool CPopUpWindow__DarkMode = false;
 
 CPopUpWindow::CPopUpWindow(QWidget* parent) : QMainWindow(parent)
 {
+	m_HideAllMessages = false;
+
 	Qt::WindowFlags flags = windowFlags();
 	flags |= Qt::CustomizeWindowHint;
 	//flags &= ~Qt::WindowContextHelpButtonHint;
@@ -103,7 +104,7 @@ void CPopUpWindow::Show()
 		this->move(scrRect.width() - 600 - 20, scrRect.height() - 200 - 50);
 	}
 
-	SafeShow(this);
+	CSandMan::SafeShow(this);
 }
 
 void CPopUpWindow::Poke()
@@ -136,24 +137,71 @@ void CPopUpWindow::timerEvent(QTimerEvent* pEvent)
 	if (pEvent->timerId() != m_uTimerID)
 		return;
 
-	if (m_iTopMost > -5 && (--m_iTopMost == 0)) {
+	if (m_iTopMost > 0)
+	{
+		QWidget *topMostWindow = nullptr;
+		for (QWidget *widget : QApplication::topLevelWidgets()) {
+			if (widget->isVisible() && widget->isActiveWindow()) {
+				topMostWindow = widget;
+				break;
+			}
+		}
+
+		if(topMostWindow && (topMostWindow->inherits("CCheckableMessageBox") || topMostWindow->inherits("QMessageBox")))
+		{
+			m_iTopMost = 0;
+			SetWindowPos((HWND)this->winId(), HWND_NOTOPMOST , 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+			SetWindowPos((HWND)topMostWindow->winId(), HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+			SetWindowPos((HWND)topMostWindow->winId(), HWND_NOTOPMOST , 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+		}
+	}
+
+	if (m_iTopMost > -5 && (--m_iTopMost == 0)) 
+	{
 		SetWindowPos((HWND)this->winId(), HWND_NOTOPMOST , 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 	}
 }
 
-void CPopUpWindow::AddLogMessage(const QString& Message, quint32 MsgCode, const QStringList& MsgData, quint32 ProcessId)
+void CPopUpWindow::AddLogMessage(quint32 MsgCode, const QStringList& MsgData, quint32 ProcessId)
 {
 	if (IsMessageHidden(MsgCode, MsgData))
 		return;
 
-	CPopUpMessage* pEntry = new CPopUpMessage(Message, MsgCode, MsgData, this);
+	CBoxedProcessPtr pProcess;
+	QString ProcessName;
+	QString BoxName;
+	if (ProcessId == 4)
+		ProcessName = "System";
+	else {
+		pProcess = theAPI->GetProcessById(ProcessId);
+		if (!pProcess.isNull()) {
+			ProcessName = pProcess->GetProcessName();
+			BoxName = pProcess->GetBoxName();
+		}
+		else
+			ProcessName = QString("PID %1").arg(ProcessId);
+	}
+
+	QString Message = theGUI->FormatSbieMessage(MsgCode, MsgData, ProcessName);
+	QString Link = theGUI->MakeSbieMsgLink(MsgCode, MsgData, ProcessName);
+
+	int RowCounter = ui.table->rowCount();
+	if (RowCounter > 0) {
+		CPopUpMessage* pEntry = qobject_cast<CPopUpMessage*>(ui.table->cellWidget(RowCounter-1, 0));
+		if (pEntry && pEntry->GetMsgString() == Message) {
+			pEntry->Repeat();
+			return;
+		}
+	}
+
+	CPopUpMessage* pEntry = new CPopUpMessage(Message, Link, MsgCode, MsgData, ProcessName, BoxName, this);
 	QObject::connect(pEntry, SIGNAL(Dismiss()), this, SLOT(OnDismissMessage()));
 	QObject::connect(pEntry, SIGNAL(Hide()), this, SLOT(OnHideMessage()));
 	AddEntry(pEntry);
 
 	if ((MsgCode & 0xFFFF) == 1319) // Blocked spooler print to file
 	{
-		CBoxedProcessPtr pProcess = theAPI->GetProcessById(ProcessId);
 		if (pProcess.isNull() || pProcess->IsTerminated())
 			return;
 
@@ -185,7 +233,15 @@ void CPopUpWindow::ReloadHiddenMessages()
 	QStringList HiddenMessages = theAPI->GetUserSettings()->GetTextList("SbieCtrl_HideMessage", true);
 	foreach(const QString& HiddenMessage, HiddenMessages)
 	{
+		if (HiddenMessage == "*") {
+			m_HideAllMessages = true;
+			m_HiddenMessages.clear();
+			break;
+		}
+
 		StrPair CodeDetail = Split2(HiddenMessage, ",");
+		if (CodeDetail.first.left(4) == "SBIE" || CodeDetail.first.left(4) == "SBOX")
+			CodeDetail.first = CodeDetail.first.mid(4);
 		m_HiddenMessages.insert(CodeDetail.first.toInt(), CodeDetail.second);
 	}
 }
@@ -206,7 +262,7 @@ void CPopUpWindow::OnHideMessage()
 
 	m_HiddenMessages.insert(pEntry->GetMsgId(), pEntry->GetMsgData(1));
 	if (theAPI->GetUserSettings() != NULL)
-		theAPI->GetUserSettings()->AppendText("SbieCtrl_HideMessage", QString("%1, %2").arg(pEntry->GetMsgId()).arg(pEntry->GetMsgData(1)));
+		theAPI->GetUserSettings()->AppendText("SbieCtrl_HideMessage", QString("%1,%2").arg(pEntry->GetMsgId()).arg(pEntry->GetMsgData(1)));
 
 	for (int i = 0; i < ui.table->rowCount(); i++)
 	{
@@ -221,9 +277,16 @@ void CPopUpWindow::OnHideMessage()
 
 bool CPopUpWindow::IsMessageHidden(quint32 MsgCode, const QStringList& MsgData)
 {
+	if (m_HideAllMessages)
+		return true;
+
 	foreach(const QString& Details, m_HiddenMessages.values(MsgCode & 0xFFFF))
 	{
-		if(Details.isEmpty() || (MsgData.size() >= 2 && Details.compare(MsgData[1]) == 0))
+		if(Details.isEmpty())
+			return true;
+
+		QRegularExpression exp("^" + QRegularExpression::escape(Details).replace("\\*",".*").replace("\\?","."));
+		if(MsgData.size() >= 2 && exp.match(MsgData[1]).hasMatch())
 			return true;
 	}
 	return false;
@@ -322,7 +385,7 @@ void CPopUpWindow::AddFileToRecover(const QString& FilePath, QString BoxPath, co
 	if (BoxPath.isEmpty()) // legacy case, no BoxName, no support for driver serial numbers
 		BoxPath = theAPI->GetBoxedPath(pBox->GetName(), FilePath);
 
-	CPopUpRecovery* pEntry = new CPopUpRecovery(Message, FilePath, BoxPath, pBox->GetName(), this);
+	CPopUpRecovery* pEntry = new CPopUpRecovery(Message, FilePath, theAPI->GetBoxedPath(pBox.data(), FilePath), pBox->GetName(), this);
 
 	QStringList RecoverTargets = theAPI->GetUserSettings()->GetTextList("SbieCtrl_RecoverTarget", true);
 	pEntry->m_pTarget->insertItems(pEntry->m_pTarget->count()-1, RecoverTargets);
@@ -380,7 +443,7 @@ void CPopUpWindow::OnRecoverFile(int Action)
 	QList<QPair<QString, QString>> FileList;
 	FileList.append(qMakePair(pEntry->m_BoxPath, RecoveryFolder + "\\" + FileName));
 
-	SB_PROGRESS Status = theGUI->RecoverFiles(FileList, Action);
+	SB_PROGRESS Status = theGUI->RecoverFiles(pEntry->m_BoxName, FileList, theGUI, Action);
 	if (Status.GetStatus() == OP_ASYNC)
 		theGUI->AddAsyncOp(Status.GetValue());
 		

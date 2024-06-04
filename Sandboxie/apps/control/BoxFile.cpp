@@ -320,7 +320,8 @@ bool CBoxFile::GetAbsolutePathForRecoveryFolder(WCHAR *buf, ULONG buf_len)
 
     if (NT_SUCCESS(status)) {
 
-        status = SbieApi_GetFileName(hFile, buf_len - 4, buf);
+        buf_len -= 4;
+        status = SbieApi_GetFileName(hFile, buf, &buf_len, NULL);
         if (status == 0 && SavePath.CompareNoCase(buf) != 0)
             converted = true;
 
@@ -1154,25 +1155,6 @@ BOOL CBoxFile::GetBoxCreationTime(FILETIME *out_time)
 BOOL CBoxFile::QueryFileAttributes(
     const WCHAR *path, ULONG *attrs, ULONG64 *size)
 {
-    NTSTATUS status;
-    UNICODE_STRING uni;
-    OBJECT_ATTRIBUTES objattrs;
-    FILE_NETWORK_OPEN_INFORMATION info;
-
     CString prefixed_path = CString(L"\\??\\") + path;
-    uni.Buffer = (WCHAR *)(const WCHAR *)prefixed_path;
-    uni.Length = prefixed_path.GetLength() * sizeof(WCHAR);
-    uni.MaximumLength = uni.Length + sizeof(WCHAR);
-
-    InitializeObjectAttributes(
-        &objattrs, &uni, OBJ_CASE_INSENSITIVE, NULL, NULL);
-
-    status = NtQueryFullAttributesFile(&objattrs, &info);
-
-    if (! NT_SUCCESS(status))
-        return FALSE;
-
-    *attrs = info.FileAttributes;
-    *size = info.EndOfFile.QuadPart;
-    return TRUE;
+    return SbieDll_QueryFileAttributes((const WCHAR*)prefixed_path, size, NULL, attrs);
 }

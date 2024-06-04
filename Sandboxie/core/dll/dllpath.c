@@ -28,7 +28,6 @@
 #include "core/drv/api_defs.h"
 #include "core/drv/api_flags.h"
 
-#define USE_MATCH_PATH_EX
 
 //---------------------------------------------------------------------------
 // Structures and Types
@@ -69,6 +68,9 @@ typedef struct _PATH_LIST_ANCHOR {
 #endif
     LIST open_ipc_path;
     LIST closed_ipc_path;
+#ifdef USE_MATCH_PATH_EX
+	LIST read_ipc_path;
+#endif
 
     LIST open_win_classes;
 
@@ -288,7 +290,8 @@ _FX void SbieDll_GetReadablePaths(WCHAR path_code, LIST **lists)
 
         lists[0] = &Dll_PathListAnchor->normal_ipc_path;
         lists[1] = &Dll_PathListAnchor->open_ipc_path;
-        lists[2] = NULL;
+        lists[2] = &Dll_PathListAnchor->read_ipc_path;
+        lists[3] = NULL;
 
     }
 }
@@ -296,60 +299,6 @@ _FX void SbieDll_GetReadablePaths(WCHAR path_code, LIST **lists)
 _FX void SbieDll_ReleaseFilePathLock()
 {
     LeaveCriticalSection(&Dll_FilePathListCritSec);
-}
-
-
-//---------------------------------------------------------------------------
-// Process_MatchPathList
-//---------------------------------------------------------------------------
-
-
-_FX int Process_MatchPathList(
-    WCHAR *path_lwr, ULONG path_len, LIST *list, ULONG* plevel, const WCHAR** patsrc)
-{
-    PATTERN *pat;
-    int match_len = 0;
-    ULONG level = plevel ? *plevel : -1; // lower is better, 3 is max value
-
-    pat = List_Head(list);
-    while (pat) {
-
-        ULONG cur_level = Pattern_Level(pat);
-        if (cur_level > level)
-            goto next; // no point testing patters with a to weak level
-
-        int cur_len = Pattern_MatchX(pat, path_lwr, path_len);
-        if (cur_len > match_len) {
-            match_len = cur_len;
-            level = cur_level;
-            if (patsrc) *patsrc = Pattern_Source(pat);
-            
-            // we need to test all entries to find the best match, so we dont break here
-        }
-
-        //
-        // if we have a pattern like C:\Windows\,
-        // we still want it to match a path like C:\Windows,
-        // hence we add a L'\\' to the path and check again
-        //
-
-        else if (path_lwr[path_len - 1] != L'\\') { 
-            path_lwr[path_len] = L'\\';
-            cur_len = Pattern_MatchX(pat, path_lwr, path_len + 1);
-            path_lwr[path_len] = L'\0';
-            if (cur_len > match_len) {
-                match_len = cur_len;
-                level = cur_level;
-                if (patsrc) *patsrc = Pattern_Source(pat);
-            }
-        }
-
-    next:
-        pat = List_Next(pat);
-    }
-
-    if (plevel) *plevel = level;
-    return match_len;
 }
 #endif
 
@@ -367,20 +316,11 @@ _FX ULONG SbieDll_MatchPath2(WCHAR path_code, const WCHAR *path, BOOLEAN bCheckO
     LIST *open_list, *closed_list, *write_list;
     PATTERN *pat;
 #endif
-    WCHAR *path_lwr;
-    ULONG path_len;
     ULONG mp_flags;
     ULONG monflag;
 
-    mp_flags = 0;
-
     if (path == (const WCHAR *)-1) {
         path = NULL;
-        path_len = 0;
-    } else {
-        path_len = wcslen(path);
-        if (! path_len)
-            return 0;
     }
 
     if (path_code == L'f') {
@@ -460,12 +400,12 @@ _FX ULONG SbieDll_MatchPath2(WCHAR path_code, const WCHAR *path, BOOLEAN bCheckO
         closed_list = &Dll_PathListAnchor->closed_ipc_path;
         write_list  = NULL;
 #ifdef USE_MATCH_PATH_EX
-        read_list   = NULL;
+        read_list   = &Dll_PathListAnchor->read_ipc_path;
 #endif
 
         if (! Dll_PathListAnchor->ipc_paths_initialized) {
 #ifdef USE_MATCH_PATH_EX
-            Dll_InitPathList2('ix', normal_list, open_list, closed_list, NULL, NULL);
+            Dll_InitPathList2('ix', normal_list, open_list, closed_list, NULL, read_list);
 #else
             Dll_InitPathList2('ix', open_list, closed_list, NULL);
 #endif
@@ -496,12 +436,81 @@ _FX ULONG SbieDll_MatchPath2(WCHAR path_code, const WCHAR *path, BOOLEAN bCheckO
     } else
         return 0;
 
+#ifdef USE_MATCH_PATH_EX
+    BOOLEAN use_rule_specificity = (path_code == L'f' || path_code == L'k' || path_code == L'i') && (Dll_ProcessFlags & SBIE_FLAG_RULE_SPECIFICITY) != 0;
+    //BOOLEAN use_privacy_mode = (path_code == L'f' || path_code == L'k') && (Dll_ProcessFlags & SBIE_FLAG_PRIVACY_MODE) != 0;
+
+    //mp_flags = SbieDll_MatchPathImpl(use_rule_specificity, use_privacy_mode, path, normal_list, open_list, closed_list, write_list, read_list);
+    mp_flags = SbieDll_MatchPathImpl(use_rule_specificity, path, normal_list, open_list, closed_list, write_list, read_list);
+#else
+    mp_flags = SbieDll_MatchPathImpl(path, open_list, closed_list, write_list);
+#endif
+
+    if (path_code == L'f')
+        LeaveCriticalSection(&Dll_FilePathListCritSec);
+
     //
-    // scan paths list.  if the path to match does not already end with
-    // a backslash character, we will check it twice, second time with
-    // a suffixing backslash.  this will make sure we match C:\X even
-    // even when {Open,Closed}XxxPath=C:\X\ (with a backslash suffix)
+    // make sure that Sandboxie resources marked "always in box"
+    // will not match any OpenIpcPath or ClosedIpcPath settings
     //
+
+    if (path_code == L'i' && mp_flags && path) {
+
+        WCHAR *LastBackSlash = wcsrchr(path, L'\\');
+        if (LastBackSlash && wcsncmp(LastBackSlash + 1,
+                                SBIE_BOXED_, SBIE_BOXED_LEN) == 0) {
+
+            mp_flags = 0;
+        }
+    }
+
+    //
+    // log access request in the resource access monitor
+    //
+
+    if (path && monflag) {
+
+        if (PATH_IS_CLOSED(mp_flags))
+            monflag |= MONITOR_DENY;
+        // If hts file or key it will be logged by the driver's trace facility
+        // we only have to log closed events as those never reach the driver
+        // we need to always log to have also logs in compartment mode
+        //else if (monflag == MONITOR_FILE || monflag == MONITOR_KEY)
+        //    bMonitorLog = FALSE;
+        else if (PATH_IS_OPEN(mp_flags))
+            monflag |= MONITOR_OPEN;
+
+        if (bMonitorLog)
+        {
+            SbieApi_MonitorPut2(monflag, path, bCheckObjectExists);
+        }
+    }
+
+    return mp_flags;
+}
+
+
+//---------------------------------------------------------------------------
+// SbieDll_MatchPath2
+//---------------------------------------------------------------------------
+
+
+#ifdef USE_MATCH_PATH_EX
+//_FX ULONG SbieDll_MatchPathImpl(BOOLEAN use_rule_specificity, BOOLEAN use_privacy_mode, const WCHAR* path, LIST* normal_list, LIST* open_list, LIST* closed_list, LIST* write_list, LIST* read_list)
+_FX ULONG SbieDll_MatchPathImpl(BOOLEAN use_rule_specificity, const WCHAR* path, LIST* normal_list, LIST* open_list, LIST* closed_list, LIST* write_list, LIST* read_list)
+#else
+_FX ULONG SbieDll_MatchPathImpl(const WCHAR* path, LIST* open_list, LIST* closed_list, LIST* write_list)
+#endif
+{
+    WCHAR *path_lwr;
+    ULONG path_len = 0;
+    ULONG mp_flags = 0;
+
+    if(path) {
+        path_len = wcslen(path);
+        if (! path_len)
+            return 0;
+    }
 
     path_lwr = Dll_AllocTemp((path_len + 4) * sizeof(WCHAR));
 
@@ -512,116 +521,81 @@ _FX ULONG SbieDll_MatchPath2(WCHAR path_code, const WCHAR *path, BOOLEAN bCheckO
 
 #ifdef USE_MATCH_PATH_EX
   
-    //const WCHAR* curpat;
-    ULONG cur_level;
-    int cur_len;
+    //WCHAR* patsrc = NULL;
     int match_len;
     ULONG level;
-
-    BOOLEAN use_rule_specificity = (path_code == L'f' || path_code == L'k' || path_code == L'i') && (Dll_ProcessFlags & SBIE_FLAG_RULE_SPECIFICITY) != 0;
+    ULONG flags;
+    USHORT wildc;
 
     //
-    // set default behavioure 
+    // set default behaviour
     //
 
     level = 3; // 3 - global default - lower is better, 3 is max value
+    flags = 0;
+    wildc = -1; // lower is better
     match_len = 0;
-    if ((path_code == L'f' || path_code == L'k' || path_code == L'i') && (Dll_ProcessFlags & SBIE_FLAG_PRIVACY_MODE) != 0) {
-
-        mp_flags = PATH_WRITE_FLAG; // write path mode
-    }
-    else {
-
-        mp_flags = 0; // normal mode
-    }
+    //if (use_privacy_mode)
+    //    mp_flags = PATH_WRITE_FLAG; // write path mode
+    //else 
+    //    mp_flags = 0; // normal mode
 
     //
     // ClosedXxxPath
     //
-    
-    if (closed_list && path_len) {
-        cur_level = level;
-        cur_len = Process_MatchPathList(path_lwr, path_len, closed_list, &cur_level, NULL);// &curpat);
-        if (cur_level <= level && cur_len > match_len) {
-            level = cur_level;
-            match_len = cur_len;
-            //if (patsrc) *patsrc = curpat;
 
-            mp_flags = PATH_CLOSED_FLAG;
-            if (!use_rule_specificity) goto finish;
-        }
+    if (Pattern_MatchPathListEx(path_lwr, path_len, closed_list, &level, &match_len, &flags, &wildc, NULL)) { //patsrc)) {
+        mp_flags = PATH_CLOSED_FLAG;
+        if (!use_rule_specificity) goto finish;
     }
     
     //
     // WriteXxxPath
     //
     
-    if (write_list && path_len) {
-        cur_level = level;
-        cur_len = Process_MatchPathList(path_lwr, path_len, write_list, &cur_level, NULL);// &curpat);
-        if (cur_level <= level && cur_len > match_len) {
-            level = cur_level;
-            match_len = cur_len;
-            //if (patsrc) *patsrc = curpat;
-
-            mp_flags = PATH_WRITE_FLAG;
-            if (!use_rule_specificity) goto finish;
-        }
+    if (Pattern_MatchPathListEx(path_lwr, path_len, write_list, &level, &match_len, &flags, &wildc, NULL)) { //patsrc)) {
+        mp_flags = PATH_WRITE_FLAG;
+        if (!use_rule_specificity) goto finish;
     }
     
     //
     // ReadXxxPath
     //
     
-    if (read_list && path_len) {
-        cur_level = level;
-        cur_len = Process_MatchPathList(path_lwr, path_len,read_list, &cur_level, NULL);// &curpat);
-        if (cur_level <= level && cur_len > match_len) {
-            level = cur_level;
-            match_len = cur_len;
-            //if (patsrc) *patsrc = curpat;
-
-            mp_flags = PATH_OPEN_FLAG; // say its open and let the driver deny the write access
-            if (!use_rule_specificity) goto finish;
-        }
+    if (Pattern_MatchPathListEx(path_lwr, path_len, read_list, &level, &match_len, &flags, &wildc, NULL)) { //patsrc)) {
+        mp_flags = PATH_READ_FLAG;
+        if (!use_rule_specificity) goto finish;
     }
     
     //
     // NormalXxxPath
     //
     
-    if (normal_list && path_len) {
-        cur_level = level;
-        cur_len = Process_MatchPathList(path_lwr, path_len, normal_list, &cur_level, NULL);// &curpat);
-        if (cur_level <= level && cur_len > match_len) {
-            level = cur_level;
-            match_len = cur_len;
-            //if (patsrc) *patsrc = curpat;
-
-            mp_flags = 0;
-            // dont goto finish as open can overwrite this 
-        }
+    if (Pattern_MatchPathListEx(path_lwr, path_len, normal_list, &level, &match_len, &flags, &wildc, NULL)) { //patsrc)) {
+        mp_flags = 0;
+        // don't goto finish as open can overwrite this 
     }
 
     //
     // OpenXxxPath
     //
-    
-    if (open_list && path_len) {
-        cur_level = level;
-        cur_len = Process_MatchPathList(path_lwr, path_len, open_list, &cur_level, NULL);// &curpat);
-        if (cur_level <= level && cur_len > match_len) {
-            level = cur_level;
-            match_len = cur_len;
-            //if (patsrc) *patsrc = curpat;
 
-            mp_flags = PATH_OPEN_FLAG;
-        }
+    if (Pattern_MatchPathListEx(path_lwr, path_len, open_list, &level, &match_len, &flags, &wildc, NULL)) { //patsrc)) {
+        mp_flags = PATH_OPEN_FLAG;
     }
+
 
 finish:
 
 #else
+
+    //
+    // scan paths list.  if the path to match does not already end with
+    // a backslash character, we will check it twice, second time with
+    // a suffixing backslash.  this will make sure we match C:\X even
+    // even when {Open,Closed}XxxPath=C:\X\ (with a backslash suffix)
+    //
+
     //
     // ClosedXxxPath
     //
@@ -711,45 +685,6 @@ finish:
         }
     }
 #endif
-
-    if (path_code == L'f')
-        LeaveCriticalSection(&Dll_FilePathListCritSec);
-
-    //
-    // make sure that Sandboxie resources marked "always in box"
-    // will not match any OpenIpcPath or ClosedIpcPath settings
-    //
-
-    if (path_code == L'i' && mp_flags && path) {
-
-        WCHAR *LastBackSlash = wcsrchr(path, L'\\');
-        if (LastBackSlash && wcsncmp(LastBackSlash + 1,
-                                SBIE_BOXED_, SBIE_BOXED_LEN) == 0) {
-
-            mp_flags = 0;
-        }
-    }
-
-    //
-    // log access request in the resource access monitor
-    //
-
-    if (path && monflag) {
-
-        if (PATH_IS_CLOSED(mp_flags))
-            monflag |= MONITOR_DENY;
-        // If hts file or key it will be logged by the driver's trace facility
-        // we only have to log closed events as those never reach the driver
-        else if (monflag == MONITOR_FILE || monflag == MONITOR_KEY)
-            bMonitorLog = FALSE;
-        else if (PATH_IS_OPEN(mp_flags))
-            monflag |= MONITOR_OPEN;
-
-        if (bMonitorLog)
-        {
-            SbieApi_MonitorPut2(monflag, path, bCheckObjectExists);
-        }
-    }
 
     Dll_Free(path_lwr);
 

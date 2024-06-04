@@ -31,7 +31,9 @@
 #include "common/my_version.h"
 #include "common/json/JSON.h"
 #include "common/win32_ntddk.h"
+#include "core/drv/api_defs.h"
 
+#define UPDATE_INTERVAL (7 * 24 * 60 * 60)
 
 //---------------------------------------------------------------------------
 // Variables
@@ -209,6 +211,20 @@ CleanupExit:
 
 
 //---------------------------------------------------------------------------
+// GetJSONObjectSafe
+//---------------------------------------------------------------------------
+
+
+JSONObject GetJSONObjectSafe(const JSONObject& root, const std::wstring& key)
+{
+	auto I = root.find(key);
+	if (I == root.end() || !I->second->IsObject())
+		return JSONObject();
+	return I->second->AsObject();
+}
+
+
+//---------------------------------------------------------------------------
 // GetJSONStringSafe
 //---------------------------------------------------------------------------
 
@@ -226,6 +242,7 @@ std::wstring GetJSONStringSafe(const JSONObject& root, const std::wstring& key, 
 // QueryUpdateData
 //---------------------------------------------------------------------------
 
+extern "C" int LCIDToLocaleName(LCID Locale, LPWSTR lpName, int cchName, DWORD dwFlags);
 
 BOOLEAN CUpdater::QueryUpdateData(UPDATER_DATA* Context)
 {
@@ -236,19 +253,77 @@ BOOLEAN CUpdater::QueryUpdateData(UPDATER_DATA* Context)
 	char* jsonString = NULL;
 	JSONValue* jsonObject = NULL;
 	JSONObject jsonRoot;
+	JSONObject release;
+	JSONObject installer;
 
-	Path.Format(L"/update.php?software=sandboxie&version=%S&system=windows-%d.%d.%d-%s&language=%d&auto=%s", MY_VERSION_STRING, 
-#ifdef _WIN64
-		m_osvi.dwMajorVersion, m_osvi.dwMinorVersion, m_osvi.dwBuildNumber, L"x86_64",
+	wchar_t StrLang[16];
+	LCIDToLocaleName(SbieDll_GetLanguage(NULL), StrLang, ARRAYSIZE(StrLang), 0);
+	if (StrLang[2] == L'-') StrLang[2] = '_';
+
+	Path.Format(L"/update.php?action=update&software=sandboxie&channel=stable&version=%S&system=windows-%d.%d.%d-%s&language=%s&auto=%s", 
+		MY_VERSION_STRING, m_osvi.dwMajorVersion, m_osvi.dwMinorVersion, m_osvi.dwBuildNumber,
+#ifdef _M_ARM64
+		L"ARM64",
+#elif _WIN64
+		L"x86_64",
 #else
-		m_osvi.dwMajorVersion, m_osvi.dwMinorVersion, m_osvi.dwBuildNumber, L"i386",
+		L"i386",
 #endif
-		SbieDll_GetLanguage(NULL), Context->Manual ? L"0" : L"1");
+		StrLang, Context->Manual ? L"0" : L"1");
+
+	if (!Context->Manual)
+		Path.AppendFormat(L"&interval=%d", UPDATE_INTERVAL);
 
 	CString update_key;
-	CSbieIni::GetInstance().GetText(_GlobalSettings, L"UpdateKey", update_key);
+	//CSbieIni::GetInstance().GetText(_GlobalSettings, L"UpdateKey", update_key);
+
+    WCHAR CertPath[MAX_PATH];
+    SbieApi_GetHomePath(NULL, 0, CertPath, MAX_PATH);
+    wcscat(CertPath, L"\\Certificate.dat");
+	HANDLE hFile = CreateFile(CertPath, FILE_GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFile != INVALID_HANDLE_VALUE) {
+		char CertData[0x1000];
+		DWORD bytesRead = 0;
+		if (ReadFile(hFile, CertData, sizeof(CertData), &bytesRead, NULL)) {
+			CertData[bytesRead] = 0;
+
+			CString sCertData = CString(CertData);
+			int pos = sCertData.Find(L"UPDATEKEY:");
+			if (pos != -1) {
+				pos += 10;
+				int end = sCertData.Find(L"\n", pos);
+				if (end == -1) end = sCertData.GetLength();
+				update_key = sCertData.Mid(pos, end - pos).Trim();
+			}
+		}
+		CloseHandle(hFile);
+	}
+
 	if (!update_key.IsEmpty())
-		Path += L"&update_key=" + update_key;
+		update_key += "-";
+
+    QWORD RandID = 0;
+    SbieApi_Call(API_GET_SECURE_PARAM, 3, L"RandID", (ULONG_PTR)&RandID, sizeof(RandID));
+    if (RandID == 0) {
+		srand(GetTickCount());
+        RandID = QWORD(rand() & 0xFFFF) | (QWORD(rand() & 0xFFFF) << 16) | (QWORD(rand() & 0xFFFF) << 32) | (QWORD(rand() & 0xFFFF) << 48);
+        SbieApi_Call(API_SET_SECURE_PARAM, 3, L"RandID", (ULONG_PTR)&RandID, sizeof(RandID));
+    }
+
+	CString Section;
+    CString UserName;
+    BOOL    IsAdmin;
+	CSbieIni::GetInstance().GetUser(Section, UserName, IsAdmin);
+	DWORD Hash = wcstoul(Section.Mid(13), NULL, 16);
+
+	QWORD HashID = RandID ^ (QWORD((Hash & 0xFFFF) ^ ((Hash >> 16) & 0xFFFF)) << 48); // fold the hash in half and xor it with the first 16 bit of RandID
+
+	wchar_t sHash[17];
+	wsprintf(sHash, L"%08X%08X", DWORD(HashID >> 32), DWORD(HashID));
+
+	update_key += sHash;
+
+	Path += L"&update_key=" + update_key;
 
 	if (!DownloadUpdateData(L"sandboxie-plus.com", Path, &jsonString, NULL)) {
 		Context->ErrorCode = GetLastError();
@@ -266,11 +341,14 @@ BOOLEAN CUpdater::QueryUpdateData(UPDATER_DATA* Context)
 	Context->userMsg = GetJSONStringSafe(jsonRoot, L"userMsg").c_str();
 	Context->infoUrl = GetJSONStringSafe(jsonRoot, L"infoUrl").c_str();
 
-	Context->version = GetJSONStringSafe(jsonRoot, L"version").c_str();
+	release = GetJSONObjectSafe(jsonRoot, L"release");
+	Context->updateMsg = GetJSONStringSafe(release, L"infoMsg").c_str();
+	Context->updateUrl = GetJSONStringSafe(release, L"infoUrl").c_str();
+	Context->version = GetJSONStringSafe(release, L"version").c_str();
 	//Context->updated = (uint64_t)jsonRoot[L"updated"]->AsNumber();
-	Context->updateMsg = GetJSONStringSafe(jsonRoot, L"updateMsg").c_str();
-	Context->updateUrl = GetJSONStringSafe(jsonRoot, L"updateUrl").c_str();
-	Context->downloadUrl = GetJSONStringSafe(jsonRoot, L"downloadUrl").c_str();
+
+	installer = GetJSONObjectSafe(release, L"installer");
+	Context->downloadUrl = GetJSONStringSafe(installer, L"downloadUrl").c_str();
 
 	success = TRUE;
 
@@ -480,7 +558,7 @@ ULONG CUpdater::UpdaterServiceThread(void *lpParameter)
 			__int64 NextUpdateCheck;
 			CUserSettings::GetInstance().GetNum64(_NextUpdateCheck, NextUpdateCheck, 0);
 			if (NextUpdateCheck != -1)
-				CUserSettings::GetInstance().SetNum64(_NextUpdateCheck, time(NULL) + 7 * 24 * 60 * 60);
+				CUserSettings::GetInstance().SetNum64(_NextUpdateCheck, time(NULL) + UPDATE_INTERVAL);
 
 			if (pContext->Manual)
 				CMyApp::MsgBox(NULL, MSG_3629, MB_OK);

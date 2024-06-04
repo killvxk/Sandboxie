@@ -42,7 +42,7 @@ struct tagSBIE_INI_GET_VERSION_REQ
 struct tagSBIE_INI_GET_VERSION_RPL
 {
     MSG_HEADER h;       // status is STATUS_SUCCESS or STATUS_UNSUCCESSFUL
-    ULONG version_len;
+    ULONG abi_ver;
     WCHAR version[1];
 };
 
@@ -105,7 +105,7 @@ struct tagSBIE_INI_GET_USER_RPL
 {
     MSG_HEADER h;       // status is STATUS_SUCCESS or STATUS_UNSUCCESSFUL
     BOOLEAN admin;
-    WCHAR section[34];
+    WCHAR section[BOXNAME_COUNT];
     ULONG name_len;
     WCHAR name[1];
 };
@@ -172,6 +172,29 @@ struct tagSBIE_INI_PASSWORD_REQ
 };
 
 typedef struct tagSBIE_INI_PASSWORD_REQ SBIE_INI_PASSWORD_REQ;
+
+
+//---------------------------------------------------------------------------
+// rc4 Crypt
+//---------------------------------------------------------------------------
+
+
+struct tagSBIE_INI_RC4_CRYPT_REQ
+{
+    MSG_HEADER h;
+    ULONG value_len;
+    UCHAR value[1];
+};
+
+struct tagSBIE_INI_RC4_CRYPT_RPL
+{
+    MSG_HEADER h;
+    ULONG value_len;
+    UCHAR value[1];
+};
+
+typedef struct tagSBIE_INI_RC4_CRYPT_REQ SBIE_INI_RC4_CRYPT_REQ;
+typedef struct tagSBIE_INI_RC4_CRYPT_RPL SBIE_INI_RC4_CRYPT_RPL;
 
 
 //---------------------------------------------------------------------------

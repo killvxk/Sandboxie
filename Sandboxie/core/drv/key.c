@@ -29,7 +29,9 @@
 #include "util.h"
 #include "session.h"
 #include "token.h"
+#ifndef _M_ARM64
 #include "hook.h"
+#endif
 #include "conf.h"
 #include "common/my_version.h"
 
@@ -238,9 +240,22 @@ _FX BOOLEAN Key_InitProcess(PROCESS *proc)
     static const WCHAR *_ClosedPath = L"ClosedKeyPath";
     static const WCHAR *_ReadPath = L"ReadKeyPath";
     static const WCHAR *_WritePath = L"WriteKeyPath";
+
+#ifndef USE_TEMPLATE_PATHS
 #ifdef USE_MATCH_PATH_EX
     static const WCHAR *normalpaths[] = {
-        L"HKEY_LOCAL_MACHINE\\*",
+        NULL
+    };
+    static const WCHAR *writepaths[] = {
+        L"\\REGISTRY\\USER\\*",
+        NULL
+    };
+#endif
+    static const WCHAR *openkeys[] = {
+        // Application Hives
+        // https://docs.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regloadappkeya
+        // https://docs.microsoft.com/en-us/windows-hardware/drivers/kernel/filtering-registry-operations-on-application-hives
+        L"\\REGISTRY\\A\\*", 
         NULL
     };
 #endif
@@ -254,19 +269,19 @@ _FX BOOLEAN Key_InitProcess(PROCESS *proc)
     // normal paths
     //
 
-    ok = Process_GetPaths(proc, &proc->normal_key_paths, _NormalPath, TRUE);
-    if (! ok) {
-        Log_MsgP1(MSG_INIT_PATHS, _NormalPath, proc->pid);
-        return FALSE;
-    }
+    ok = Process_GetPaths(proc, &proc->normal_key_paths, proc->box->name, _NormalPath, TRUE);
 
+#ifdef USE_TEMPLATE_PATHS
+    if (ok) 
+        ok = Process_GetTemplatePaths(proc, &proc->normal_key_paths, _NormalPath);
+#else
     if (ok && proc->use_privacy_mode) {
-
         for (i = 0; normalpaths[i] && ok; ++i) {
             ok = Process_AddPath(proc, &proc->normal_key_paths, NULL, 
                                     TRUE, normalpaths[i], FALSE);
         }
     }
+#endif
 
     if (!ok) {
         Log_MsgP1(MSG_INIT_PATHS, _NormalPath, proc->pid);
@@ -278,7 +293,7 @@ _FX BOOLEAN Key_InitProcess(PROCESS *proc)
     // open paths
     //
 
-    ok = Process_GetPaths(proc, &proc->open_key_paths, _OpenConf, TRUE);
+    ok = Process_GetPaths(proc, &proc->open_key_paths, proc->box->name, _OpenConf, TRUE);
     if (! ok) {
         Log_MsgP1(MSG_INIT_PATHS, _OpenConf, proc->pid);
         return FALSE;
@@ -286,19 +301,36 @@ _FX BOOLEAN Key_InitProcess(PROCESS *proc)
 
     if (! proc->dont_open_for_boxed || ! proc->image_from_box) {
 
-        ok = Process_GetPaths(proc, &proc->open_key_paths, _OpenPath, TRUE);
+        ok = Process_GetPaths(proc, &proc->open_key_paths, proc->box->name, _OpenPath, TRUE);
 
-        if (! ok) {
-            Log_MsgP1(MSG_INIT_PATHS, _OpenPath, proc->pid);
-            return FALSE;
-        }
+    }
+
+#ifdef USE_TEMPLATE_PATHS
+    if (ok)
+        ok = Process_GetTemplatePaths(proc, &proc->open_key_paths, _OpenPath);
+#else
+    for (i = 0; openkeys[i] && ok; ++i) {
+        ok = Process_AddPath(
+            proc, &proc->open_key_paths, NULL, TRUE, openkeys[i], FALSE);
+    }
+#endif
+
+    if (! ok) {
+        Log_MsgP1(MSG_INIT_PATHS, _OpenPath, proc->pid);
+        return FALSE;
     }
 
     //
     // closed paths
     //
 
-    ok = Process_GetPaths(proc, &proc->closed_key_paths, _ClosedPath, TRUE);
+    ok = Process_GetPaths(proc, &proc->closed_key_paths, proc->box->name, _ClosedPath, TRUE);
+
+#ifdef USE_TEMPLATE_PATHS
+    if (ok)
+        ok = Process_GetTemplatePaths(proc, &proc->closed_key_paths, _ClosedPath);
+#endif
+
     if (! ok) {
         Log_MsgP1(MSG_INIT_PATHS, _ClosedPath, proc->pid);
         return FALSE;
@@ -309,10 +341,16 @@ _FX BOOLEAN Key_InitProcess(PROCESS *proc)
     //
 
 #ifndef USE_MATCH_PATH_EX
-    ok = Process_GetPaths(proc, &proc->open_key_paths, _ReadPath, TRUE);
+    ok = Process_GetPaths(proc, &proc->open_key_paths, proc->box->name, _ReadPath, TRUE);
     if (ok)
 #endif
-        ok = Process_GetPaths(proc, &proc->read_key_paths, _ReadPath, TRUE);
+        ok = Process_GetPaths(proc, &proc->read_key_paths, proc->box->name, _ReadPath, TRUE);
+
+#ifdef USE_TEMPLATE_PATHS
+    if (ok)
+        ok = Process_GetTemplatePaths(proc, &proc->read_key_paths, _ReadPath);
+#endif
+
     if (! ok) {
         Log_MsgP1(MSG_INIT_PATHS, _ReadPath, proc->pid);
         return FALSE;
@@ -323,16 +361,30 @@ _FX BOOLEAN Key_InitProcess(PROCESS *proc)
     //
 
 #ifdef USE_MATCH_PATH_EX
-    ok = Process_GetPaths(proc, &proc->write_key_paths, _WritePath, TRUE);
+    ok = Process_GetPaths(proc, &proc->write_key_paths, proc->box->name, _WritePath, TRUE);
+
+#ifdef USE_TEMPLATE_PATHS
+    if (ok)
+        ok = Process_GetTemplatePaths(proc, &proc->write_key_paths, _WritePath);
+#else
+    if (ok && proc->use_privacy_mode) {
+        for (i = 0; writepaths[i] && ok; ++i) {
+            ok = Process_AddPath(proc, &proc->write_key_paths, NULL, 
+                                    TRUE, writepaths[i], FALSE);
+        }
+    }
+#endif
+
 #else
     ok = Process_GetPaths2(
             proc, &proc->write_key_paths, &proc->closed_key_paths,
             _WritePath, TRUE);
     if (ok) {
         ok = Process_GetPaths(
-                proc, &proc->closed_key_paths, _WritePath, TRUE);
+                proc, &proc->closed_key_paths, proc->box->name, _WritePath, TRUE);
     }
 #endif
+
     if (! ok) {
         Log_MsgP1(MSG_INIT_PATHS, _WritePath, proc->pid);
         return FALSE;
@@ -660,6 +712,9 @@ mount_loop:
         mount = List_Next(mount);
     }
 
+    if (!failed && proc->box->key_path_len >= MAX_REG_ROOT_LEN)
+        failed = TRUE;
+
     //
     // if we haven't failed, but also couldn't find a mount, then
     // initialize a new mount point, with a zero reference count.
@@ -927,7 +982,7 @@ _FX BOOLEAN Key_MountHive3(
                 InitializeObjectAttributes(&objattrs,
                     &uni, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
 
-                // ZwLoadKey can fail with device path if current process' devicemap is null
+                // ZwLoadKey can fail with device path if current process's devicemap is null
                 // One workaround is to call ObOpenObjectByName and it will trigger devicemap
                 // to be initialized. Note, Using C: is not necessary. The disk volume doesn't
                 // need to be there.L"\\??\\A:" works in the tests.
@@ -945,8 +1000,17 @@ _FX BOOLEAN Key_MountHive3(
 
                 if (! NT_SUCCESS(status))
                     Log_Status(MSG_MOUNT_FAILED, 0x22, status);
-                else
+                else {
                     ok = TRUE;
+
+                    SVC_REGHIVE_MSG msg;
+
+                    msg.process_id = (ULONG)(ULONG_PTR)proc->pid;
+                    msg.session_id = proc->box->session_id;
+                    wcscpy(msg.boxname, proc->box->name);
+
+                    Api_SendServiceMessage(SVC_MOUNTED_HIVE, sizeof(msg), &msg);
+                }
 
                 //
                 // restore original TokenDefaultDacl
@@ -1014,7 +1078,7 @@ _FX void Key_UnmountHive(PROCESS *proc)
 
     if (send_msg) {
 
-        SVC_UNMOUNT_MSG msg;
+        SVC_REGHIVE_MSG msg;
 
         msg.process_id = (ULONG)(ULONG_PTR)proc->pid;
         msg.session_id = proc->box->session_id;
@@ -1046,7 +1110,7 @@ _FX NTSTATUS Key_Api_GetUnmountHive(PROCESS *proc, ULONG64 *parms)
     if (proc || (PsGetCurrentProcessId() != Api_ServiceProcessId))
         return STATUS_NOT_IMPLEMENTED;
 
-    ProbeForWrite(args->path.val, sizeof(WCHAR) * 256, sizeof(WCHAR));
+    ProbeForWrite(args->path.val, sizeof(WCHAR) * MAX_REG_ROOT_LEN, sizeof(WCHAR));
 
     //
     // scan through the key hives and find an unused one

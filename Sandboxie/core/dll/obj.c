@@ -45,12 +45,6 @@ static NTSTATUS Obj_NtQueryVirtualMemory(
     SIZE_T Length,
     SIZE_T *ResultLength);
 
-static NTSTATUS Obj_NtQueryInformationProcess(
-	HANDLE ProcessHandle,
-	PROCESSINFOCLASS ProcessInformationClass,
-	PVOID ProcessInformation,
-	ULONG ProcessInformationLength,
-	PULONG ReturnLength);
 
 //---------------------------------------------------------------------------
 // Variables
@@ -61,8 +55,8 @@ static P_NtQueryObject          __sys_NtQueryObject             = NULL;
 
        P_NtQueryVirtualMemory   __sys_NtQueryVirtualMemory      = NULL;
 
-	   P_NtQueryInformationProcess __sys_NtQueryInformationProcess = NULL;
 
+BOOLEAN obj_use_driver_obj_lookup = FALSE;
 
 //---------------------------------------------------------------------------
 // Obj_Init
@@ -71,13 +65,18 @@ static P_NtQueryObject          __sys_NtQueryObject             = NULL;
 
 _FX BOOLEAN Obj_Init(void)
 {
+    HMODULE module = Dll_Ntdll;
+
 #if 0
     __sys_NtQueryObject = NtQueryObject;
 #else
     SBIEDLL_HOOK(Obj_,NtQueryObject);
     SBIEDLL_HOOK(Obj_,NtQueryVirtualMemory);
-	SBIEDLL_HOOK(Obj_,NtQueryInformationProcess);
 #endif
+
+    if (!Dll_CompartmentMode) // NoDriverAssist
+    obj_use_driver_obj_lookup = SbieApi_QueryConfBool(NULL, L"UseDriverObjLookup", FALSE);
+
     return TRUE;
 }
 
@@ -90,14 +89,17 @@ _FX BOOLEAN Obj_Init(void)
 _FX ULONG Obj_GetObjectType(HANDLE ObjectHandle)
 {
     NTSTATUS status;
-    PUBLIC_OBJECT_TYPE_INFORMATION  info;
+    union {
+        PUBLIC_OBJECT_TYPE_INFORMATION info;
+        wchar_t Buffer[256];
+    } u;
+    
+    ULONG length = sizeof(u.Buffer);
 
-    ULONG length = sizeof(info);
+    status = __sys_NtQueryObject(ObjectHandle, ObjectTypeInformation, &u.info, length, &length);
 
-    status = __sys_NtQueryObject(ObjectHandle, ObjectTypeInformation, &info, length, &length);
-
-    if (NT_SUCCESS(status)) {
-        const WCHAR *TypeName = info.TypeName.Buffer;
+    if(NT_SUCCESS(status)) {
+        const WCHAR* TypeName = u.info.TypeName.Buffer;
         if (TypeName[0] == L'D' && _wcsicmp(TypeName, L"Directory") == 0)
             return OBJ_TYPE_DIRECTORY;
         if (TypeName[0] == L'F' && _wcsicmp(TypeName, L"File") == 0)
@@ -131,15 +133,41 @@ _FX ULONG Obj_GetObjectType(HANDLE ObjectHandle)
 _FX NTSTATUS Obj_GetObjectName(
     HANDLE ObjectHandle, void *ObjectName, ULONG *Length)
 {
-    THREAD_DATA *TlsData = Dll_GetTlsData(NULL);
     NTSTATUS status;
 
-    TlsData->obj_NtQueryObject_lock = TRUE;
+    //
+    // NtQueryObject is known for locking up forever when queried for object name on a pipe handle 
+    // opened for synchronous io, and where there are pending read operations.
+    // 
+    // To remedy this we ask the driver to lookup the objects name instead
+    // 
 
-    status = __sys_NtQueryObject(
-        ObjectHandle, ObjectNameInformation, ObjectName, *Length, Length);
+    if (obj_use_driver_obj_lookup) {
 
-    TlsData->obj_NtQueryObject_lock = FALSE;
+        OBJECT_NAME_INFORMATION* info = (OBJECT_NAME_INFORMATION*)ObjectName;
+        
+        wchar_t* NameBuf = (UCHAR*)ObjectName + sizeof(OBJECT_NAME_INFORMATION);
+        ULONG NameLen = *Length - sizeof(OBJECT_NAME_INFORMATION);
+
+        status = SbieApi_GetFileName(ObjectHandle, NameBuf, &NameLen, NULL);
+
+        if (NT_SUCCESS(status)) {
+            info->Name.Buffer = NameBuf;
+            info->Name.Length = wcslen(NameBuf) * sizeof(wchar_t);
+            info->Name.MaximumLength = (USHORT)NameLen;
+        }
+    }
+    else {
+
+        THREAD_DATA* TlsData = Dll_GetTlsData(NULL);
+
+        TlsData->obj_NtQueryObject_lock = TRUE;
+
+        status = __sys_NtQueryObject(
+            ObjectHandle, ObjectNameInformation, ObjectName, *Length, Length);
+
+        TlsData->obj_NtQueryObject_lock = FALSE;
+    }
 
     return status;
 }
@@ -410,43 +438,4 @@ finish:
 
     SetLastError(LastError);
     return status;
-}
-
-//---------------------------------------------------------------------------
-// Obj_NtQueryVirtualMemory
-//---------------------------------------------------------------------------
-
-
-_FX NTSTATUS Obj_NtQueryInformationProcess(
-	HANDLE ProcessHandle,
-	PROCESSINFOCLASS ProcessInformationClass,
-	PVOID ProcessInformation,
-	ULONG ProcessInformationLength,
-	PULONG ReturnLength)
-{
-	NTSTATUS status;
-	ULONG outlen;
-
-	status = __sys_NtQueryInformationProcess(
-		ProcessHandle, ProcessInformationClass, ProcessInformation, ProcessInformationLength, &outlen);
-	
-	if (ProcessInformationClass == ProcessImageFileName && ProcessInformation != NULL)
-	{
-		//
-		// since file paths are always shorter without the sandbox prefix we can keep this simple
-		//
-
-		ULONG tmplen;
-		PUNICODE_STRING fileName = (PUNICODE_STRING)ProcessInformation;
-
-		tmplen = File_NtQueryObjectName(fileName, fileName->MaximumLength);
-
-		if (tmplen)
-			outlen = sizeof(UNICODE_STRING) + tmplen;
-	}
-
-	if (ReturnLength)
-		*ReturnLength = outlen;
-
-	return status;
 }

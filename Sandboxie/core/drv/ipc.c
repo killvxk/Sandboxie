@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
- * Copyright 2020-2021 David Xanatos, xanasoft.com
+ * Copyright 2020-2023 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -39,7 +39,7 @@
 
 
 static BOOLEAN Ipc_Init_Type(
-    const WCHAR *TypeName, P_Syscall_Handler2 handler);
+    const WCHAR *TypeName, P_Syscall_Handler2 handler, ULONG createEx);
 
 static BOOLEAN Ipc_InitPaths(PROCESS *proc);
 
@@ -51,15 +51,15 @@ static BOOLEAN Ipc_IsComServer(PROCESS *proc);
 
 static NTSTATUS Ipc_CheckGenericObject(
     PROCESS *proc, void *Object, UNICODE_STRING *Name,
-    ACCESS_MASK GrantedAccess);
+    ULONG Operation, ACCESS_MASK GrantedAccess);
 
 static NTSTATUS Ipc_CheckPortObject(
     PROCESS *proc, void *Object, UNICODE_STRING *Name,
-    ACCESS_MASK GrantedAccess);
+    ULONG Operation, ACCESS_MASK GrantedAccess);
 
 static NTSTATUS Ipc_CheckJobObject(
     PROCESS *proc, void *Object, UNICODE_STRING *Name,
-    ACCESS_MASK GrantedAccess);
+    ULONG Operation, ACCESS_MASK GrantedAccess);
 
 static NTSTATUS Ipc_CheckObjectName(HANDLE handle, KPROCESSOR_MODE mode);
 
@@ -102,7 +102,23 @@ static const WCHAR *Ipc_Mutant_TypeName     = L"Mutant";
 static const WCHAR *Ipc_Semaphore_TypeName  = L"Semaphore";
 static const WCHAR *Ipc_Section_TypeName    = L"Section";
 static const WCHAR *Ipc_JobObject_TypeName  = L"JobObject";
+static const WCHAR *Ipc_SymLink_TypeName    = L"SymbolicLinkObject";
+static const WCHAR *Ipc_Directory_TypeName  = L"DirectoryObject";
 
+static PERESOURCE Ipc_DirLock = NULL;
+
+static LIST Ipc_ObjDirs;
+
+//---------------------------------------------------------------------------
+// Structures and Types
+//---------------------------------------------------------------------------
+
+typedef struct _DIR_OBJ_HANDLE {
+
+    LIST_ELEM list_elem;
+    HANDLE handle;
+
+} DIR_OBJ_HANDLE;
 
 //---------------------------------------------------------------------------
 // Ipc_Init
@@ -117,24 +133,30 @@ _FX BOOLEAN Ipc_Init(void)
     };
     const UCHAR **NamePtr;
 
+    List_Init(&Ipc_ObjDirs);
+    if (! Mem_GetLockResource(&Ipc_DirLock, TRUE))
+        return FALSE;
+
     //
     // set object open handlers for generic objects
     //
 
-#define Ipc_Init_Type_Generic(TypeName)                     \
-    if (! Ipc_Init_Type(TypeName, Ipc_CheckGenericObject))  \
+#define Ipc_Init_Type_Generic(TypeName, ex)                     \
+    if (! Ipc_Init_Type(TypeName, Ipc_CheckGenericObject, ex))  \
         return FALSE;
 
-    Ipc_Init_Type_Generic(Ipc_Event_TypeName);
-    Ipc_Init_Type_Generic(Ipc_EventPair_TypeName);
-    Ipc_Init_Type_Generic(Ipc_KeyedEvent_TypeName);
-    Ipc_Init_Type_Generic(Ipc_Mutant_TypeName);
-    Ipc_Init_Type_Generic(Ipc_Semaphore_TypeName);
-    Ipc_Init_Type_Generic(Ipc_Section_TypeName);
+    Ipc_Init_Type_Generic(Ipc_Event_TypeName, 0);
+    Ipc_Init_Type_Generic(Ipc_EventPair_TypeName, 0);
+    Ipc_Init_Type_Generic(Ipc_KeyedEvent_TypeName, 0);
+    Ipc_Init_Type_Generic(Ipc_Mutant_TypeName, 0);
+    Ipc_Init_Type_Generic(Ipc_Semaphore_TypeName, 0);
+    Ipc_Init_Type_Generic(Ipc_Section_TypeName, 17763); // NtCreateSectionEx introduced in windows 10 1809
+    Ipc_Init_Type_Generic(Ipc_SymLink_TypeName, 0);
+    Ipc_Init_Type_Generic(Ipc_Directory_TypeName, 9200); // NtCreateDirectoryObjectEx introduced windows 8
 
 #undef Ipc_Init_Type_Generic
 
-    if (! Ipc_Init_Type(Ipc_JobObject_TypeName, Ipc_CheckJobObject))
+    if (! Ipc_Init_Type(Ipc_JobObject_TypeName, Ipc_CheckJobObject, 0))
         return FALSE;
 
     //
@@ -151,14 +173,19 @@ _FX BOOLEAN Ipc_Init(void)
         }
     }
 
+    if (Driver_OsVersion >= DRIVER_WINDOWS_8) {
+
+        if (! Syscall_Set2("AlpcConnectPortEx", Ipc_CheckPortObject))
+            return FALSE;
+    }
+
     //
     // register object filter callbacks on Vista SP1 and later
     //
 
     if (Driver_OsVersion > DRIVER_WINDOWS_VISTA) {
 
-        // Don't use experimental features by default
-        if (Conf_Get_Boolean(NULL, L"EnableObjectFiltering", 0, FALSE)) {
+        if (Conf_Get_Boolean(NULL, L"EnableObjectFiltering", 0, TRUE)) {
 
             if (!Obj_Load_Filter())
                 return FALSE;
@@ -250,7 +277,7 @@ _FX BOOLEAN Ipc_Init(void)
 //---------------------------------------------------------------------------
 
 
-_FX BOOLEAN Ipc_Init_Type(const WCHAR *TypeName, P_Syscall_Handler2 handler)
+_FX BOOLEAN Ipc_Init_Type(const WCHAR *TypeName, P_Syscall_Handler2 handler, ULONG createEx)
 {
     WCHAR nameW[64];
     UCHAR nameA[64];
@@ -273,6 +300,14 @@ _FX BOOLEAN Ipc_Init_Type(const WCHAR *TypeName, P_Syscall_Handler2 handler)
 
     if (! Syscall_Set2(nameA, handler))
         return FALSE;
+
+    if (createEx && Driver_OsBuild >= createEx) {
+
+        strcat(nameA, "Ex");
+
+        if (! Syscall_Set2(nameA, handler))
+            return FALSE;
+    }
 
     return TRUE;
 }
@@ -301,7 +336,7 @@ _FX BOOLEAN Ipc_CreateBoxPath(PROCESS *proc)
     RtlSetDaclSecurityDescriptor(&sd, TRUE, NULL, FALSE);
     InitializeObjectAttributes(
         &objattrs, &objname,
-        OBJ_CASE_INSENSITIVE | OBJ_PERMANENT | OBJ_KERNEL_HANDLE,
+        OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, // | OBJ_PERMANENT,
         NULL, &sd);
 
     //
@@ -342,8 +377,21 @@ _FX BOOLEAN Ipc_CreateBoxPath(PROCESS *proc)
             // using the full path.  otherwise, we're done
             //
 
-            if (NT_SUCCESS(status))
-                ZwClose(handle);
+            if (NT_SUCCESS(status)) {
+
+                //ZwClose(handle);
+
+                KIRQL irql;
+                KeRaiseIrql(APC_LEVEL, &irql);
+                ExAcquireResourceExclusiveLite(Ipc_DirLock, TRUE);
+
+                DIR_OBJ_HANDLE *obj_handle = Mem_Alloc(Driver_Pool, sizeof(DIR_OBJ_HANDLE));
+                obj_handle->handle = handle;
+                List_Insert_After(&Ipc_ObjDirs, NULL, obj_handle);
+
+                ExReleaseResourceLite(Ipc_DirLock);
+                KeLowerIrql(irql);
+            }
 
             if (status == STATUS_OBJECT_NAME_COLLISION)
                 status = STATUS_SUCCESS;
@@ -381,6 +429,9 @@ _FX BOOLEAN Ipc_InitPaths(PROCESS* proc)
 #endif
     static const WCHAR* _OpenPath = L"OpenIpcPath";
     static const WCHAR* _ClosedPath = L"ClosedIpcPath";
+    static const WCHAR* _ReadPath = L"ReadIpcPath";
+
+#ifndef USE_TEMPLATE_PATHS
     static const WCHAR* openpaths[] = {
         L"\\Windows\\ApiPort",
         L"\\Sessions\\*\\Windows\\ApiPort",
@@ -388,14 +439,18 @@ _FX BOOLEAN Ipc_InitPaths(PROCESS* proc)
         L"\\Windows\\SharedSection", // bSession0
         L"\\Sessions\\*\\BaseNamedObjects\\CrSharedMem_*",      // now required by Chromium browsers
         L"\\ThemeApiPort",
-        L"\\KnownDlls\\*",              // see Ipc_Generic_MyOpenProc_2
+        L"\\KnownDlls\\*",
 #ifdef _WIN64
-        L"\\KnownDlls32\\*",            // see Ipc_Generic_MyOpenProc_2
+        L"\\KnownDlls32\\*",
 #endif _WIN64
+#ifdef _M_ARM64
+        L"\\KnownDllsChpe32\\*",
+#endif _M_ARM64
         L"\\NLS\\*",
         L"*\\BaseNamedObjects*\\ShimCacheMutex",
         L"*\\BaseNamedObjects*\\ShimSharedMemory",
         L"*\\BaseNamedObjects*\\SHIMLIB_LOG_MUTEX",
+        L"*\\BaseNamedObjects*\\msgina: ReturnToWelcome",
         L"\\Security\\LSA_AUTHENTICATION_INITIALIZED",
         L"\\LsaAuthenticationPort",
         L"\\NlsCacheMutant",
@@ -564,17 +619,24 @@ _FX BOOLEAN Ipc_InitPaths(PROCESS* proc)
     };
     static const WCHAR* openpaths_windows10[] = {
         L"*\\BaseNamedObjects*\\CoreMessagingRegistrar",
-        L"\\RPC Control\\webcache_*",
-        L"*\\BaseNamedObjects\\windows_webcache_counters_*",
         L"*\\BaseNamedObjects\\[CoreUI]-*",
         // open paths 11
         L"*\\BaseNamedObjects\\SM*:WilStaging_*", // 22449.1000 accesses this before sbiedll load
+#ifdef _M_ARM64
+        L"\\{BEC19D6F-D7B2-41A8-860C-8787BB964F2D}", // 22621.819 used by emulated processes
+#endif _M_ARM64
         NULL
     };
 #ifdef USE_MATCH_PATH_EX
     //static const WCHAR *normalpaths[] = {
     //    NULL
     //};
+#endif
+    static const WCHAR *readpaths[] = {
+        L"\\??\\pipe\\*",
+        L"$:explorer.exe",
+        NULL
+    };
 #endif
 
     ULONG i;
@@ -585,50 +647,57 @@ _FX BOOLEAN Ipc_InitPaths(PROCESS* proc)
     //
 
 #ifdef USE_MATCH_PATH_EX
-    ok = Process_GetPaths(proc, &proc->normal_ipc_paths, _NormalPath, FALSE);
+    ok = Process_GetPaths(proc, &proc->normal_ipc_paths, proc->box->name, _NormalPath, FALSE);
+
+#ifdef USE_TEMPLATE_PATHS
+    if (ok)
+        ok = Process_GetTemplatePaths(proc, &proc->normal_ipc_paths, _NormalPath);
+#else
+    //if (ok && proc->use_privacy_mode) {
+    //    for (i = 0; normalpaths[i] && ok; ++i) {
+    //        ok = Process_AddPath(proc, &proc->normal_ipc_paths, NULL,
+    //                          TRUE, normalpaths[i], FALSE);
+    //    }
+    //}
+#endif
+
     if (!ok) {
         Log_MsgP1(MSG_INIT_PATHS, _NormalPath, proc->pid);
         return FALSE;
     }
-
-    //if (proc->use_privacy_mode) {
-    //    for (i = 0; normalpaths[i] && ok; ++i) {
-    //        ok = Process_AddPath(proc, &proc->normal_ipc_paths, _NormalPath, TRUE, normalpaths[i], FALSE);
-    //    }
-    //
-    //    if (! ok) {
-    //        Log_MsgP1(MSG_INIT_PATHS, _NormalPath, proc->pid);
-    //        return FALSE;
-    //    }
-    //}
 #endif
 
     //
     // open paths
     //
 
-    ok = Process_GetPaths(proc, &proc->open_ipc_paths, _OpenPath, FALSE);
+    ok = Process_GetPaths(proc, &proc->open_ipc_paths, proc->box->name, _OpenPath, FALSE);
+	
+#ifdef USE_TEMPLATE_PATHS
+    if (ok)
+        ok = Process_GetTemplatePaths(proc, &proc->open_ipc_paths, _OpenPath);
+#else
 
     //
     // if configuration option OpenProtectedStorage applies,
     // then allow access to ProtectedStorage objects
     //
 
-    if (ok && Conf_Get_Boolean(
-                proc->box->name, Driver_OpenProtectedStorage, 0, FALSE)) {
-
-        static const WCHAR *_PstEvent =
-            L"*\\BaseNamedObjects*\\PS_SERVICE_STARTED";
-        static const WCHAR *_PstPort =
-            L"\\RPC Control\\protected_storage";
-
-        ok = Process_AddPath(
-            proc, &proc->open_ipc_paths, NULL, TRUE, _PstEvent, FALSE);
-        if (ok) {
-            ok = Process_AddPath(
-                proc, &proc->open_ipc_paths, NULL, TRUE, _PstPort, FALSE);
-        }
-    }
+    //if (ok && Conf_Get_Boolean(
+    //            proc->box->name, Driver_OpenProtectedStorage, 0, FALSE)) {
+    //
+    //    static const WCHAR *_PstEvent =
+    //        L"*\\BaseNamedObjects*\\PS_SERVICE_STARTED";
+    //    static const WCHAR *_PstPort =
+    //        L"\\RPC Control\\protected_storage";
+    //
+    //    ok = Process_AddPath(
+    //        proc, &proc->open_ipc_paths, NULL, TRUE, _PstEvent, FALSE);
+    //    if (ok) {
+    //        ok = Process_AddPath(
+    //            proc, &proc->open_ipc_paths, NULL, TRUE, _PstPort, FALSE);
+    //    }
+    //}
 
     //
     // add default/built-in open paths
@@ -673,13 +742,7 @@ _FX BOOLEAN Ipc_InitPaths(PROCESS* proc)
                 TRUE, openpaths_windows10[i], FALSE);
         }
     }
-
-    if (ok) {
-        static const WCHAR *_ReturnToWelcome =
-            L"*\\BaseNamedObjects*\\msgina: ReturnToWelcome";
-        ok = Process_AddPath(proc, &proc->open_ipc_paths, NULL,
-                             FALSE, _ReturnToWelcome, FALSE);
-    }
+#endif
 
     if (! ok) {
         Log_MsgP1(MSG_INIT_PATHS, _OpenPath, proc->pid);
@@ -690,14 +753,55 @@ _FX BOOLEAN Ipc_InitPaths(PROCESS* proc)
     // closed paths
     //
 
-    ok = Process_GetPaths(proc, &proc->closed_ipc_paths, _ClosedPath, FALSE);
+    ok = Process_GetPaths(proc, &proc->closed_ipc_paths, proc->box->name, _ClosedPath, FALSE);
+
+#ifdef USE_TEMPLATE_PATHS
+    if (ok)
+        ok = Process_GetTemplatePaths(proc, &proc->closed_ipc_paths, _ClosedPath);
+#endif
+
     if (! ok) {
         Log_MsgP1(MSG_INIT_PATHS, _ClosedPath, proc->pid);
         return FALSE;
     }
 
+    //
+    // read-only paths
+    //
+
+    ok = Process_GetPaths(proc, &proc->read_ipc_paths, proc->box->name, _ReadPath, FALSE);
+
+#ifdef USE_TEMPLATE_PATHS
+    if (ok) 
+        ok = Process_GetTemplatePaths(proc, &proc->read_ipc_paths, _ReadPath);
+#else
+    if (ok) {
+
+        for (i = 0; readpaths[i] && ok; ++i) {
+            ok = Process_AddPath(proc, &proc->read_ipc_paths, NULL,
+                                TRUE, readpaths[i], FALSE);
+        }
+    }
+#endif
+
+    if (! ok) {
+        Log_MsgP1(MSG_INIT_PATHS, _ReadPath, proc->pid);
+        return FALSE;
+    }
+
+
+    proc->ipc_namespace_isoaltion = Conf_Get_Boolean(proc->box->name, L"NtNamespaceIsolation", 0, TRUE);
+
+
+    //
+    // other options
+    //
+
     proc->ipc_warn_startrun = Conf_Get_Boolean(
         proc->box->name, L"NotifyStartRunAccessDenied", 0, TRUE);
+
+    proc->ipc_warn_open_proc = Conf_Get_Boolean(
+        proc->box->name, L"NotifyProcessAccessDenied", 0, FALSE);
 
     //
     // block password
@@ -764,6 +868,7 @@ _FX BOOLEAN Ipc_IsComServer(PROCESS *proc)
     if (proc->image_from_box)
         return FALSE;
 
+    // $Workaround$ - 3rd party fix
     if (_wcsicmp(proc->image_name, L"iexplore.exe") != 0 &&
         _wcsicmp(proc->image_name, L"wmplayer.exe") != 0 &&
         _wcsicmp(proc->image_name, L"winamp.exe")   != 0 &&
@@ -857,10 +962,13 @@ _FX BOOLEAN Ipc_IsRunRestricted(PROCESS *proc)
 
 _FX NTSTATUS Ipc_CheckGenericObject(
     PROCESS *proc, void *Object, UNICODE_STRING *Name,
-    ACCESS_MASK GrantedAccess)
+    ULONG Operation, ACCESS_MASK GrantedAccess)
 {
     NTSTATUS status;
     BOOLEAN IsBoxedPath;
+    POBJECT_TYPE ObjectType;
+
+    ObjectType = pObGetObjectType(Object);
 
     // If the client port object is unnamed, check the server port object. This happens with dynamic ports like the spooler and WPAD.
     // (and possibly others)
@@ -952,6 +1060,48 @@ _FX NTSTATUS Ipc_CheckGenericObject(
         else if (!is_open && !is_closed)
 #endif
         {
+            
+            #define IS_OBJECT_TYPE(l,t) (ObjectType && ObjectType->Name.Length == l * sizeof(WCHAR) \
+                                    && ObjectType->Name.Buffer && _wcsnicmp(ObjectType->Name.Buffer, t, l) == 0)
+
+            if (IS_OBJECT_TYPE(12, L"SymbolicLink")) {
+
+                //
+                // we enforce only CreateSymbolicLinkObject to use copy paths, 
+                // OpenSymbolicLinkObject can use true paths if the access is read only
+                //
+
+                ACCESS_MASK RestrictedAccess = DELETE | WRITE_OWNER | WRITE_DAC;
+                RestrictedAccess |= SYMBOLIC_LINK_SET;
+                if(Operation == OBJ_OP_OPEN && (GrantedAccess & RestrictedAccess) == 0)
+#ifdef USE_MATCH_PATH_EX
+                    mp_flags = TRUE_PATH_OPEN_FLAG;
+#else
+                    is_open = TRUE;
+#endif
+            }
+
+            else if (IS_OBJECT_TYPE(9, L"Directory")) {
+
+                //
+                // we only enforce CreateDirectoryObject/CreateDirectoryObjectEx
+                //
+                // it seems that named object creation always does an additional access check
+                // regardless of what access is granted on the root handle
+                //
+
+                ACCESS_MASK RestrictedAccess = DELETE | WRITE_OWNER | WRITE_DAC;
+                //RestrictedAccess |= DIRECTORY_CREATE_OBJECT | DIRECTORY_CREATE_SUBDIRECTORY;
+                if (!proc->ipc_namespace_isoaltion || (Operation == OBJ_OP_OPEN && (GrantedAccess & RestrictedAccess) == 0))
+#ifdef USE_MATCH_PATH_EX
+                    mp_flags = TRUE_PATH_OPEN_FLAG;
+#else
+                    is_open = TRUE;
+#endif
+            }
+            
+            else //if (IS_OBJECT_TYPE(9, L"ALPC Port"))
+               
             if (Ipc_Dynamic_Ports.pPortLock)
             {
                 KeEnterCriticalRegion();
@@ -978,6 +1128,8 @@ _FX NTSTATUS Ipc_CheckGenericObject(
                 ExReleaseResourceLite(Ipc_Dynamic_Ports.pPortLock);
                 KeLeaveCriticalRegion();
             }
+
+            #undef IS_OBJECT_TYPE
         }
 
 #ifdef USE_MATCH_PATH_EX
@@ -1004,7 +1156,11 @@ _FX NTSTATUS Ipc_CheckGenericObject(
         else
             letter = 0;
 
+        // $Workaround$ - 3rd party fix
         if (letter) {
+            //
+            // sysinternals dbgview
+            //
             WCHAR *backslash = wcsrchr(Name->Buffer, L'\\');
             if (backslash) {
                 ++backslash;
@@ -1029,7 +1185,13 @@ _FX NTSTATUS Ipc_CheckGenericObject(
             }
 
             RtlStringCbPrintfW(access_str, sizeof(access_str), L"(I%c) %08X", letter, GrantedAccess);
-            Log_Debug_Msg(mon_type, access_str, Name->Buffer);
+            //Log_Debug_Msg(mon_type, access_str, Name->Buffer);
+
+            if (Session_MonitorCount) {
+
+		        const WCHAR* strings[4] = { Name->Buffer, access_str, ObjectType ? ObjectType->Name.Buffer : NULL, NULL };
+		        Session_MonitorPutEx(mon_type, strings, NULL, PsGetCurrentProcessId(), PsGetCurrentThreadId());
+	        }
         }
     }
 
@@ -1059,14 +1221,14 @@ _FX NTSTATUS Ipc_CheckGenericObject(
 
 _FX NTSTATUS Ipc_CheckPortObject(
     PROCESS *proc, void *Object, UNICODE_STRING *Name,
-    ACCESS_MASK GrantedAccess)
+    ULONG Operation, ACCESS_MASK GrantedAccess)
 {
     void *PortObject = Ipc_GetServerPort(Object);
 
     if (! PortObject)
         return STATUS_SUCCESS;
 
-    return Ipc_CheckGenericObject(proc, PortObject, Name, GrantedAccess);
+    return Ipc_CheckGenericObject(proc, PortObject, Name, Operation, GrantedAccess);
 }
 
 
@@ -1077,7 +1239,7 @@ _FX NTSTATUS Ipc_CheckPortObject(
 
 _FX NTSTATUS Ipc_CheckJobObject(
     PROCESS* proc, void* Object, UNICODE_STRING* Name,
-    ACCESS_MASK GrantedAccess)
+    ULONG Operation, ACCESS_MASK GrantedAccess)
 {
     //
     // we don't mind if a program in the sandbox creates or opens a job
@@ -1095,7 +1257,7 @@ _FX NTSTATUS Ipc_CheckJobObject(
     if (! Name->Length)
         return STATUS_ACCESS_DENIED;
 
-    return Ipc_CheckGenericObject(proc, Object, Name, GrantedAccess);
+    return Ipc_CheckGenericObject(proc, Object, Name, Operation, GrantedAccess);
 }
 
 
@@ -1113,7 +1275,7 @@ _FX NTSTATUS Ipc_Api_DuplicateObject(PROCESS *proc, ULONG64 *parms)
     HANDLE SourceHandle;
     HANDLE TargetProcessHandle;
     HANDLE *TargetHandle;
-    HANDLE TestHandle;
+    HANDLE DuplicatedHandle;
     ULONG DesiredAccess;
     ULONG HandleAttributes;
     ULONG Options;
@@ -1242,7 +1404,7 @@ _FX NTSTATUS Ipc_Api_DuplicateObject(PROCESS *proc, ULONG64 *parms)
 
         //
         // we duplicate the handle into kernel space such that that user 
-        // wont be able to grab it while we are evaluaiting it
+        // won't be able to grab it while we are evaluaiting it
         //
 
         HANDLE SourceProcessKernelHandle;
@@ -1254,20 +1416,20 @@ _FX NTSTATUS Ipc_Api_DuplicateObject(PROCESS *proc, ULONG64 *parms)
             //
             // driver verifier wants us to provide a kernel handle as process handles
             // but the source handle must be a user handle and the ZwDuplicateObject
-            // function creates an otehr user handle hence NtClose
+            // function creates another user handle hence NtClose
             //
 
             status = ZwDuplicateObject(
                 SourceProcessKernelHandle, SourceHandle,
-                TargetProcessKernelHandle, &TestHandle,
+                TargetProcessKernelHandle, &DuplicatedHandle,
                 DesiredAccess, HandleAttributes,
                 Options & ~DUPLICATE_CLOSE_SOURCE);
 
             if (NT_SUCCESS(status)) {
 
-                status = Ipc_CheckObjectName(TestHandle, UserMode);
+                status = Ipc_CheckObjectName(DuplicatedHandle, UserMode);
 
-                NtClose(TestHandle);
+                NtClose(DuplicatedHandle);
             }
 
             ZwClose(SourceProcessKernelHandle);
@@ -1282,10 +1444,30 @@ _FX NTSTATUS Ipc_Api_DuplicateObject(PROCESS *proc, ULONG64 *parms)
 
     if (NT_SUCCESS(status)) {
 
-        status = NtDuplicateObject(
-            SourceProcessHandle, SourceHandle,
-            TargetProcessHandle, TargetHandle,
-            DesiredAccess, HandleAttributes, Options);
+        HANDLE SourceProcessKernelHandle = (HANDLE)-1;
+        HANDLE TargetProcessKernelHandle = (HANDLE)-1;
+
+        if (!IS_ARG_CURRENT_PROCESS(SourceProcessHandle)) 
+            status = Thread_GetKernelHandleForUserHandle(&SourceProcessKernelHandle, SourceProcessHandle);
+        if (NT_SUCCESS(status)) {
+
+            if (!IS_ARG_CURRENT_PROCESS(TargetProcessHandle))
+                status = Thread_GetKernelHandleForUserHandle(&TargetProcessKernelHandle, TargetProcessHandle);
+            if (NT_SUCCESS(status)) {
+
+                status = ZwDuplicateObject(
+                    SourceProcessKernelHandle, SourceHandle,
+                    TargetProcessKernelHandle, &DuplicatedHandle,
+                    DesiredAccess, HandleAttributes, Options);
+
+                *TargetHandle = DuplicatedHandle;
+            }
+        }
+
+        if (SourceProcessKernelHandle && !IS_ARG_CURRENT_PROCESS(SourceProcessKernelHandle))
+            ZwClose(SourceProcessKernelHandle);
+        if (TargetProcessKernelHandle && !IS_ARG_CURRENT_PROCESS(TargetProcessKernelHandle))
+            ZwClose(TargetProcessKernelHandle);
     }
 
     //
@@ -1441,6 +1623,7 @@ _FX NTSTATUS Ipc_Api_CreateDirOrLink(PROCESS *proc, ULONG64 *parms)
         return STATUS_NOT_IMPLEMENTED;
 
     status = STATUS_SUCCESS;
+    handle = NULL;
 
     //
     // copy first user parameter: objname
@@ -1512,7 +1695,7 @@ _FX NTSTATUS Ipc_Api_CreateDirOrLink(PROCESS *proc, ULONG64 *parms)
 
     InitializeObjectAttributes(
         &objattrs, &objname,
-        OBJ_CASE_INSENSITIVE | OBJ_PERMANENT | OBJ_KERNEL_HANDLE,
+        OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, // | OBJ_PERMANENT, 
         NULL, Driver_PublicSd);
 
     RtlInitUnicodeString(&objname, objname_buf);
@@ -1528,32 +1711,11 @@ _FX NTSTATUS Ipc_Api_CreateDirOrLink(PROCESS *proc, ULONG64 *parms)
 
             status = ZwCreateSymbolicLinkObject(
                 &handle, SYMBOLIC_LINK_ALL_ACCESS, &objattrs, &target);
-
-            if (NT_SUCCESS(status))
-                ZwClose(handle);
         }
 
         Mem_Free(target_buf, target_len + sizeof(WCHAR));
 
     } else {
-
-        if (Driver_LowLabelSd) {
-
-            //
-            // prior to version 3.68, we did not create object directories
-            // with a low integrity label.  so to make sure migration is
-            // smooth from earlier versions, we use the OBJ_OPENIF flag to
-            // force the directory to always open successfully, so that we
-            // can call ZwSetSecurityObject
-            //
-            // in later releases, when it is unlikely to still encounter
-            // object directories created without the integrity label, it
-            // would be ok to remove the OBJ_OPENIF flag, and only apply
-            // the label when actually creating the object directory
-            //
-
-            objattrs.Attributes |= OBJ_OPENIF;
-        }
 
         status = ZwCreateDirectoryObject(
             &handle, DIRECTORY_ALL_ACCESS, &objattrs);
@@ -1565,9 +1727,23 @@ _FX NTSTATUS Ipc_Api_CreateDirOrLink(PROCESS *proc, ULONG64 *parms)
                 ZwSetSecurityObject(
                     handle, LABEL_SECURITY_INFORMATION, Driver_LowLabelSd);
             }
-
-            ZwClose(handle);
         }
+    }
+
+    if (handle != NULL) {
+
+        //ZwClose(handle);
+
+        KIRQL irql;
+        KeRaiseIrql(APC_LEVEL, &irql);
+        ExAcquireResourceExclusiveLite(Ipc_DirLock, TRUE);
+
+        DIR_OBJ_HANDLE *obj_handle = Mem_Alloc(Driver_Pool, sizeof(DIR_OBJ_HANDLE));
+        obj_handle->handle = handle;
+        List_Insert_After(&Ipc_ObjDirs, NULL, obj_handle);
+
+        ExReleaseResourceLite(Ipc_DirLock);
+        KeLowerIrql(irql);
     }
 
     Mem_Free(objname_buf, objname_len + sizeof(WCHAR));
@@ -1742,4 +1918,16 @@ _FX void Ipc_Unload(void)
 {
     if (Ipc_Dynamic_Ports.pPortLock)
         Mem_FreeLockResource(&Ipc_Dynamic_Ports.pPortLock);
+
+    if (Ipc_DirLock == NULL)
+        return; // Early driver initialization failed
+
+    DIR_OBJ_HANDLE* obj_handle = List_Head(&Ipc_ObjDirs);
+    while (obj_handle) {
+
+        ZwClose(obj_handle->handle);
+        obj_handle = List_Next(obj_handle);
+    }
+
+    Mem_FreeLockResource(&Ipc_DirLock);
 }

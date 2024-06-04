@@ -16,6 +16,8 @@ public:
 		eAll = 0xFF
 	};
 
+	static bool				WildCompare(const QString& L, const QString& R);
+
 	static SB_STATUS		DoAssist();
 
 	static SB_RESULT(void*)	Start(EComponent Component);
@@ -34,10 +36,13 @@ public:
 	static void				AddContextMenu2(const QString& StartPath, const QString& RunStr, const QString& IconPath = QString());
 	static void				RemoveContextMenu2();
 
-	static bool				CreateShortcut(class CSbieAPI* pApi, QString LinkPath, const QString &LinkName, const QString &boxname, const QString &arguments, const QString &iconPath = QString(), int iconIndex = 0, const QString &workdir = QString(), bool bRunElevated = false);
+	static bool				CreateShortcut(const QString& StartExe, QString LinkPath, const QString &LinkName, const QString &boxname, const QString &arguments, const QString &iconPath = QString(), int iconIndex = 0, const QString &workdir = QString(), bool bRunElevated = false);
 	static bool				GetStartMenuShortcut(class CSbieAPI* pApi, QString &BoxName, QString &LinkPath, QString &IconPath, quint32& IconIndex, QString &WorkDir);
 
 	static CSbieProgressPtr RunCommand(const QString& Command, bool noGui = false);
+
+	static int				ExecCommand(const QString& Command, bool noGui = false, quint32 Timeout = -1);
+	static int				ExecCommandEx(const QString& Command, QString* pOutput, quint32 Timeout = -1);
 
 private:
 	static SB_RESULT(void*)	ElevateOps(const QStringList& Ops);
@@ -49,7 +54,7 @@ private:
 	static void				Install(EComponent Component, QStringList& Ops);
 	static void				Uninstall(EComponent Component, QStringList& Ops);
 
-	static void				CreateShellEntry(const wstring& classname, const wstring& key, const wstring& cmdtext, const wstring& iconpath, const wstring& startcmd);
+	static void				CreateShellEntry(const std::wstring& classname, const std::wstring& key, const std::wstring& cmdtext, const std::wstring& iconpath, const std::wstring& startcmd);
 };
 
 

@@ -27,6 +27,7 @@
 #include "log.h"
 #include "api.h"
 #include "util.h"
+#include "dyn_data.h"
 
 
 //---------------------------------------------------------------------------
@@ -163,6 +164,7 @@ _FX BOOLEAN Gui_InitProcess(PROCESS *proc)
 {
     //static const WCHAR *_OpenClass = L"OpenWinClass";
     //static const WCHAR *_Asterisk  = L"*";
+#ifndef USE_TEMPLATE_PATHS
     static const WCHAR *openclasses[] = {
         L"Shell_TrayWnd",
         L"TrayNotifyWnd",
@@ -191,12 +193,18 @@ _FX BOOLEAN Gui_InitProcess(PROCESS *proc)
         L"MdiClass",                        // PowerPoint
         NULL
     };
+#endif
+
     ULONG i;
     BOOLEAN ok;
 
     ok = Process_GetPaths(
-            proc, &proc->open_win_classes, Gui_OpenClass_Name, FALSE);
+            proc, &proc->open_win_classes, proc->box->name, Gui_OpenClass_Name, FALSE);
 
+#ifdef USE_TEMPLATE_PATHS
+    if (ok) 
+        ok = Process_GetTemplatePaths(proc, &proc->open_win_classes, Gui_OpenClass_Name);
+#else
     if (ok) {
         for (i = 0; openclasses[i] && ok; ++i) {
             ok = Process_AddPath(proc, &proc->open_win_classes, NULL,
@@ -211,15 +219,19 @@ _FX BOOLEAN Gui_InitProcess(PROCESS *proc)
                     proc, &proc->open_win_classes, NULL,
                     TRUE, L"Sandbox:*:ConsoleWindowClass", FALSE);
             AddMSTaskSwWClass = TRUE;
-        } else if ((! proc->image_from_box) &&
+        } 
+#ifdef XP_SUPPORT
+        else if ((! proc->image_from_box) &&
                 (  _wcsicmp(proc->image_name, L"excel.exe")    == 0
                 || _wcsicmp(proc->image_name, L"powerpnt.exe") == 0))
             AddMSTaskSwWClass = TRUE;
+#endif
         if (ok && AddMSTaskSwWClass) {
             ok = Process_AddPath(proc, &proc->open_win_classes, NULL,
                                  TRUE, L"MSTaskSwWClass", FALSE);
         }
     }
+#endif
 
     /*if (ok) {
         BOOLEAN is_closed;
@@ -320,30 +332,8 @@ _FX GUI_CLIPBOARD *Gui_GetClipboard(void)
     // Clipboard offset can be found in win32k!FindClipFormat
     // In windows 10 find the offset in win32kfull!FindClipFormat
 
-    ULONG Clipboard_Offset = 0;
-
-    // Hard Offset Dependency
-
-#ifdef _WIN64
-    if (Driver_OsVersion <= DRIVER_WINDOWS_7) {
-        Clipboard_Offset = 0x58;
-    }
-    else if (Driver_OsBuild < 18980) {      // Covers Win 8 up through Win 10-18980
-        Clipboard_Offset = 0x60;
-    }
-    else
-        Clipboard_Offset = 0x80;
-
-#else ! _WIN64
-    if (Driver_OsVersion <= DRIVER_WINDOWS_7) {
-        Clipboard_Offset = 0x2c;
-    }
-    else if (Driver_OsBuild < 18980) {      // Covers Win 8 up through Win 10-18980
-        Clipboard_Offset = 0x30;
-    }
-    else
-        Clipboard_Offset = 0x40;
-#endif _WIN64
+    if (!Dyndata_Active)
+        return NULL;
 
     //
     // get the window station object to which caller is connected
@@ -366,7 +356,7 @@ _FX GUI_CLIPBOARD *Gui_GetClipboard(void)
     // get the clipboard data in the window station object
     //
 
-    Clipboard = (GUI_CLIPBOARD *) ((ULONG_PTR)WinStaObject + Clipboard_Offset);
+    Clipboard = (GUI_CLIPBOARD *) ((ULONG_PTR)WinStaObject + Dyndata_Config.Clipboard_offset);
 
     if (Clipboard->items && Clipboard->count)
         return Clipboard;

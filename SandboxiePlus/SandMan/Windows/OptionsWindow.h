@@ -3,8 +3,12 @@
 #include <QtWidgets/QMainWindow>
 #include "ui_OptionsWindow.h"
 #include "SbiePlusAPI.h"
+#include "../../MiscHelpers/Common/SettingsWidgets.h"
 
-class COptionsWindow : public QDialog
+//////////////////////////////////////////////////////////////////////////
+// COptionsWindow
+
+class COptionsWindow : public CConfigDialog
 {
 	Q_OBJECT
 
@@ -29,12 +33,14 @@ public:
 	};
 
 signals:
-	void OptionsChanged();
+	//void OptionsChanged();
 	void Closed();
 
 public slots:
 	void ok();
-	void apply();
+	bool apply();
+
+	void showTab(const QString& Name);
 
 private slots:
 
@@ -42,15 +48,34 @@ private slots:
 
 	void OnOptChanged();
 
+	void OnUseIcon(bool bUse);
+	bool OnPickIcon();
 	void OnPickColor();
+	void OnColorSlider(int value);
 
 	void OnBoxTypChanged();
 	void UpdateBoxType();
 
+	void OnCopyItemDoubleClicked(QTreeWidgetItem* pItem, int Column);
+	void OnCopySelectionChanged() { CloseCopyEdit(); OnOptChanged(); }
+	void OnCopyChanged(QTreeWidgetItem* pItem, int Column);
+	void OnShowCopyTmpl() { LoadCopyRulesTmpl(true); }
+	void OnAddCopyRule();
+	void OnDelCopyRule();
+
 	void OnBrowsePath();
 	void OnAddCommand();
+	void OnCommandUp();
+	void OnCommandDown();
 	void OnDelCommand();
 	void OnRunChanged() { m_GeneralChanged = true;  OnOptChanged(); }
+
+	void OnVmRead();
+
+	void OnDiskChanged();
+	void OnSetPassword();
+	void OnBackupHeader();
+	void OnRestoreHeader();
 
 	void OnAddGroup();
 	void OnAddProg();
@@ -59,21 +84,38 @@ private slots:
 	void OnGroupsChanged(QTreeWidgetItem* pItem, int Index) { m_GroupsChanged = true;  OnOptChanged(); }
 
 	void OnForceProg();
+	void OnForceBrowse();
 	void OnForceDir();
 	void OnDelForce();
 	void OnShowForceTmpl()			{ LoadForcedTmpl(true); }
-	void OnForcedChanged(QTreeWidgetItem* pItem, int Index);
+	void OnForcedChanged();
+	void OnForcedChanged(QTreeWidgetItem *pItem, int);
+
+	void OnBreakoutProg();
+	void OnBreakoutBrowse();
+	void OnBreakoutDir();
+	void OnDelBreakout();
+	void OnShowBreakoutTmpl()		{ LoadBreakoutTmpl(true); }
+	void OnBreakoutChanged(QTreeWidgetItem *pItem, int);
 
 	void OnAddLingering();
-	void OnAddLeader();
 	void OnDelStopProg();
-	void OnShowStopTmpl()			{ LoadStopTmpl(true); }
-	void OnStopChanged(QTreeWidgetItem* pItem, int Index) { m_StopChanged = true;  OnOptChanged(); }
+	void OnShowStopTmpl()			{ LoadStopTmpl(true); }	
+	void OnStopChanged()			{ m_StopChanged = true;  OnOptChanged(); }
+	void OnAddLeader();
+	void OnDelLeader();
+	void OnShowLeaderTmpl()			{ LoadLeaderTmpl(true); }	
 
 	void OnRestrictStart();
 	void OnAddStartProg();
 	void OnDelStartProg();
+	//void OnShowStartTmpl() 			{ LoadStartTmpl(true); }
 	void OnStartChanged(QTreeWidgetItem* pItem, int Index);
+
+	void OnToggleInjectDll(QTreeWidgetItem* pItem, int Column);
+	void OnDblClickInjedtDll(QTreeWidgetItem* pItem, int Column);
+
+	void OnHostProtectChanged();
 
 	// net
 	void OnINetItemDoubleClicked(QTreeWidgetItem* pItem, int Column);
@@ -88,13 +130,29 @@ private slots:
 	void OnNetFwChanged(QTreeWidgetItem* pItem, int Column);
 	void OnAddNetFwRule();
 	void OnDelNetFwRule();
-
 	void OnShowNetFwTmpl()			{ LoadNetFwRulesTmpl(true); }
 
 	void OnTestNetFwRule();
 	void OnClearNetFwTest();
-	//net
-	// 
+
+	void OnAddDnsFilter();
+	void OnDelDnsFilter();
+	void OnDnsFilterChanged(QTreeWidgetItem * pItem, int Column) { m_DnsFilterChanged = true; OnOptChanged(); }
+
+	void OnNetProxyItemDoubleClicked(QTreeWidgetItem* pItem, int Column);
+	void OnNetProxySelectionChanged() { CloseNetProxyEdit(); OnOptChanged(); }
+	void OnAddNetProxy();
+	void OnDelNetProxy();
+	void OnTestNetProxy();
+	void OnProxyResolveHostnames();
+	void OnNetProxyMoveUp();
+	void OnNetProxyMoveDown();
+	void OnNetProxyChanged(QTreeWidgetItem * pItem, int Column) { m_NetProxyChanged = true; OnOptChanged(); }
+
+	void OnBlockDns();
+	void OnBlockSamba();
+	//
+	
 	// access
 	//void OnAccessItemClicked(QTreeWidgetItem* pItem, int Column);
 	void OnAccessItemDoubleClicked(QTreeWidgetItem* pItem, int Column);
@@ -104,33 +162,65 @@ private slots:
 	void OnAddFile()				{ AddAccessEntry(eFile, eOpen, "", ""); m_AccessChanged = true; OnOptChanged(); }
 	void OnBrowseFile();
 	void OnBrowseFolder();
+	void OnDelFile()				{ DeleteAccessEntry(ui.treeFiles->currentItem()); m_AccessChanged = true; OnOptChanged(); }
+	void OnShowFilesTmpl()			{ LoadAccessListTmpl(eFile, ui.chkShowFilesTmpl->isChecked(), true); }
 	void OnAddKey()					{ AddAccessEntry(eKey, eOpen, "", ""); m_AccessChanged = true; OnOptChanged(); }
+	void OnDelKey()					{ DeleteAccessEntry(ui.treeKeys->currentItem()); m_AccessChanged = true; OnOptChanged(); }
+	void OnShowKeysTmpl()			{ LoadAccessListTmpl(eKey, ui.chkShowKeysTmpl->isChecked(), true); }
 	void OnAddIPC()					{ AddAccessEntry(eIPC, eOpen, "", ""); m_AccessChanged = true; OnOptChanged(); }
+	void OnDelIPC()					{ DeleteAccessEntry(ui.treeIPC->currentItem()); m_AccessChanged = true; OnOptChanged(); }
+	void OnShowIPCTmpl()			{ LoadAccessListTmpl(eIPC, ui.chkShowIPCTmpl->isChecked(), true); }
 	void OnAddWnd()					{ AddAccessEntry(eWnd, eOpen, "", ""); m_AccessChanged = true; OnOptChanged(); }
+	void OnDelWnd()					{ DeleteAccessEntry(ui.treeWnd->currentItem()); m_AccessChanged = true; OnOptChanged(); }
+	void OnShowWndTmpl()			{ LoadAccessListTmpl(eWnd, ui.chkShowWndTmpl->isChecked(), true); }
 	void OnAddCOM()					{ AddAccessEntry(eCOM, eOpen, "", ""); m_AccessChanged = true; OnOptChanged(); }
-	void OnDelAccess();
-	void OnShowAccessTmpl()			{ LoadAccessListTmpl(true); }
+	void OnDelCOM()					{ DeleteAccessEntry(ui.treeCOM->currentItem()); m_AccessChanged = true; OnOptChanged(); }
+	void OnShowCOMTmpl()			{ LoadAccessListTmpl(eCOM, ui.chkShowCOMTmpl->isChecked(), true); }
+	//void OnDelAccess()			{ DeleteAccessEntry(ui.treeAccess->currentItem()); m_AccessChanged = true; OnOptChanged(); }
+	//void OnShowAccessTmpl()			{ LoadAccessListTmpl(true); }
 	//
 
 	void OnAddRecFolder();
 	void OnAddRecIgnore();
 	void OnAddRecIgnoreExt();
 	void OnDelRecEntry();
+	void OnDelRecIgnoreEntry();
 	void OnShowRecoveryTmpl()		{ LoadRecoveryListTmpl(true); }
+	void OnShowRecIgnoreTmpl()		{ LoadRecIgnoreListTmpl(true); }
 
 	// advanced
 	void OnNoWindowRename();
+
+	void OnAddOption();
+	void OnShowOptionTmpl()			{ LoadOptionListTmpl(true); }
+	void OnDelOption();
+
+	//void OnOptionItemClicked(QTreeWidgetItem* pItem, int Column);
+	void OnOptionItemDoubleClicked(QTreeWidgetItem* pItem, int Column);
+	void OnOptionSelectionChanged() { CloseOptionEdit(); OnOptChanged();}
+	void OnOptionChanged(QTreeWidgetItem* pItem, int Column);
+
 
 	void OnTriggerChanged()			{ m_AdvancedChanged = true; OnOptChanged(); }
 	void OnShowTriggersTmpl()		{ ShowTriggersTmpl(true); }
 	void OnAddAutoRun();
 	void OnAddAutoSvc();
 	void OnAddAutoExec();
+	void OnAddRecoveryCheck();
 	void OnAddDeleteCmd();
+	void OnAddTerminateCmd();
 	void OnDelAuto();
 
 	void OnAddProcess();
 	void OnDelProcess();
+	void OnShowHiddenProcTmpl()		{ ShowHiddenProcTmpl(true); }
+
+	void OnConfidentialChanged();
+	void OnLessConfidentialChanged();
+	void OnHostProcessAllow();
+	void OnHostProcessDeny();
+	void OnDelHostProcess();
+	void OnShowHostProcTmpl()		{ ShowHostProcTmpl(true); }
 
 	void OnAddUser();
 	void OnDelUser();
@@ -140,13 +230,20 @@ private slots:
 	void OnTemplateClicked(QTreeWidgetItem* pItem, int Column);
 	void OnTemplateDoubleClicked(QTreeWidgetItem* pItem, int Column);
 	void OnAddTemplates();
+	void OnTemplateWizard();
+	void OnOpenTemplate();
 	void OnDelTemplates();
 	void OnFolderChanged();
 	void OnScreenReaders();
 
-	void OnTab();
+	void OnTab() { OnTab(ui.tabs->currentWidget()); }
+	void OnAccessTab()  { OnTab(ui.tabsAccess->currentWidget()); }
+	void OnInternetTab()  { OnTab(ui.tabsInternet->currentWidget()); }
 
 	void OnGeneralChanged();
+	void OnPSTChanged();
+	void OnActionChanged();
+	void OnSecurityMode();
 	void OnStartChanged()			{ m_StartChanged = true; OnOptChanged(); }
 	//void OnRestrictionChanged()		{ m_RestrictionChanged = true; OnOptChanged(); }
 	void OnINetBlockChanged()		{ m_INetBlockChanged = true; OnOptChanged(); }
@@ -161,14 +258,25 @@ private slots:
 	void SetIniEdit(bool bEnable);
 	void OnEditIni();
 	void OnSaveIni();
+	void OnIniChanged();
 	void OnCancelEdit();
 
-protected:
-	friend struct SFirewallRule;
+	void OnSetTree();
 
+protected:
 	void closeEvent(QCloseEvent *e);
 
 	bool eventFilter(QObject *watched, QEvent *e);
+
+	void OnTab(QWidget* pTab);
+
+public:
+	enum ECopyAction
+	{
+		eCopyAlways,
+		eDontCopy,
+		eCopyEmpty,
+	};
 
 	enum ENetWfAction
 	{
@@ -206,12 +314,13 @@ protected:
 		eReadIpcPath,
 
 		eOpenWinClass,
+		eNoRenameWinClass,
 
 		eOpenCOM,
 		eClosedCOM,
 		eClosedCOM_RT,
 
-		eMaxAccessType
+		eMaxAccessEntry
 	};
 
 	enum EAccessType
@@ -220,7 +329,9 @@ protected:
 		eKey,
 		eIPC,
 		eWnd,
-		eCOM
+		eCOM,
+
+		eMaxAccessType
 	};
 
 	enum EAccessMode
@@ -228,42 +339,78 @@ protected:
 		eNormal,
 		eOpen,
 		eOpen4All,
+		eNoRename,
 		eClosed,
 		eClosedRT,
 		eReadOnly,
-		eBoxOnly
+		eBoxOnly,
+		eIgnoreUIPI,
+
+		eMaxAccessMode
 	};
 
 	enum ETriggerAction {
 		eOnStartCmd,
 		eOnStartSvc,
 		eAutoExec,
-		eDeleteCmd
+		eRecoveryCheck,
+		eDeleteCmd,
+		eTerminateCmd
 	};
 
-	void SetProgramItem(QString Program, QTreeWidgetItem* pItem, int Column);
+    enum EAuthMode {
+		eAuthDisabled,
+		eAuthEnabled ,
+	};
+
+	static QString AccessTypeToName(EAccessEntry Type);
+	static QPair<EAccessType, EAccessMode> SplitAccessType(EAccessEntry Type);
+
+	static QString	GetAccessTypeStr(EAccessType Type);
+	static QString	GetAccessModeStr(EAccessMode Mode);
+	static QString	GetAccessModeTip(EAccessMode Mode);
+
+    static QString GetAuthModeStr(EAuthMode Mode);
+
+protected:
+	void SetBoxColor(const QColor& color);
+	void UpdateBoxColor();
+
+	QString GetActionFile();
+
+	QString GetCopyActionStr(ECopyAction Action);
+	void ParseAndAddCopyRule(const QString& Value, ECopyAction Action, bool disabled = false, const QString& Template = QString());
+	void CloseCopyEdit(bool bSave = true);
+	void CloseCopyEdit(QTreeWidgetItem* pItem, bool bSave = true);
+
+	void SetProgramItem(QString Program, QTreeWidgetItem* pItem, int Column, const QString& Suffix = QString(), bool bList = true);
 
 	QString SelectProgram(bool bOrGroup = true);
 	void AddProgramToGroup(const QString& Program, const QString& Group);
 	bool DelProgramFromGroup(const QString& Program, const QString& Group);
 	QTreeWidgetItem* FindGroupByName(const QString& Group, bool bAdd = false);
 
-	void CopyGroupToList(const QString& Groupe, QTreeWidget* pTree, bool disabled = false);
+	void CopyGroupToList(const QString& Group, QTreeWidget* pTree, bool disabled = false);
 	QTreeWidgetItem* GetAccessEntry(EAccessType Type, const QString& Program, EAccessMode Mode, const QString& Path);
+	bool IsAccessEntrySet(EAccessType Type, const QString& Program, EAccessMode Mode, const QString& Path);
 	void SetAccessEntry(EAccessType Type, const QString& Program, EAccessMode Mode, const QString& Path);
 	void DelAccessEntry(EAccessType Type, const QString& Program, EAccessMode Mode, const QString& Path);
-	void AddProgToGroup(QTreeWidget* pTree, const QString& Groupe, bool disabled = false);
-	void DelProgFromGroup(QTreeWidget* pTree, const QString& Groupe);
+
+	bool RunImBox(const QStringList& Arguments);
 
 	void LoadConfig();
 	void SaveConfig();
 	void UpdateCurrentTab();
 
-	void AddRunItem(const QString& Name, const QString& Command);
-
 	void CreateGeneral();
 	void LoadGeneral();
 	void SaveGeneral();
+
+	void LoadCopyRules();
+	void LoadCopyRulesTmpl(bool bUpdate = false);
+	void SaveCopyRules();
+
+	void UpdateBoxSecurity();
 
 	void LoadGroups();
 	void LoadGroupsTmpl(bool bUpdate = false);
@@ -272,14 +419,21 @@ protected:
 	void LoadForced();
 	void LoadForcedTmpl(bool bUpdate = false);
 	void AddForcedEntry(const QString& Name, int type, bool disabled = false, const QString& Template = QString());
+	void LoadBreakoutTmpl(bool bUpdate = false);
+	void AddBreakoutEntry(const QString& Name, int type, bool disabled = false, const QString& Template = QString());
 	void SaveForced();
+	bool CheckForcedItem(const QString& Value, int type);
+
 
 	void LoadStop();
 	void LoadStopTmpl(bool bUpdate = false);
-	void AddStopEntry(const QString& Name, int type, bool disabled = false, const QString& Template = QString());
+	void LoadLeaderTmpl(bool bUpdate = false);
+	void AddStopEntry(const QString& Name, bool disabled = false, const QString& Template = QString());
+	void AddLeaderEntry(const QString& Name, bool disabled = false, const QString& Template = QString());
 	void SaveStop();
 
 	void LoadStart();
+	//void LoadStartTmpl(bool bUpdate = false);
 	void SaveStart();
 
 	// Network
@@ -291,7 +445,6 @@ protected:
 	QString	GetINetModeStr(int Mode);
 	void CloseINetEdit(bool bSave = true);
 	void CloseINetEdit(QTreeWidgetItem* pItem, bool bSave = true);
-	void CheckINetBlock();
 	bool FindEntryInSettingList(const QString& Name, const QString& Value);
 	void LoadINetAccess();
 	void SaveINetAccess();
@@ -305,32 +458,49 @@ protected:
 	void LoadNetFwRules();
 	void SaveNetFwRules();
 	void LoadNetFwRulesTmpl(bool bUpdate = false);
+
+	void LoadDnsFilter();
+	void AddDnsFilter(const QString& Value, bool disabled = false, const QString& Template = QString());
+	void AddDnsFilter(const QString& Prog, const QString& Domain, const QStringList& IPs = QStringList(), bool disabled = false, const QString& Template = QString());
+	void SaveDnsFilter();
+
+	void ParseAndAddNetProxy(const QString& Value, bool disabled = false, const QString& Template = QString());
+	void CloseNetProxyEdit(bool bSave = true);
+	void CloseNetProxyEdit(QTreeWidgetItem* pItem, bool bSave = true);
+	EAuthMode GetAuthMode(const QString& Value);
+	void LoadNetProxy();
+	void SaveNetProxy();
+	void WriteNetProxy(const QString& Setting, const QStringList& List);
 	//
 	
 	// access
 	void CreateAccess();
 
-	QString	AccessTypeToName(EAccessEntry Type);
 	void LoadAccessList();
 	void LoadAccessListTmpl(bool bUpdate = false);
-	QString	GetAccessTypeStr(EAccessType Type);
-	QString	GetAccessModeStr(EAccessMode Mode);
+	void LoadAccessListTmpl(EAccessType Type, bool bChecked, bool bUpdate = false);
 	void ParseAndAddAccessEntry(EAccessEntry EntryType, const QString& Value, bool disabled = false, const QString& Template = QString());
-	void AddAccessEntry(EAccessType	Type, EAccessMode Mode, QString Program, const QString& Path, bool disabled = false, const QString& Template = QString());
+	void ParseAndAddAccessEntry(EAccessType Type, EAccessMode Mode, const QString& Value, bool disabled = false, const QString& Template = QString());
+	QString ExpandPath(EAccessType Type, const QString& Path);
+	void AddAccessEntry(EAccessType Type, EAccessMode Mode, QString Program, const QString& Path, bool disabled = false, const QString& Template = QString());
 	QString MakeAccessStr(EAccessType Type, EAccessMode Mode);
 	void SaveAccessList();
 	QList<EAccessMode> GetAccessModes(EAccessType Type);
-	void DeleteAccessEntry(QTreeWidgetItem* pItem);
+	void DeleteAccessEntry(QTreeWidgetItem* pItem, int Column = 0);
 
 	void CloseAccessEdit(bool bSave = true);
 	void CloseAccessEdit(QTreeWidgetItem* pItem, bool bSave = true);
 
 	void UpdateAccessPolicy();
+
+	QTreeWidget* GetAccessTree(EAccessType Type);
 	//
 
 	void LoadRecoveryList();
 	void LoadRecoveryListTmpl(bool bUpdate = false);
-	void AddRecoveryEntry(const QString& Name, int type, const QString& Template = QString());
+	void LoadRecIgnoreListTmpl(bool bUpdate = false);
+	void AddRecoveryEntry(const QString& Name, const QString& Template = QString());
+	void AddRecIgnoreEntry(const QString& Name, const QString& Template = QString());
 	void SaveRecoveryList();
 
 	// advanced 
@@ -339,8 +509,22 @@ protected:
 	void SaveAdvanced();
 	void UpdateBoxIsolation();
 	void ShowTriggersTmpl(bool bUpdate = false);
-	void AddTriggerItem(const QString& Value, ETriggerAction Type, const QString& Template = QString());
+	void AddTriggerItem(const QString& Value, ETriggerAction Type, bool disabled = false, const QString& Template = QString());
+	void ShowHiddenProcTmpl(bool bUpdate = false);
+	void ShowHostProcTmpl(bool bUpdate = false);
+	void AddHiddenProcEntry(const QString& Name, const QString& Template = QString());
+	void AddHostProcEntry(const QString& Name, bool Deny, const QString& Template = QString());
+	void CheckOpenCOM();
 	//
+
+	void LoadOptionList();
+	void LoadOptionListTmpl(bool bUpdate = false);
+	void SaveOptionList();
+
+	void AddOptionEntry(const QString& Name, QString Program, const QString& Value, const QString& Template = QString());
+
+	void CloseOptionEdit(bool bSave = true);
+	void CloseOptionEdit(QTreeWidgetItem* pItem, bool bSave = true);
 
 	void CreateDebug();
 	void LoadDebug();
@@ -358,16 +542,20 @@ protected:
 	void LoadIniSection();
 	void SaveIniSection();
 
+	void ApplyIniEditFont();
+
 	QString GetCategoryName(const QString& Category);
 
 	bool m_HoldChange;
 
 	bool m_ConfigDirty;
 	QColor m_BorderColor;
+	QString m_BoxIcon;
 
 	bool m_HoldBoxType;
 
 	bool m_GeneralChanged;
+	bool m_CopyRulesChanged;
 	bool m_GroupsChanged;
 	bool m_ForcedChanged;
 	bool m_StopChanged;
@@ -375,13 +563,14 @@ protected:
 	//bool m_RestrictionChanged;
 	bool m_INetBlockChanged;
 	bool m_NetFwRulesChanged;
+	bool m_DnsFilterChanged;
+	bool m_NetProxyChanged;
 	bool m_AccessChanged;
 	bool m_TemplatesChanged;
 	bool m_FoldersChanged;
 	bool m_RecoveryChanged;
 	bool m_AdvancedChanged;
 
-	bool m_IsEnabledWFP;
 	bool m_WFPisBlocking;
 
 	bool m_Template;
@@ -397,14 +586,40 @@ protected:
 
 	QSet<QString> m_Programs;
 
+	enum EProcCpec {
+		eNoSpec,
+		eSpec,
+		eOnlySpec,
+	};
+
+	struct SAdvOption
+	{
+		EProcCpec ProcSpec;
+		QStringList Values;
+		QString Description;
+	};
+
+	QMap<QString, SAdvOption> m_AdvOptions;
+
+	QString m_Password;
+	quint64 m_ImageSize;
+
 private:
+
 	void ReadAdvancedCheck(const QString& Name, QCheckBox* pCheck, const QString& Value = "y");
+	void ReadGlobalCheck(QCheckBox* pCheck, const QString& Setting, bool bDefault);
+	void WriteGlobalCheck(QCheckBox* pCheck, const QString& Setting, bool bDefault);
 	void WriteAdvancedCheck(QCheckBox* pCheck, const QString& Name, const QString& Value = "y");
 	void WriteAdvancedCheck(QCheckBox* pCheck, const QString& Name, const QString& OnValue, const QString& OffValue);
 	void WriteText(const QString& Name, const QString& Value);
 	void WriteTextList(const QString& Setting, const QStringList& List);
+	void WriteTextSafe(const QString& Name, const QString& Value);
+	QString ReadTextSafe(const QString& Name, const QString& Default);
 
 	Ui::OptionsWindow ui;
+	QCheckBox* m_pUseIcon;
+	QToolButton* m_pPickIcon;
+	QSlider* m_pColorSlider;
 
 	struct SDbgOpt {
 		QString Name;
@@ -413,3 +628,4 @@ private:
 	};
 	QMap<QCheckBox*, SDbgOpt> m_DebugOptions;
 };
+

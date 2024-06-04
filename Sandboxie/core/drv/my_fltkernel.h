@@ -351,7 +351,7 @@ typedef union _FLT_PARAMETERS {
 
             //
             //  Type3InputBuffer: name changed from IO_STACK_LOCATION parameters
-            //  Note for this mothod, both input & output buffers are 'raw',
+            //  Note for this method, both input & output buffers are 'raw',
             //  i.e. unbuffered, and should be treated with caution ( either
             //  probed & captured before access, or use try-except to enclose
             //  access to the buffer)
@@ -451,7 +451,7 @@ typedef union _FLT_PARAMETERS {
 
             //
             //  Type3InputBuffer: name changed from IO_STACK_LOCATION parameters
-            //  Note for this mothod, both input & output buffers are 'raw',
+            //  Note for this method, both input & output buffers are 'raw',
             //  i.e. unbuffered, and should be treated with caution ( either
             //  probed & captured before access, or use try-except to enclose
             //  access to the buffer)
@@ -1015,7 +1015,7 @@ typedef struct _FLT_CONTEXT_REGISTRATION {
     //  allocation of that entry.
     //
     //  NOTE:  These fields are ignored if Allocate & Free routines are
-    //         specifed.
+    //         specified.
     //
 
     SIZE_T Size;
@@ -1371,7 +1371,7 @@ typedef ULONG FLT_FILE_NAME_OPTIONS;
 //
 //  This flag is to be used by name provider filters to specify that a name
 //  query request they are making should be redirected to their filter rather
-//  than being satified by the name providers lower in the stack.
+//  than being satisfied by the name providers lower in the stack.
 //
 #define FLT_FILE_NAME_REQUEST_FROM_CURRENT_PROVIDER 0x01000000
 

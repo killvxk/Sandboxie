@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
- * Copyright 2020-2021 David Xanatos, xanasoft.com
+ * Copyright 2020-2023 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -23,6 +23,7 @@
 
 #include "dll.h"
 #include "obj.h"
+#include "handle.h"
 #include <stdio.h>
 #include "common/my_version.h"
 #include "core/svc/namedpipewire.h"
@@ -40,6 +41,32 @@
 
 
 //---------------------------------------------------------------------------
+// Structures and Types
+//---------------------------------------------------------------------------
+
+
+typedef struct _IPC_MERGE {
+
+    LIST_ELEM list_elem;
+
+    HANDLE handle;
+
+    LIST objects;
+
+} IPC_MERGE;
+
+
+typedef struct _IPC_MERGE_ENTRY
+{
+    LIST_ELEM list_elem;
+
+    UNICODE_STRING Name;
+    UNICODE_STRING TypeName;
+
+} IPC_MERGE_ENTRY;
+
+
+//---------------------------------------------------------------------------
 // Functions
 //---------------------------------------------------------------------------
 
@@ -54,7 +81,7 @@ static NTSTATUS Ipc_GetName(
 
 static NTSTATUS Ipc_GetName2(
     OBJECT_ATTRIBUTES *ObjectAttributes,
-    WCHAR **OutTruePath, WCHAR **OutCopyPath);
+    WCHAR **OutTruePath, WCHAR **OutCopyPath, const WCHAR* NtName);
 
 static NTSTATUS Ipc_CreatePath(WCHAR *TruePath, WCHAR *CopyPath);
 
@@ -236,6 +263,17 @@ static NTSTATUS Ipc_NtCreateSection(
     ULONG SectionAttributes,
     HANDLE FileHandle);
 
+static NTSTATUS Ipc_NtCreateSectionEx(
+    HANDLE *SectionHandle,
+    ACCESS_MASK DesiredAccess,
+    OBJECT_ATTRIBUTES *ObjectAttributes,
+    LARGE_INTEGER *MaximumSize,
+    ULONG PageAttributes,
+    ULONG SectionAttributes,
+    HANDLE FileHandle,
+    PMEM_EXTENDED_PARAMETER ExtendedParameters,
+    ULONG ExtendedParameterCount);
+
 static NTSTATUS Ipc_NtOpenSection(
     HANDLE *SectionHandle,
     ACCESS_MASK DesiredAccess,
@@ -244,6 +282,46 @@ static NTSTATUS Ipc_NtOpenSection(
 
 //---------------------------------------------------------------------------
 
+static NTSTATUS Ipc_NtCreateSymbolicLinkObject (
+    PHANDLE SymbolicLinkHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes,
+    PUNICODE_STRING DestinationName);
+
+static NTSTATUS Ipc_NtOpenSymbolicLinkObject(
+    PHANDLE SymbolicLinkHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes);
+
+//---------------------------------------------------------------------------
+
+static NTSTATUS Ipc_NtCreateDirectoryObject(
+    PHANDLE DirectoryHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes);
+
+static NTSTATUS Ipc_NtCreateDirectoryObjectEx(
+    PHANDLE DirectoryHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes,
+    HANDLE ShadowDirectoryHandle,
+    ULONG Flags);
+
+static NTSTATUS Ipc_NtOpenDirectoryObject(
+    PHANDLE DirectoryHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes);
+
+static NTSTATUS Ipc_NtQueryDirectoryObject(
+    HANDLE DirectoryHandle,
+    PVOID Buffer,
+    ULONG Length,
+    BOOLEAN ReturnSingleEntry,
+    BOOLEAN RestartScan,
+    PULONG Context,
+    PULONG ReturnLength);
+
+//---------------------------------------------------------------------------
 
 static P_NtCreatePort               __sys_NtCreatePort              = NULL;
 static P_NtConnectPort              __sys_NtConnectPort             = NULL;
@@ -268,7 +346,17 @@ static P_NtOpenMutant               __sys_NtOpenMutant              = NULL;
 static P_NtCreateSemaphore          __sys_NtCreateSemaphore         = NULL;
 static P_NtOpenSemaphore            __sys_NtOpenSemaphore           = NULL;
 static P_NtCreateSection            __sys_NtCreateSection           = NULL;
+static P_NtCreateSectionEx          __sys_NtCreateSectionEx         = NULL;
 static P_NtOpenSection              __sys_NtOpenSection             = NULL;
+
+static P_NtCreateSymbolicLinkObject __sys_NtCreateSymbolicLinkObject= NULL;
+static P_NtOpenSymbolicLinkObject   __sys_NtOpenSymbolicLinkObject  = NULL;
+
+static P_NtCreateDirectoryObject    __sys_NtCreateDirectoryObject   = NULL;
+static P_NtCreateDirectoryObjectEx  __sys_NtCreateDirectoryObjectEx = NULL;
+static P_NtOpenDirectoryObject      __sys_NtOpenDirectoryObject     = NULL;
+static P_NtQueryDirectoryObject     __sys_NtQueryDirectoryObject    = NULL;
+
 static P_NtImpersonateAnonymousToken
                                     __sys_NtImpersonateAnonymousToken
                                                                     = NULL;
@@ -287,12 +375,16 @@ const WCHAR *Ipc_SandboxieRpcSs      = SANDBOXIE L"RpcSs.exe";
 const WCHAR *Ipc_epmapper  = L"\\RPC Control\\epmapper";
 const WCHAR *Ipc_actkernel = L"\\RPC Control\\actkernel";
 
+BOOLEAN ipc_namespace_isoaltion;
+
 extern const WCHAR *File_BQQB;
 
 LIST Ipc_DynamicPortNames;
 
 BOOLEAN RpcRt_IsDynamicPortOpen(const WCHAR* wszPortName);
 
+static LIST Ipc_Handles;
+static CRITICAL_SECTION Ipc_Handles_CritSec;
 
 //---------------------------------------------------------------------------
 // IPC (other modules)
@@ -309,6 +401,12 @@ BOOLEAN RpcRt_IsDynamicPortOpen(const WCHAR* wszPortName);
 
 _FX BOOLEAN Ipc_Init(void)
 {
+    HMODULE module = Dll_Ntdll;
+
+    InitializeCriticalSection(&Ipc_Handles_CritSec);
+
+    List_Init(&Ipc_Handles);
+
     void *NtAlpcCreatePort;
     void *NtAlpcConnectPort;
     void *NtAlpcConnectPortEx;
@@ -322,6 +420,8 @@ _FX BOOLEAN Ipc_Init(void)
     //
 
     SbieDll_MatchPath(L'i', (const WCHAR *)-1);
+
+    ipc_namespace_isoaltion = SbieApi_QueryConfBool(NULL, L"NtNamespaceIsolation", TRUE);
 
     //
     // intercept NTDLL entry points
@@ -369,7 +469,22 @@ _FX BOOLEAN Ipc_Init(void)
     SBIEDLL_HOOK(Ipc_,NtOpenSemaphore);
 
     SBIEDLL_HOOK(Ipc_,NtCreateSection);
+    void* NtCreateSectionEx = GetProcAddress(Dll_Ntdll, "NtCreateSectionEx");
+    if (NtCreateSectionEx) { // windows 10 1809
+        SBIEDLL_HOOK(Ipc_, NtCreateSectionEx);
+    }
     SBIEDLL_HOOK(Ipc_,NtOpenSection);
+
+    SBIEDLL_HOOK(Ipc_,NtCreateSymbolicLinkObject);
+    SBIEDLL_HOOK(Ipc_,NtOpenSymbolicLinkObject);
+
+    SBIEDLL_HOOK(Ipc_,NtCreateDirectoryObject);
+	void* NtCreateDirectoryObjectEx = GetProcAddress(Dll_Ntdll, "NtCreateDirectoryObjectEx");
+    if (NtCreateDirectoryObjectEx) { // windows 8
+	    SBIEDLL_HOOK(Ipc_,NtCreateDirectoryObjectEx);
+	}
+    SBIEDLL_HOOK(Ipc_,NtOpenDirectoryObject);
+    SBIEDLL_HOOK(Ipc_,NtQueryDirectoryObject);
 
     // OriginalToken BEGIN
     if (!Dll_CompartmentMode && !SbieApi_QueryConfBool(NULL, L"OriginalToken", FALSE))
@@ -379,7 +494,10 @@ _FX BOOLEAN Ipc_Init(void)
         SBIEDLL_HOOK(Ipc_, NtImpersonateThread);
     }
 
-    Ipc_CreateObjects();
+    //if (!Dll_AlernateIpcNaming) // alternate naming does not need an own namespace
+    if (Dll_FirstProcessInBox) {
+        Ipc_CreateObjects();
+    }
 
     List_Init(&Ipc_DynamicPortNames);
 
@@ -398,7 +516,10 @@ _FX void Ipc_CreateObjects(void)
     WCHAR *TruePath;
     WCHAR *CopyPath;
     WCHAR *backslash;
-    WCHAR *buffer;
+    WCHAR *buffer = NULL;
+    WCHAR *BNOLINKS = NULL;
+    WCHAR *GLOBAL = NULL;
+    WCHAR *buffer2 = NULL;
     HANDLE handle;
     WCHAR str[64];
     ULONG errlvl = 0;
@@ -453,19 +574,117 @@ _FX void Ipc_CreateObjects(void)
         goto finish;
     }
 
+    // todo: fix-me: properly reparse symbolic links in IPC paths instead of creating dummy for everything
+
+    buffer = Dll_Alloc((wcslen(CopyPath) + 32) * sizeof(WCHAR));
+
+    //
+    // create BNOLINKS directory and symbolic links
+    //
+
+    BNOLINKS  = Dll_Alloc((wcslen(CopyPath) + 32) * sizeof(WCHAR));
+
+    wcscpy(BNOLINKS, CopyPath);
+
+    status = STATUS_UNSUCCESSFUL;
+    backslash = wcsrchr(BNOLINKS, L'\\');
+    if (backslash) {
+        *backslash = L'\0';
+        backslash = wcsrchr(BNOLINKS, L'\\');
+        if (backslash) {
+            wcscpy(str, backslash);
+            *backslash = L'\0';
+            wcscat(BNOLINKS, L"\\BNOLINKS");
+            status = STATUS_SUCCESS;
+        }
+    }
+
+    if (NT_SUCCESS(status))
+        status = SbieApi_CreateDirOrLink(BNOLINKS, NULL);
+    
+    if (NT_SUCCESS(status)) {
+        wcscpy(buffer, BNOLINKS);
+        wcscat(buffer, str);
+        status = SbieApi_CreateDirOrLink(buffer, CopyPath);
+    }
+
+    if (! NT_SUCCESS(status)) {
+        errlvl = 77;
+        goto finish;
+    }
+
+    //
+    // create Global directory and symbolic links
+    //
+
+    buffer2 = Dll_Alloc((Dll_BoxIpcPathLen + 32) * sizeof(WCHAR));
+
+    wcscpy(buffer2, Dll_BoxIpcPath);
+    wcscat(buffer2, L"\\BaseNamedObjects");
+
+    status = SbieApi_CreateDirOrLink(buffer2, NULL);
+
+    if (! NT_SUCCESS(status)) {
+        errlvl = 88;
+        goto finish;
+    }
+
+    wcscpy(buffer, buffer2);
+    wcscat(buffer, L"\\Global");
+
+    GLOBAL  = Dll_Alloc((wcslen(buffer) + 32) * sizeof(WCHAR));
+
+    wcscpy(GLOBAL, buffer);
+
+    status = SbieApi_CreateDirOrLink(buffer, buffer2);
+
+    if (! NT_SUCCESS(status)) {
+        errlvl = 51;
+        goto finish;
+    }
+
+    wcscpy(buffer, buffer2);
+    wcscat(buffer, L"\\Local");
+
+    status = SbieApi_CreateDirOrLink(buffer, buffer2);
+
+    if (! NT_SUCCESS(status)) {
+        errlvl = 52;
+        goto finish;
+    }
+
+    wcscpy(buffer, buffer2);
+    wcscat(buffer, L"\\Session");
+
+    status = SbieApi_CreateDirOrLink(buffer, BNOLINKS);
+
+    if (! NT_SUCCESS(status)) {
+        errlvl = 53;
+        goto finish;
+    }
+
+    if (NT_SUCCESS(status)) {
+        wcscpy(buffer, BNOLINKS);
+        wcscat(buffer, L"\\0");
+        status = SbieApi_CreateDirOrLink(buffer, buffer2);
+    }
+
+    if (! NT_SUCCESS(status)) {
+        errlvl = 66;
+        goto finish;
+    }
+
     //
     // create Global,Local,Session symbolic links
     //
 
-    buffer = Dll_Alloc((wcslen(CopyPath) + 32) * sizeof(WCHAR));
-
     wcscpy(buffer, CopyPath);
     wcscat(buffer, L"\\Global");
 
-    status = SbieApi_CreateDirOrLink(buffer, CopyPath);
+    status = SbieApi_CreateDirOrLink(buffer, GLOBAL);
 
     if (! NT_SUCCESS(status)) {
-        errlvl = 44;
+        errlvl = 41;
         goto finish;
     }
 
@@ -475,17 +694,17 @@ _FX void Ipc_CreateObjects(void)
     status = SbieApi_CreateDirOrLink(buffer, CopyPath);
 
     if (! NT_SUCCESS(status)) {
-        errlvl = 55;
+        errlvl = 42;
         goto finish;
     }
 
     wcscpy(buffer, CopyPath);
     wcscat(buffer, L"\\Session");
 
-    status = SbieApi_CreateDirOrLink(buffer, CopyPath);
+    status = SbieApi_CreateDirOrLink(buffer, BNOLINKS);
 
     if (! NT_SUCCESS(status)) {
-        errlvl = 66;
+        errlvl = 43;
         goto finish;
     }
 
@@ -494,6 +713,15 @@ _FX void Ipc_CreateObjects(void)
     //
 
 finish:
+
+    if(buffer)
+        Dll_Free(buffer);
+    if(BNOLINKS)
+        Dll_Free(BNOLINKS);
+    if(GLOBAL)
+        Dll_Free(GLOBAL);
+    if(buffer2)
+        Dll_Free(buffer2);
 
     if (errlvl)
         SbieApi_Log(2308, L"[%d / %08X]", errlvl, status);
@@ -522,9 +750,24 @@ _FX NTSTATUS Ipc_GetName(
     if (OutIsBoxedPath)
         *OutIsBoxedPath = FALSE;
 
-    if (ObjectName) {
+    if (ObjectName && ObjectName != (UNICODE_STRING*)-1) {
         objname_len = ObjectName->Length & ~1;
         objname_buf = ObjectName->Buffer;
+
+        //if (Dll_AlernateIpcNaming) {
+        //    
+        //    //
+        //    // Since in this mode we don't call Ipc_CreateObjects we don't have a boxed namespace
+        //    // and are using existing namespaces only with a name suffix
+        //    // hence we can't use Global without system privileges, so we strip it
+        //    //
+        //
+        //    if (_wcsnicmp(objname_buf, L"Global\\", 7) == 0) {
+        //        objname_len -= 7;
+        //        objname_buf += 7;
+        //    }
+        //}
+
     } else {
         objname_len = 0;
         objname_buf = NULL;
@@ -541,7 +784,7 @@ _FX NTSTATUS Ipc_GetName(
         name = Dll_GetTlsNameBuffer(
                         TlsData, TRUE_NAME_BUFFER, length + objname_len);
 
-        if ((! objname_len) || (! *objname_buf)) {
+      if (((! objname_len) || (! *objname_buf)) && ObjectName != (UNICODE_STRING*)-1) {
 
             //
             // an object handle was specified, but the object name is an
@@ -665,6 +908,21 @@ _FX NTSTATUS Ipc_GetName(
 
 check_sandbox_prefix:
 
+    //if (Dll_AlernateIpcNaming)
+    //{
+    //    if (length >= Dll_BoxIpcPathLen &&
+    //        0 == Dll_NlsStrCmp(
+    //            &(*OutTruePath)[length - Dll_BoxIpcPathLen], Dll_BoxIpcPath, Dll_BoxIpcPathLen))
+    //    {
+    //        (*OutTruePath)[length - Dll_BoxIpcPathLen] = L'\0';
+    //        length -= Dll_BoxIpcPathLen;
+    //        if (OutIsBoxedPath)
+    //            *OutIsBoxedPath = TRUE;
+    //
+    //        goto check_sandbox_prefix;
+    //    }
+    //}
+    //else
     if (length >= Dll_BoxIpcPathLen &&
             0 == Dll_NlsStrCmp(
                 *OutTruePath, Dll_BoxIpcPath, Dll_BoxIpcPathLen))
@@ -688,11 +946,23 @@ check_sandbox_prefix:
 
     *OutCopyPath = name;
 
-    wmemcpy(name, Dll_BoxIpcPath, Dll_BoxIpcPathLen);
-    name += Dll_BoxIpcPathLen;
+    //if (Dll_AlernateIpcNaming)
+    //{
+    //    wmemcpy(name, *OutTruePath, length);
+    //    name += length;
+    //
+    //    wmemcpy(name, Dll_BoxIpcPath, Dll_BoxIpcPathLen);
+    //    name += Dll_BoxIpcPathLen;
+    //}
+    //else
+    {
+        wmemcpy(name, Dll_BoxIpcPath, Dll_BoxIpcPathLen);
+        name += Dll_BoxIpcPathLen;
 
-    wmemcpy(name, *OutTruePath, length);
-    name += length;
+        wmemcpy(name, *OutTruePath, length);
+        name += length;
+    }
+
     *name = L'\0';
 
     //
@@ -846,7 +1116,8 @@ _FX BOOLEAN Ipc_GetName_AdjustSplWow64Path(WCHAR *TruePath, BOOLEAN adj)
 
 _FX NTSTATUS Ipc_GetName2(
     OBJECT_ATTRIBUTES *ObjectAttributes,
-    WCHAR **OutTruePath, WCHAR **OutCopyPath)
+    WCHAR **OutTruePath, WCHAR **OutCopyPath,
+    const WCHAR* NtName)
 {
     NTSTATUS status;
     HANDLE RootDirectory;
@@ -866,6 +1137,13 @@ _FX NTSTATUS Ipc_GetName2(
     status = Ipc_GetName(
         RootDirectory, ObjectName, OutTruePath, OutCopyPath, NULL);
 
+    if (NT_SUCCESS(status)) 
+    {
+        WCHAR msg[1024];
+        Sbie_snwprintf(msg, 1024, L"%s: %s", NtName, *OutTruePath);
+        SbieApi_MonitorPutMsg(MONITOR_IPC | MONITOR_TRACE, msg);
+    }
+
     return status;
 }
 
@@ -883,6 +1161,9 @@ _FX NTSTATUS Ipc_CreatePath(WCHAR *TruePath, WCHAR *CopyPath)
     UNICODE_STRING objname;
     WCHAR *backslash;
 
+    //if (Dll_AlernateIpcNaming)
+    //    return STATUS_OBJECT_PATH_NOT_FOUND;
+
     //
     // open the TruePath object directory containing the object
     // for which we got STATUS_OBJECT_PATH_NOT_FOUND
@@ -899,7 +1180,7 @@ _FX NTSTATUS Ipc_CreatePath(WCHAR *TruePath, WCHAR *CopyPath)
 
     RtlInitUnicodeString(&objname, TruePath);
 
-    status = NtOpenDirectoryObject(&handle, DIRECTORY_QUERY, &objattrs);
+    status = __sys_NtOpenDirectoryObject(&handle, DIRECTORY_QUERY, &objattrs);
 
     *backslash = L'\\';
 
@@ -973,7 +1254,7 @@ _FX void Ipc_AdjustPortPath(UNICODE_STRING *ObjectName)
     InitializeObjectAttributes(
         &objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
 
-    status = NtOpenDirectoryObject(&handle, DIRECTORY_QUERY, &objattrs);
+    status = __sys_NtOpenDirectoryObject(&handle, DIRECTORY_QUERY, &objattrs);
 
     if (NT_SUCCESS(status)) {
 
@@ -1027,7 +1308,7 @@ _FX NTSTATUS Ipc_NtCreatePort(
     // get the full paths for the true and copy objects
     //
 
-    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath);
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"CreatePort");
     if (! NT_SUCCESS(status))
         __leave;
 
@@ -1151,10 +1432,10 @@ _FX NTSTATUS Ipc_NtConnectPort(
         ConnectionInfo, ConnectionInfoLength, MaximumMessageLength,
         ClientSharedMemory, NULL, ServerSharedMemory);
 
-    if (status != STATUS_BAD_INITIAL_PC)
-        __leave;
     if (status == STATUS_BAD_INITIAL_STACK)
         goto OpenTruePath;
+    if (status != STATUS_BAD_INITIAL_PC)
+        __leave;
 
     //
     // if trying to connect to a COM port, start our COM servers first
@@ -1279,10 +1560,10 @@ _FX NTSTATUS Ipc_NtSecureConnectPort(
         ConnectionInfo, ConnectionInfoLength, MaximumMessageLength,
         ClientSharedMemory, ServerSid, ServerSharedMemory);
 
-    if (status != STATUS_BAD_INITIAL_PC)
-        __leave;
     if (status == STATUS_BAD_INITIAL_STACK)
         goto OpenTruePath;
+    if (status != STATUS_BAD_INITIAL_PC)
+        __leave;
 
     //
     // if trying to connect to a COM port, start our COM servers first
@@ -1402,7 +1683,7 @@ _FX NTSTATUS Ipc_NtAlpcCreatePort(
     // get the full paths for the true and copy objects
     //
 
-    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath);
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"AlpcCreatePort");
     if (! NT_SUCCESS(status))
         __leave;
 
@@ -1531,10 +1812,10 @@ _FX NTSTATUS Ipc_NtAlpcConnectPort(
         ConnectionInfo, ConnectionInfoLength, AlpcConnectInfo,
         NULL, ServerSid, NULL);
 
-    if (status != STATUS_BAD_INITIAL_PC)
-        __leave;
     if (status == STATUS_BAD_INITIAL_STACK)
         goto OpenTruePath;
+    if (status != STATUS_BAD_INITIAL_PC)
+        __leave;
 
     //
     // if trying to connect to a COM port, start our COM servers first
@@ -1706,11 +1987,11 @@ _FX NTSTATUS Ipc_NtAlpcConnectPortEx(
         PortHandle, TruePath, ConnectionFlags,
         ConnectionInfo, ConnectionInfoLength, AlpcConnectInfo,
         NULL, ServerSd, NULL);
-
-    if (status != STATUS_BAD_INITIAL_PC)
-        __leave;
+    
     if (status == STATUS_BAD_INITIAL_STACK)
         goto OpenTruePath;
+    if (status != STATUS_BAD_INITIAL_PC)
+        __leave;
 
     //
     // if trying to connect to a COM port, start our COM servers first
@@ -2213,7 +2494,7 @@ _FX NTSTATUS Ipc_NtCreateEvent(
     // get the full paths for the true and copy objects
     //
 
-    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath);
+        status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"CreateEvent");
     if (! NT_SUCCESS(status))
         __leave;
 
@@ -2319,7 +2600,7 @@ _FX NTSTATUS Ipc_NtOpenEvent(
     // get the full paths for the true and copy objects
     //
 
-    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath);
+        status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"OpenEvent");
     if (! NT_SUCCESS(status))
         __leave;
 
@@ -2440,7 +2721,7 @@ _FX NTSTATUS Ipc_NtCreateMutant(
     // get the full paths for the true and copy objects
     //
 
-    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath);
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"CreateMutant");
     if (! NT_SUCCESS(status))
         __leave;
 
@@ -2546,7 +2827,7 @@ _FX NTSTATUS Ipc_NtOpenMutant(
     // get the full paths for the true and copy objects
     //
 
-    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath);
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"OpenMutant");
     if (! NT_SUCCESS(status))
         __leave;
 
@@ -2668,7 +2949,7 @@ _FX NTSTATUS Ipc_NtCreateSemaphore(
     // get the full paths for the true and copy objects
     //
 
-    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath);
+        status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"CreateSemaphore");
     if (! NT_SUCCESS(status))
         __leave;
 
@@ -2774,7 +3055,7 @@ _FX NTSTATUS Ipc_NtOpenSemaphore(
     // get the full paths for the true and copy objects
     //
 
-    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath);
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"OpenSemaphore");
     if (! NT_SUCCESS(status))
         __leave;
 
@@ -2908,7 +3189,7 @@ _FX NTSTATUS Ipc_NtCreateSection(
     // get the full paths for the true and copy objects
     //
 
-    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath);
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"CreateSection");
     if (! NT_SUCCESS(status))
         __leave;
 
@@ -2987,6 +3268,145 @@ _FX NTSTATUS Ipc_NtCreateSection(
 
 
 //---------------------------------------------------------------------------
+// Ipc_NtCreateSectionEx
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS Ipc_NtCreateSectionEx(
+    HANDLE *SectionHandle,
+    ACCESS_MASK DesiredAccess,
+    OBJECT_ATTRIBUTES *ObjectAttributes,
+    LARGE_INTEGER *MaximumSize,
+    ULONG PageAttributes,
+    ULONG SectionAttributes,
+    HANDLE FileHandle,
+    PMEM_EXTENDED_PARAMETER ExtendedParameters,
+    ULONG ExtendedParameterCount)
+{
+    ULONG LastError;
+    THREAD_DATA *TlsData;
+
+    NTSTATUS status;
+    OBJECT_ATTRIBUTES objattrs;
+    UNICODE_STRING objname;
+    WCHAR *TruePath;
+    WCHAR *CopyPath;
+    ULONG mp_flags;
+
+    //
+    // shortcut processing when object name is not specified
+    //
+
+    if ((! ObjectAttributes) || (! ObjectAttributes->ObjectName)) {
+
+        if ((! MaximumSize) && (PageAttributes == PAGE_EXECUTE)
+                            && (SectionAttributes == SEC_IMAGE)) {
+            //
+            // allow Proc_SectionCallback to record the image name
+            //
+            status = Proc_SectionCallback(FileHandle);
+            if (! NT_SUCCESS(status))
+                return status;
+        }
+
+        return __sys_NtCreateSectionEx(
+            SectionHandle, DesiredAccess, ObjectAttributes,
+            MaximumSize, PageAttributes, SectionAttributes, FileHandle, ExtendedParameters, ExtendedParameterCount);
+    }
+
+    //
+    // normal processing
+    //
+
+    TlsData = Dll_GetTlsData(&LastError);
+
+    Dll_PushTlsNameBuffer(TlsData);
+
+    __try {
+
+    //
+    // get the full paths for the true and copy objects
+    //
+
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"CreateSectionEx");
+    if (! NT_SUCCESS(status))
+        __leave;
+
+    if (! TruePath) {
+
+        if(ObjectAttributes->ObjectName->Buffer)
+            SbieApi_MonitorPut2(MONITOR_IPC, ObjectAttributes->ObjectName->Buffer, FALSE);
+
+        status = __sys_NtCreateSectionEx(
+            SectionHandle, DesiredAccess, ObjectAttributes,
+            MaximumSize, PageAttributes, SectionAttributes, FileHandle, ExtendedParameters, ExtendedParameterCount);
+
+        __leave;
+    }
+
+    InitializeObjectAttributes(&objattrs,
+        &objname, OBJECT_ATTRIBUTES_ATTRIBUTES, NULL, Secure_EveryoneSD);
+
+    //
+    // check if this is an open or closed path
+    //
+
+    mp_flags = SbieDll_MatchPath2(L'i', TruePath, FALSE, TRUE); // SbieDll_MatchPath(L'i', TruePath);
+
+    if (PATH_IS_CLOSED(mp_flags)) {
+        status = STATUS_ACCESS_DENIED;
+        __leave;
+    }
+
+    if (PATH_IS_OPEN(mp_flags)) {
+
+        RtlInitUnicodeString(&objname, TruePath);
+        objattrs.SecurityDescriptor = ObjectAttributes->SecurityDescriptor;
+
+        status = __sys_NtCreateSectionEx(
+            SectionHandle, DesiredAccess, &objattrs,
+            MaximumSize, PageAttributes, SectionAttributes, FileHandle, ExtendedParameters, ExtendedParameterCount);
+
+        __leave;
+    }
+
+    //
+    // try to create the object name by its CopyPath, creating the
+    // CopyPath hierarchy if needed
+    //
+
+    RtlInitUnicodeString(&objname, CopyPath);
+
+    status = __sys_NtCreateSectionEx(
+        SectionHandle, DesiredAccess, &objattrs,
+        MaximumSize, PageAttributes, SectionAttributes, FileHandle, ExtendedParameters, ExtendedParameterCount);
+
+    if (status == STATUS_OBJECT_PATH_NOT_FOUND) {
+
+        status = Ipc_CreatePath(TruePath, CopyPath);
+
+        if (NT_SUCCESS(status)) {
+            status = __sys_NtCreateSectionEx(
+                SectionHandle, DesiredAccess, &objattrs,
+                MaximumSize, PageAttributes, SectionAttributes, FileHandle, ExtendedParameters, ExtendedParameterCount);
+        }
+    }
+
+    //
+    // finish
+    //
+
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    Dll_PopTlsNameBuffer(TlsData);
+    SetLastError(LastError);
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
 // Ipc_NtOpenSection
 //---------------------------------------------------------------------------
 
@@ -3014,7 +3434,7 @@ _FX NTSTATUS Ipc_NtOpenSection(
     // get the full paths for the true and copy objects
     //
 
-    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath);
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"OpenSection");
     if (! NT_SUCCESS(status))
         __leave;
 
@@ -3092,6 +3512,875 @@ OpenTruePath:
     Dll_PopTlsNameBuffer(TlsData);
     SetLastError(LastError);
     return status;
+}
+
+
+//---------------------------------------------------------------------------
+// Ipc_NtCreateSymbolicLinkObject
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS Ipc_NtCreateSymbolicLinkObject(
+    PHANDLE SymbolicLinkHandle, ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes, PUNICODE_STRING DestinationName)
+{
+    ULONG LastError;
+    THREAD_DATA *TlsData;
+
+    NTSTATUS status;
+    OBJECT_ATTRIBUTES objattrs;
+    UNICODE_STRING objname;
+    WCHAR *TruePath;
+    WCHAR *CopyPath;
+    ULONG mp_flags;
+
+    //
+    // shortcut processing when object name is not specified
+    //
+
+    if ((! ObjectAttributes) || (! ObjectAttributes->ObjectName)) {
+
+        return __sys_NtCreateSymbolicLinkObject(
+            SymbolicLinkHandle, DesiredAccess, ObjectAttributes,
+            DestinationName);
+    }
+
+    //
+    // normal processing
+    //
+
+    TlsData = Dll_GetTlsData(&LastError);
+
+    Dll_PushTlsNameBuffer(TlsData);
+
+    __try {
+
+    //
+    // get the full paths for the true and copy objects
+    //
+
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"CreateSymbolicLinkObject");
+    if (! NT_SUCCESS(status))
+        __leave;
+
+    if (! TruePath) {
+
+        if(ObjectAttributes->ObjectName->Buffer)
+            SbieApi_MonitorPut2(MONITOR_IPC, ObjectAttributes->ObjectName->Buffer, FALSE);
+
+        status = __sys_NtCreateSymbolicLinkObject(
+            SymbolicLinkHandle, DesiredAccess, ObjectAttributes,
+            DestinationName);
+
+        __leave;
+    }
+
+    InitializeObjectAttributes(&objattrs,
+        &objname, OBJECT_ATTRIBUTES_ATTRIBUTES, NULL, Secure_EveryoneSD);
+
+    //
+    // check if this is an open or closed path
+    //
+
+    mp_flags = SbieDll_MatchPath2(L'i', TruePath, FALSE, TRUE); // SbieDll_MatchPath(L'i', TruePath);
+
+    if (PATH_IS_CLOSED(mp_flags)) {
+        status = STATUS_ACCESS_DENIED;
+        __leave;
+    }
+
+    if (PATH_IS_OPEN(mp_flags)) {
+
+        RtlInitUnicodeString(&objname, TruePath);
+        objattrs.SecurityDescriptor = ObjectAttributes->SecurityDescriptor;
+
+        status = __sys_NtCreateSymbolicLinkObject(
+            SymbolicLinkHandle, DesiredAccess, &objattrs,
+            DestinationName);
+
+        __leave;
+    }
+
+    //
+    // try to create the object name by its CopyPath, creating the
+    // CopyPath hierarchy if needed
+    //
+
+    RtlInitUnicodeString(&objname, CopyPath);
+
+    status = __sys_NtCreateSymbolicLinkObject(
+        SymbolicLinkHandle, DesiredAccess, &objattrs,
+        DestinationName);
+
+    if (status == STATUS_OBJECT_PATH_NOT_FOUND) {
+
+        status = Ipc_CreatePath(TruePath, CopyPath);
+
+        if (NT_SUCCESS(status)) {
+            status = __sys_NtCreateSymbolicLinkObject(
+                SymbolicLinkHandle, DesiredAccess, &objattrs,
+                DestinationName);
+        }
+    }
+
+    //
+    // finish
+    //
+
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    Dll_PopTlsNameBuffer(TlsData);
+    SetLastError(LastError);
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// Ipc_NtOpenSymbolicLinkObject
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS Ipc_NtOpenSymbolicLinkObject(
+    HANDLE *SymbolicLinkHandle,
+    ACCESS_MASK DesiredAccess,
+    OBJECT_ATTRIBUTES *ObjectAttributes)
+{
+    ULONG LastError;
+    THREAD_DATA *TlsData = Dll_GetTlsData(&LastError);
+
+    NTSTATUS status;
+    OBJECT_ATTRIBUTES objattrs;
+    UNICODE_STRING objname;
+    WCHAR *TruePath;
+    WCHAR *CopyPath;
+    ULONG mp_flags;
+
+    Dll_PushTlsNameBuffer(TlsData);
+
+    __try {
+
+    //
+    // get the full paths for the true and copy objects
+    //
+
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"OpenSymbolicLinkObject");
+    if (! NT_SUCCESS(status))
+        __leave;
+
+    if (! TruePath) {
+
+        status = __sys_NtOpenSymbolicLinkObject(
+            SymbolicLinkHandle, DesiredAccess, ObjectAttributes);
+
+        __leave;
+    }
+
+    InitializeObjectAttributes(
+        &objattrs, &objname, OBJECT_ATTRIBUTES_ATTRIBUTES, NULL, NULL);
+
+    //
+    // check if this is an open or closed path
+    //
+
+    mp_flags = SbieDll_MatchPath(L'i', TruePath);
+
+    if (PATH_IS_CLOSED(mp_flags)) {
+        status = STATUS_ACCESS_DENIED;
+        __leave;
+    }
+
+    if (PATH_IS_OPEN(mp_flags)) goto OpenTruePath;
+
+    //
+    // open the object by its CopyPath first
+    // finish on success, else try true path
+    //
+
+    RtlInitUnicodeString(&objname, CopyPath);
+
+    status = __sys_NtOpenSymbolicLinkObject(
+        SymbolicLinkHandle, DesiredAccess, &objattrs);
+
+    if(NT_SUCCESS(status))
+        __leave;
+
+    if (status == STATUS_OBJECT_PATH_NOT_FOUND || status == STATUS_OBJECT_NAME_NOT_FOUND) {
+    
+        ACCESS_MASK PermissibleAccess = READ_CONTROL | SYMBOLIC_LINK_QUERY;
+        if (DesiredAccess == MAXIMUM_ALLOWED)
+            DesiredAccess = PermissibleAccess;
+        else
+            DesiredAccess &= PermissibleAccess;
+
+        goto OpenTruePath;
+    }
+    
+    __leave;
+
+    //
+    // try the TruePath
+    //
+
+OpenTruePath:
+
+    RtlInitUnicodeString(&objname, TruePath);
+
+    status = __sys_NtOpenSymbolicLinkObject(
+        SymbolicLinkHandle, DesiredAccess, &objattrs);
+
+    if (PATH_NOT_OPEN(mp_flags) && (status == STATUS_ACCESS_DENIED))
+        status = STATUS_OBJECT_NAME_NOT_FOUND;
+
+    //
+    // finish
+    //
+
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    Dll_PopTlsNameBuffer(TlsData);
+    SetLastError(LastError);
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// Ipc_NtCreateDirectoryObject
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS Ipc_NtCreateDirectoryObject(
+    PHANDLE DirectoryHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes)
+{
+    ULONG LastError;
+    THREAD_DATA *TlsData;
+
+    NTSTATUS status;
+    OBJECT_ATTRIBUTES objattrs;
+    UNICODE_STRING objname;
+    WCHAR *TruePath;
+    WCHAR *CopyPath;
+    ULONG mp_flags;
+
+    //
+    // shortcut processing when object name is not specified
+    //
+
+    if ((! ObjectAttributes) || (! ObjectAttributes->ObjectName)) {
+
+        return __sys_NtCreateDirectoryObject(DirectoryHandle, DesiredAccess, ObjectAttributes);
+    }
+
+    //
+    // normal processing
+    //
+
+    TlsData = Dll_GetTlsData(&LastError);
+
+    Dll_PushTlsNameBuffer(TlsData);
+
+    __try {
+
+    //
+    // get the full paths for the true and copy objects
+    //
+
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"CreateDirectoryObject");
+    if (! NT_SUCCESS(status))
+        __leave;
+
+    if (! TruePath) {
+
+        if(ObjectAttributes->ObjectName->Buffer)
+            SbieApi_MonitorPut2(MONITOR_IPC, ObjectAttributes->ObjectName->Buffer, FALSE);
+
+        status = __sys_NtCreateDirectoryObject(DirectoryHandle, DesiredAccess, ObjectAttributes);
+
+        __leave;
+    }
+
+    InitializeObjectAttributes(&objattrs,
+        &objname, OBJECT_ATTRIBUTES_ATTRIBUTES, NULL, Secure_EveryoneSD);
+
+    //
+    // check if this is an open or closed path
+    //
+
+    mp_flags = SbieDll_MatchPath2(L'i', TruePath, FALSE, TRUE); // SbieDll_MatchPath(L'i', TruePath);
+
+    if (PATH_IS_CLOSED(mp_flags)) {
+        status = STATUS_ACCESS_DENIED;
+        __leave;
+    }
+
+    if (PATH_IS_OPEN(mp_flags)) {
+
+        RtlInitUnicodeString(&objname, TruePath);
+        objattrs.SecurityDescriptor = ObjectAttributes->SecurityDescriptor;
+
+        status = __sys_NtCreateDirectoryObject(DirectoryHandle, DesiredAccess, &objattrs);
+
+        __leave;
+    }
+
+    //
+    // try to create the object name by its CopyPath, creating the
+    // CopyPath hierarchy if needed
+    //
+
+    RtlInitUnicodeString(&objname, CopyPath);
+
+    status = __sys_NtCreateDirectoryObject(DirectoryHandle, DesiredAccess, &objattrs);
+
+    if (status == STATUS_OBJECT_PATH_NOT_FOUND) {
+
+        status = Ipc_CreatePath(TruePath, CopyPath);
+
+        if (NT_SUCCESS(status)) {
+            status = __sys_NtCreateDirectoryObject(DirectoryHandle, DesiredAccess, &objattrs);
+        }
+    }
+
+    //
+    // finish
+    //
+
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    Dll_PopTlsNameBuffer(TlsData);
+    SetLastError(LastError);
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// Ipc_NtCreateDirectoryObjectEx
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS Ipc_NtCreateDirectoryObjectEx(
+    PHANDLE DirectoryHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes,
+    HANDLE ShadowDirectoryHandle,
+    ULONG Flags)
+{
+    ULONG LastError;
+    THREAD_DATA *TlsData;
+
+    NTSTATUS status;
+    OBJECT_ATTRIBUTES objattrs;
+    UNICODE_STRING objname;
+    WCHAR *TruePath;
+    WCHAR *CopyPath;
+    ULONG mp_flags;
+
+    //
+    // shortcut processing when object name is not specified
+    //
+
+    if ((! ObjectAttributes) || (! ObjectAttributes->ObjectName)) {
+
+        return __sys_NtCreateDirectoryObjectEx(DirectoryHandle, DesiredAccess, ObjectAttributes
+                                                , ShadowDirectoryHandle, Flags);
+    }
+
+    //
+    // normal processing
+    //
+
+    TlsData = Dll_GetTlsData(&LastError);
+
+    Dll_PushTlsNameBuffer(TlsData);
+
+    __try {
+
+    //
+    // get the full paths for the true and copy objects
+    //
+
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"CreateDirectoryObjectEx");
+    if (! NT_SUCCESS(status))
+        __leave;
+
+    if (! TruePath) {
+
+        if(ObjectAttributes->ObjectName->Buffer)
+            SbieApi_MonitorPut2(MONITOR_IPC, ObjectAttributes->ObjectName->Buffer, FALSE);
+
+        status = __sys_NtCreateDirectoryObjectEx(DirectoryHandle, DesiredAccess, ObjectAttributes
+                                                    , ShadowDirectoryHandle, Flags);
+
+        __leave;
+    }
+
+    InitializeObjectAttributes(&objattrs,
+        &objname, OBJECT_ATTRIBUTES_ATTRIBUTES, NULL, Secure_EveryoneSD);
+
+    //
+    // check if this is an open or closed path
+    //
+
+    mp_flags = SbieDll_MatchPath2(L'i', TruePath, FALSE, TRUE); // SbieDll_MatchPath(L'i', TruePath);
+
+    if (PATH_IS_CLOSED(mp_flags)) {
+        status = STATUS_ACCESS_DENIED;
+        __leave;
+    }
+
+    if (PATH_IS_OPEN(mp_flags)) {
+
+        RtlInitUnicodeString(&objname, TruePath);
+        objattrs.SecurityDescriptor = ObjectAttributes->SecurityDescriptor;
+
+        status = __sys_NtCreateDirectoryObjectEx(DirectoryHandle, DesiredAccess, &objattrs
+                                                    , ShadowDirectoryHandle, Flags);
+
+        __leave;
+    }
+
+    //
+    // try to create the object name by its CopyPath, creating the
+    // CopyPath hierarchy if needed
+    //
+
+    RtlInitUnicodeString(&objname, CopyPath);
+
+    status = __sys_NtCreateDirectoryObjectEx(DirectoryHandle, DesiredAccess, &objattrs
+                                                , ShadowDirectoryHandle, Flags);
+
+    if (status == STATUS_OBJECT_PATH_NOT_FOUND) {
+
+        status = Ipc_CreatePath(TruePath, CopyPath);
+
+        if (NT_SUCCESS(status)) {
+            status = __sys_NtCreateDirectoryObjectEx(DirectoryHandle, DesiredAccess, &objattrs
+                                                        , ShadowDirectoryHandle, Flags);
+        }
+    }
+
+    //
+    // finish
+    //
+
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    Dll_PopTlsNameBuffer(TlsData);
+    SetLastError(LastError);
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// Ipc_NtOpenDirectoryObject
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS Ipc_NtOpenDirectoryObject(
+    PHANDLE DirectoryHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes)
+{
+    ULONG LastError;
+    THREAD_DATA *TlsData = Dll_GetTlsData(&LastError);
+
+    NTSTATUS status;
+    OBJECT_ATTRIBUTES objattrs;
+    UNICODE_STRING objname;
+    WCHAR *TruePath;
+    WCHAR *CopyPath;
+    ULONG mp_flags;
+
+    Dll_PushTlsNameBuffer(TlsData);
+
+    __try {
+
+    //
+    // get the full paths for the true and copy objects
+    //
+
+    status = Ipc_GetName2(ObjectAttributes, &TruePath, &CopyPath, L"OpenDirectoryObject");
+    if (! NT_SUCCESS(status))
+        __leave;
+
+    if (! TruePath) {
+
+        status = __sys_NtOpenDirectoryObject(DirectoryHandle, DesiredAccess, ObjectAttributes);
+
+        __leave;
+    }
+
+    InitializeObjectAttributes(
+        &objattrs, &objname, OBJECT_ATTRIBUTES_ATTRIBUTES, NULL, NULL);
+
+    //
+    // check if this is an open or closed path
+    //
+
+    mp_flags = SbieDll_MatchPath(L'i', TruePath);
+
+    if (PATH_IS_CLOSED(mp_flags)) {
+        status = STATUS_ACCESS_DENIED;
+        __leave;
+    }
+
+    if (PATH_IS_OPEN(mp_flags)) goto OpenTruePath;
+
+    //
+    // otherwise open the object by its CopyPath
+    //
+
+    RtlInitUnicodeString(&objname, CopyPath);
+
+    status = __sys_NtOpenDirectoryObject(DirectoryHandle, DesiredAccess, &objattrs);
+
+    if (status == STATUS_OBJECT_PATH_NOT_FOUND || status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_NAME_INVALID) {
+
+        //
+        // if the directory does not exist in the sandbox try opening the original one
+        // for this we strip the create access if we later try to create an object
+        // a sandboxed Directory will be created and the object created within it
+        //
+
+        if (ipc_namespace_isoaltion) {
+            ACCESS_MASK PermissibleAccess = READ_CONTROL | DIRECTORY_QUERY | DIRECTORY_TRAVERSE;
+            if (DesiredAccess == MAXIMUM_ALLOWED)
+                DesiredAccess = PermissibleAccess;
+            else
+                DesiredAccess &= PermissibleAccess;
+        }
+
+        goto OpenTruePath;
+    }
+
+    __leave;
+
+    //
+    // try the TruePath
+    //
+
+OpenTruePath:
+
+    RtlInitUnicodeString(&objname, TruePath);
+
+    status = __sys_NtOpenDirectoryObject(DirectoryHandle, DesiredAccess, &objattrs);
+
+    //
+    // finish
+    //
+
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    Dll_PopTlsNameBuffer(TlsData);
+    SetLastError(LastError);
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// Ipc_MergeFree
+//---------------------------------------------------------------------------
+
+
+_FX void Ipc_MergeFree(IPC_MERGE *merge)
+{
+    while (1) {
+        IPC_MERGE_ENTRY *entry = List_Head(&merge->objects);
+        if (! entry)
+            break;
+        List_Remove(&merge->objects, entry);
+        Dll_Free(entry);
+    }
+
+    Dll_Free(merge);
+}
+
+
+//---------------------------------------------------------------------------
+// Ipc_NtClose
+//---------------------------------------------------------------------------
+
+
+_FX void Ipc_NtClose(HANDLE IpcHandle, void* CloseParams)
+{
+    IPC_MERGE *merge;
+
+    EnterCriticalSection(&Ipc_Handles_CritSec);
+
+    merge = List_Head(&Ipc_Handles);
+    while (merge) {
+        if (merge->handle == IpcHandle) {
+
+            Handle_UnRegisterHandler(merge->handle, Ipc_NtClose, NULL);
+            List_Remove(&Ipc_Handles, merge);
+            Ipc_MergeFree(merge);
+
+            break;
+        }
+        merge = List_Next(merge);
+    }
+
+    LeaveCriticalSection(&Ipc_Handles_CritSec);
+}
+
+
+//---------------------------------------------------------------------------
+// Ipc_MergeDirectoryObject
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS Ipc_MergeDirectoryObject(IPC_MERGE *merge, WCHAR* path, BOOLEAN join)
+{
+    NTSTATUS status;
+    HANDLE directoryHandle;
+    OBJECT_ATTRIBUTES objattrs;
+    UNICODE_STRING objname;
+
+    RtlInitUnicodeString(&objname, path);
+
+    InitializeObjectAttributes(
+        &objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+    status = __sys_NtOpenDirectoryObject(&directoryHandle, DIRECTORY_QUERY, &objattrs);
+    if (!NT_SUCCESS(status))
+        return status;
+
+    ULONG bufferSize = 4096;
+    PVOID buffer = Dll_Alloc(bufferSize);
+    BOOLEAN firstTime = TRUE;
+    ULONG indexCounter = 0;
+    ULONG returnLength;
+
+    while (1)
+    {
+        status = __sys_NtQueryDirectoryObject(directoryHandle, buffer, bufferSize, FALSE, firstTime, &indexCounter, &returnLength);
+        firstTime = FALSE;
+
+        if (status == STATUS_NO_MORE_ENTRIES)
+            break; // done
+        if (!NT_SUCCESS(status))
+            break; // error
+
+        for (POBJECT_DIRECTORY_INFORMATION directoryInfo = buffer; directoryInfo->Name.Length != 0; directoryInfo++)
+        {
+            ULONG len = sizeof(IPC_MERGE_ENTRY) + (directoryInfo->Name.MaximumLength + directoryInfo->TypeName.MaximumLength) * sizeof(WCHAR);
+
+            //
+            // when we are joining we remove the older entries when a duplicate is encountered
+            //
+
+            if (join) {
+
+                IPC_MERGE_ENTRY* entry = List_Head(&merge->objects);
+                while (entry) {
+
+                    if (entry->Name.Length == directoryInfo->Name.Length && memcmp(entry->Name.Buffer, directoryInfo->Name.Buffer, entry->Name.Length) == 0)
+                        break;
+
+                    entry = List_Next(entry);
+                }
+
+                if (entry) {
+
+                    if (entry->TypeName.Length == directoryInfo->TypeName.Length && memcmp(entry->TypeName.Buffer, directoryInfo->TypeName.Buffer, entry->TypeName.Length) == 0)
+                        continue; // identical entry, nothing to do
+
+                    // same name but different type, remove old entry
+                    List_Remove(&merge->objects, entry);
+                    Dll_Free(entry);
+                }
+            }
+
+            //
+            // add new entry
+            //
+
+            IPC_MERGE_ENTRY* entry = Dll_Alloc(len);
+            WCHAR* ptr = entry + 1;
+
+            entry->Name.Length = directoryInfo->Name.Length;
+            entry->Name.MaximumLength = directoryInfo->Name.MaximumLength;
+            entry->Name.Buffer = ptr;
+            memcpy(ptr, directoryInfo->Name.Buffer, directoryInfo->Name.MaximumLength);
+            ptr += directoryInfo->Name.MaximumLength / sizeof(WCHAR);
+
+            entry->TypeName.Length = directoryInfo->TypeName.Length;
+            entry->TypeName.MaximumLength = directoryInfo->TypeName.MaximumLength;
+            entry->TypeName.Buffer = ptr;
+            memcpy(ptr, directoryInfo->TypeName.Buffer, directoryInfo->TypeName.MaximumLength);
+            //ptr += directoryInfo->TypeName.MaximumLength / sizeof(WCHAR);
+
+            List_Insert_After(&merge->objects, NULL, entry);
+        }
+    }
+
+    Dll_Free(buffer);
+
+    extern P_NtClose __sys_NtClose;
+    __sys_NtClose(directoryHandle);
+
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// Ipc_NtQueryDirectoryObject
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS Ipc_NtQueryDirectoryObject(
+    HANDLE DirectoryHandle,
+    PVOID Buffer,
+    ULONG Length,
+    BOOLEAN ReturnSingleEntry,
+    BOOLEAN RestartScan,
+    PULONG Context,
+    PULONG ReturnLength)
+{
+    IPC_MERGE *merge;
+
+    EnterCriticalSection(&Ipc_Handles_CritSec);
+
+    merge = List_Head(&Ipc_Handles);
+    while (merge) {
+
+        IPC_MERGE *next = List_Next(merge);
+
+        if (merge->handle == DirectoryHandle)
+            break;
+
+        merge = next;
+    }
+
+    if (RestartScan && merge != NULL) {
+
+        Handle_UnRegisterHandler(merge->handle, Ipc_NtClose, NULL);
+        List_Remove(&Ipc_Handles, merge);
+        Ipc_MergeFree(merge);
+
+        merge = NULL;
+    }
+
+    if (! merge) {
+
+        merge = Dll_Alloc(sizeof(IPC_MERGE));
+        memzero(merge, sizeof(IPC_MERGE));
+
+        merge->handle = DirectoryHandle;
+
+        List_Insert_Before(&Ipc_Handles, NULL, merge);
+        Handle_RegisterHandler(merge->handle, Ipc_NtClose, NULL, FALSE);
+
+        WCHAR *TruePath;
+        WCHAR *CopyPath;
+        NTSTATUS status = Ipc_GetName(DirectoryHandle, (UNICODE_STRING*)-1, &TruePath, &CopyPath, NULL);
+
+        if (!NT_SUCCESS(status))
+            return status;
+
+        Ipc_MergeDirectoryObject(merge, TruePath, FALSE);
+
+        ULONG len = wcslen(CopyPath); // fix root copy path, remove trailing '\\'
+        if (CopyPath[len - 1] == L'\\') CopyPath[len - 1] = 0;
+
+        Ipc_MergeDirectoryObject(merge, CopyPath, TRUE);
+    }
+
+    //
+    // goto index, for better performacne we could cache indexes
+    //
+
+    IPC_MERGE_ENTRY* entry = List_Head(&merge->objects);
+
+    ULONG indexCounter = 0;
+    if (Context) {
+        for (; entry && indexCounter < *Context; indexCounter++)
+            entry = List_Next(entry);
+    }
+    if (!entry)
+        return STATUS_NO_MORE_ENTRIES;
+
+    //
+    // count the buffer space
+    //
+
+    ULONG CountToGo = 0;
+    ULONG TotalLength = sizeof(OBJECT_DIRECTORY_INFORMATION);
+    for (IPC_MERGE_ENTRY* cur = entry; cur; cur = List_Next(cur)) {
+
+        ULONG len = sizeof(OBJECT_DIRECTORY_INFORMATION) + (cur->Name.MaximumLength + cur->TypeName.MaximumLength) * sizeof(WCHAR);
+
+        if (TotalLength + len > Length)
+            break; // not enough space for this entry
+
+        CountToGo++;
+        TotalLength += len;
+
+        if (ReturnSingleEntry)
+            break;
+    }
+
+    //
+    // fill output buffer
+    //
+
+    POBJECT_DIRECTORY_INFORMATION directoryInfo = Buffer;
+    WCHAR* ptr = directoryInfo + CountToGo + 1;
+
+    ULONG EndIndex = indexCounter + CountToGo;
+    for (; entry && indexCounter < EndIndex; indexCounter++) {
+
+        if (directoryInfo) {
+
+            directoryInfo->Name.Length = entry->Name.Length;
+            directoryInfo->Name.MaximumLength = entry->Name.MaximumLength;
+            directoryInfo->Name.Buffer = ptr;
+            memcpy(ptr, entry->Name.Buffer, entry->Name.MaximumLength);
+            ptr += directoryInfo->Name.MaximumLength / sizeof(WCHAR);
+
+            directoryInfo->TypeName.Length = entry->TypeName.Length;
+            directoryInfo->TypeName.MaximumLength = entry->TypeName.MaximumLength;
+            directoryInfo->TypeName.Buffer = ptr;
+            memcpy(ptr, entry->TypeName.Buffer, entry->TypeName.MaximumLength);
+            ptr += directoryInfo->TypeName.MaximumLength / sizeof(WCHAR);
+
+            directoryInfo++;
+        }
+
+        entry = List_Next(entry);
+    }
+
+    //
+    // terminate listing with an empty entry
+    //
+
+    if (directoryInfo) {
+
+        directoryInfo->Name.Length = directoryInfo->TypeName.Length = 0;
+        directoryInfo->Name.MaximumLength = directoryInfo->TypeName.MaximumLength = 0;
+        directoryInfo->Name.Buffer = directoryInfo->TypeName.Buffer = NULL;
+    }
+
+    //
+    // set return values
+    //
+
+    if (ReturnLength) *ReturnLength = TotalLength;
+    if (Context) *Context = indexCounter;
+    if (indexCounter < (ULONG)merge->objects.count)
+        return STATUS_MORE_ENTRIES;
+    return STATUS_SUCCESS;
 }
 
 
@@ -3196,14 +4485,10 @@ _FX BOOLEAN Ipc_IsKnownDllInSandbox(
     if (NT_SUCCESS(status)) {
 
         BOOLEAN IsBoxedPath;
-        WCHAR *path8k = Dll_AllocTemp(8192 * sizeof(WCHAR));
-
-        status = SbieDll_GetHandlePath(handle, path8k, &IsBoxedPath);
+        status = SbieDll_GetHandlePath(handle, NULL, &IsBoxedPath);
 
         if (NT_SUCCESS(status) && IsBoxedPath)
             is_known_dll_in_sandbox = TRUE;
-
-        Dll_Free(path8k);
 
         NtClose(handle);
     }
@@ -3380,7 +4665,7 @@ finish:
     }
 
     if (err) {
-        SbieApi_Log(2205, L"ConnectPort (%02X/%08X)", err, status);
+        SbieApi_Log(2205, L"ConnectPort (%02X/%08X) %S", err, status, TruePath);
         if (status == STATUS_SUCCESS)
             status = STATUS_INVALID_PARAMETER;
     }
@@ -3730,6 +5015,20 @@ _FX ULONG Ipc_NtQueryObjectName(UNICODE_STRING *ObjectName, ULONG MaxLen)
     ULONG Len = ObjectName->Length;
     WCHAR *Buf = ObjectName->Buffer;
 
+    //if (Dll_AlernateIpcNaming)
+    //{
+    //    if (Len >= Dll_BoxIpcPathLen * sizeof(WCHAR) &&
+    //            0 == Dll_NlsStrCmp(&Buf[Len - Dll_BoxIpcPathLen], Dll_BoxIpcPath, Dll_BoxIpcPathLen)) {
+    //
+    //        Buf[Len - Dll_BoxIpcPathLen] = L'\0';
+    //
+    //        ObjectName->Length -= (USHORT)Dll_BoxIpcPathLen;
+    //        ObjectName->MaximumLength = ObjectName->Length + sizeof(WCHAR);
+    //
+    //        return ObjectName->MaximumLength;
+    //    }
+    //}
+    //else
     if (Len >= Dll_BoxIpcPathLen * sizeof(WCHAR) &&
             0 == Dll_NlsStrCmp(Buf, Dll_BoxIpcPath, Dll_BoxIpcPathLen)) {
 

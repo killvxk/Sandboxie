@@ -43,15 +43,15 @@ CSandBox::CSandBox(const QString& BoxName, class CSbieAPI* pAPI) : CSbieIni(BoxN
 	m_IsEnabled = true;
 
 	m_ActiveProcessCount = 0;
+	m_ActiveProcessDirty = false;
 
 	// when loading a sandbox that is not initialized, initialize it
 	int cfglvl = GetNum("ConfigLevel");
-	if (cfglvl >= 9)
+	if (cfglvl >= 10)
 		return;
 
 	if (cfglvl == 0)
 	{
-		SetBool("AutoRecover", true);
 		SetBool("BlockNetworkFiles", true);
 
 		// recovery
@@ -106,7 +106,16 @@ CSandBox::CSandBox(const QString& BoxName, class CSbieAPI* pAPI) : CSbieIni(BoxN
 		}
 	}
 
-	SetNum("ConfigLevel", 9);
+	if (cfglvl < 10)
+	{
+		// starting with 5.62.3 OpenProtectedStorage is a template
+		if (GetBool("OpenProtectedStorage")) {
+			DelValue("OpenProtectedStorage");
+			InsertText("Template", "OpenProtectedStorage");
+		}
+	}
+
+	SetNum("ConfigLevel", 10);
 }
 
 CSandBox::~CSandBox()
@@ -116,6 +125,20 @@ CSandBox::~CSandBox()
 
 void CSandBox::UpdateDetails()
 {
+	auto res = m_pAPI->ImBoxQuery(m_RegPath);
+	if (res.IsError()) {
+		m_Mount.clear();
+		return;
+	}
+	QVariantMap Info = res.GetValue();
+	m_Mount = Info["DiskRoot"].toString();
+}
+
+void CSandBox::SetBoxPaths(const QString& FilePath, const QString& RegPath, const QString& IpcPath)
+{
+	m_FilePath = FilePath;
+	m_RegPath = RegPath;
+	m_IpcPath = IpcPath;
 }
 
 SB_STATUS CSandBox::RunStart(const QString& Command, bool Elevated)
@@ -124,7 +147,7 @@ SB_STATUS CSandBox::RunStart(const QString& Command, bool Elevated)
 	if ((QGuiApplication::queryKeyboardModifiers() & Qt::ControlModifier) != 0)
 		return RunSandboxed(Command);
 #endif
-	return m_pAPI->RunStart(m_Name, Command, Elevated);
+	return m_pAPI->RunStart(m_Name, Command, Elevated ? CSbieAPI::eStartElevated : CSbieAPI::eStartDefault);
 }
 
 SB_STATUS CSandBox::RunSandboxed(const QString& Command)
@@ -137,9 +160,31 @@ SB_STATUS CSandBox::TerminateAll()
 	return m_pAPI->TerminateAll(m_Name);
 }
 
+SB_STATUS CSandBox::SetSuspendedAll(bool bSuspended)
+{
+	return m_pAPI->SetSuspendedAll(m_Name, bSuspended);
+}
+
+void CSandBox::OpenBox()
+{
+	HANDLE hFile = CreateFileW((LPCWSTR)m_FilePath.utf16(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (hFile != INVALID_HANDLE_VALUE) 
+	{
+		WCHAR targetPath[MAX_PATH];
+		if(GetFinalPathNameByHandleW(hFile, targetPath, MAX_PATH, FILE_NAME_NORMALIZED | VOLUME_NAME_NT))
+			m_FileRePath = QString::fromWCharArray(targetPath);
+		CloseHandle(hFile);
+	}
+}
+
+void CSandBox::CloseBox() 
+{
+	m_FileRePath.clear();
+}
+
 bool CSandBox::IsEmpty() const
 {
-	return !QDir(m_FilePath).exists();
+	return !QFile::exists(m_FilePath);
 }
 
 SB_PROGRESS CSandBox::CleanBox()
@@ -214,6 +259,12 @@ SB_STATUS CSandBox__MoveFolder(const QString& SourcePath, const QString& ParentF
 
 SB_STATUS CSandBox::RenameBox(const QString& NewName)
 {
+	if (GetActiveProcessCount() > 0)
+		return SB_ERR(SB_RemNotStopped);
+
+	if (NewName.compare(m_Name, Qt::CaseInsensitive) == 0)
+		return SB_OK;
+
 	SB_STATUS Status = CSbieAPI::ValidateName(NewName);
 	if (Status.IsError())
 		return Status;
@@ -225,13 +276,25 @@ SB_STATUS CSandBox::RenameBox(const QString& NewName)
 		QString Name = FilePath.takeLast();
 		if (Name.compare(m_Name, Qt::CaseInsensitive) == 0) 
 		{
-			Status = CSandBox__MoveFolder(m_FilePath, FilePath.join("\\"), NewName);
-			if (Status.IsError())
-				return Status;
+			//Status = CSandBox__MoveFolder(m_FilePath, FilePath.join("\\"), NewName);
+			//if (Status.IsError())
+			//	return Status;
+			if(!QDir().rename(m_FilePath, FilePath.join("\\") + "\\" + NewName))
+				return SB_ERR(SB_FailedMoveDir, QVariantList() << m_FilePath << (FilePath.join("\\") + "\\" + NewName), 0xC0000001 /*STATUS_UNSUCCESSFUL*/);
+
+			QString FileRootPath = GetText("FileRootPath");
+			if (!FileRootPath.isEmpty())
+				SetText("FileRootPath", FilePath.join("\\") + "\\%SANDBOX%");
 		}
 	}
-	
-	return RenameSection(NewName);
+
+	QString OldName = m_Name;
+	Status = RenameSection(NewName);
+	if (!Status.IsError()) {
+		CSandBoxPtr pBox = m_pAPI->m_SandBoxes.take(OldName.toLower());
+		if (pBox)m_pAPI->m_SandBoxes.insert(NewName.toLower(), pBox);
+	}
+	return Status;
 }
 
 SB_STATUS CSandBox::RemoveBox()
@@ -246,28 +309,34 @@ QString CSandBox::Expand(const QString& Value)
 {
 	QString Value2 = Value;
 
-	QRegExp rx("%([a-zA-Z0-9 ]+)%");
-	for (int pos = 0; (pos = rx.indexIn(Value, pos)) != -1; ) {
-		QString var = rx.cap(1);
+	QRegularExpression rx("%([\\{\\}\\-a-zA-Z0-9 ]+)%");
+	for (int pos = 0; ; ) {
+		auto result = rx.match(Value, pos);
+		if (!result.hasMatch())
+			break;
+		pos = result.capturedStart();
+		QString var = result.captured(1);
 		QString val;
-		if (var.compare("BoxPath", Qt::CaseInsensitive) == 0)
+		if (var.compare("SbieHome", Qt::CaseInsensitive) == 0)
+			val = this->m_pAPI->GetSbiePath();
+		else if (var.compare("BoxPath", Qt::CaseInsensitive) == 0)
 			val = this->GetFileRoot();
 		else if (var.compare("BoxName", Qt::CaseInsensitive) == 0)
 			val = this->GetName();
 		else
 			val = m_pAPI->SbieIniGet(this->GetName(), "%" + var + "%", 0x80000000); // CONF_JUST_EXPAND
 		Value2.replace("%" + var + "%", val);
-		pos += rx.matchedLength();
+		pos += result.capturedLength();
 	}
 
 	return Value2;
 }
 
-QList<SBoxSnapshot> CSandBox::GetSnapshots(QString* pCurrent, QString* pDefault) const
+QMap<QString, SBoxSnapshot> CSandBox::GetSnapshots(QString* pCurrent, QString* pDefault) const
 {
 	QSettings ini(m_FilePath + "\\Snapshots.ini", QSettings::IniFormat);
 
-	QList<SBoxSnapshot> Snapshots;
+	QMap<QString, SBoxSnapshot> Snapshots;
 
 	foreach(const QString& Snapshot, ini.childGroups())
 	{
@@ -280,9 +349,9 @@ QList<SBoxSnapshot> CSandBox::GetSnapshots(QString* pCurrent, QString* pDefault)
 
 		BoxSnapshot.NameStr = ini.value(Snapshot + "/Name").toString();
 		BoxSnapshot.InfoStr = ini.value(Snapshot + "/Description").toString();
-		BoxSnapshot.SnapDate = QDateTime::fromTime_t(ini.value(Snapshot + "/SnapshotDate").toULongLong());
+		BoxSnapshot.SnapDate = QDateTime::fromSecsSinceEpoch(ini.value(Snapshot + "/SnapshotDate").toULongLong());
 
-		Snapshots.append(BoxSnapshot);
+		Snapshots.insert(BoxSnapshot.ID, BoxSnapshot);
 	}
 
 	if(pCurrent)
@@ -323,6 +392,8 @@ struct SBoxDataFile
 
 QList<SBoxDataFile> CSandBox__BoxDataFiles = QList<SBoxDataFile>() 
 	<< SBoxDataFile("RegHive", true, false) 
+	<< SBoxDataFile("RegPaths.dat", false, false) 
+	<< SBoxDataFile("FilePaths.dat", false, true)
 ;
 
 bool CSandBox::IsInitialized() const
@@ -361,7 +432,7 @@ SB_PROGRESS CSandBox::TakeSnapshot(const QString& Name)
 	QSettings ini(m_FilePath + "\\Snapshots.ini", QSettings::IniFormat);
 
 	if (m_pAPI->HasProcesses(m_Name))
-		return SB_ERR(SB_SnapIsRunning, OP_CONFIRM);
+		return SB_ERR(SB_SnapIsRunning);
 
 	if (!IsInitialized())
 		return SB_ERR(SB_SnapIsEmpty);
@@ -385,12 +456,12 @@ SB_PROGRESS CSandBox::TakeSnapshot(const QString& Name)
 			if (BoxDataFile.Required)
 				return SB_ERR(SB_SnapCopyDatFail);
 		}
-		else if (BoxDataFile.Required) // this one is incremental, hence delete it from the copy root, after it was copied to the snapshot
+		else if (BoxDataFile.Recursive) // this one is incremental, hence delete it from the copy root, after it was copied to the snapshot
 			QFile::remove(m_FilePath + "\\" + BoxDataFile.Name);
 	}
 
 	ini.setValue("Snapshot_" + ID + "/Name", Name);
-	ini.setValue("Snapshot_" + ID + "/SnapshotDate", QDateTime::currentDateTime().toTime_t());
+	ini.setValue("Snapshot_" + ID + "/SnapshotDate", QDateTime::currentDateTime().toSecsSinceEpoch());
 	QString Current = ini.value("Current/Snapshot").toString();
 	if(!Current.isEmpty())
 		ini.setValue("Snapshot_" + ID + "/Parent", Current);
@@ -415,7 +486,7 @@ SB_PROGRESS CSandBox::RemoveSnapshot(const QString& ID)
 		return SB_ERR(SB_SnapNotFound);
 
 	if (m_pAPI->HasProcesses(m_Name))
-		return SB_ERR(SB_SnapIsRunning, OP_CONFIRM);
+		return SB_ERR(SB_SnapIsRunning);
 	
 	QStringList ChildIDs;
 	foreach(const QString& Snapshot, ini.childGroups())
@@ -435,7 +506,7 @@ SB_PROGRESS CSandBox::RemoveSnapshot(const QString& ID)
 
 	CSbieProgressPtr pProgress = CSbieProgressPtr(new CSbieProgress());
 	if (ChildIDs.count() == 1 || IsCurrent)
-		QtConcurrent::run(CSandBox::MergeSnapshotAsync, pProgress, m_FilePath, ID, IsCurrent ? QString() : ChildIDs.first());
+		QtConcurrent::run(CSandBox::MergeSnapshotAsync, pProgress, m_FilePath, ID, IsCurrent ? QString() : ChildIDs.first(), qMakePair(m_Name, m_pAPI));
 	else
 		QtConcurrent::run(CSandBox::DeleteSnapshotAsync, pProgress, m_FilePath, ID);
 	return SB_PROGRESS(OP_ASYNC, pProgress);
@@ -498,22 +569,36 @@ SB_STATUS CSandBox__MergeFolders(const CSbieProgressPtr& pProgress, const QStrin
 
 SB_STATUS CSandBox__CleanupSnapshot(const QString& Folder)
 {
+	// remove files which may be in the snapshot
 	foreach(const SBoxDataFile& BoxDataFile, CSandBox__BoxDataFiles) 
-	{
-		SNtObject ntHiveFile(L"\\??\\" + (Folder + "\\" + BoxDataFile.Name).toStdWString());
-		SB_STATUS status = NtDeleteFile(&ntHiveFile.attr);
-		if (NT_SUCCESS(status)) {
-			SNtObject ntSnapshotFile(L"\\??\\" + Folder.toStdWString());
-			status = NtDeleteFile(&ntSnapshotFile.attr);
-		}
-		if(BoxDataFile.Required)
-			if (!NT_SUCCESS(status))
-				return SB_ERR(SB_SnapRmDirFail, QVariantList() << Folder, status);
-	}
+		QFile::remove(Folder + "\\" + BoxDataFile.Name);
+
+	// delete snapshot folder, at this stage it should be empty
+	// when its not empty delete will fail
+	SNtObject ntSnapshotFile(L"\\??\\" + Folder.toStdWString());
+	NTSTATUS status = NtDeleteFile(&ntSnapshotFile.attr);
+	if (!NT_SUCCESS(status))
+		return SB_ERR(SB_SnapRmDirFail, QVariantList() << Folder, status);
 	return SB_OK;
 }
 
-void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QString& BoxPath, const QString& TargetID, const QString& SourceID)
+void CSandBox__MoveDataFilesSafe(const QString& SourceFolder, const QString& TargetFolder)
+{
+	foreach(const SBoxDataFile& BoxDataFile, CSandBox__BoxDataFiles)
+	{
+		if (!QFile::exists(SourceFolder + "\\" + BoxDataFile.Name))
+			continue;
+
+		QFile::remove(TargetFolder + "\\" + BoxDataFile.Name);
+		QFile::rename(SourceFolder + "\\" + BoxDataFile.Name, TargetFolder + "\\" + BoxDataFile.Name);
+	}
+}
+
+// path flags, saved to file
+#define FILE_DELETED_FLAG       0x0001
+#define FILE_RELOCATION_FLAG    0x0002
+
+void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QString& BoxPath, const QString& TargetID, const QString& SourceID, const QPair<const QString, class CSbieAPI*>& params)
 {
 	//
 	// Targe is to be removed;
@@ -527,8 +612,97 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 	QString SourceFolder = IsCurrent ? BoxPath : (BoxPath + "\\snapshot-" + SourceID);
 	QString TargetFolder = BoxPath + "\\snapshot-" + TargetID;
 
+	auto GetBoxedPath = [BoxPath, params](const QString& Path, const QString& TargetFolder) {
+		QString SubPath = params.second->GetBoxedPath(params.first, Path).mid(BoxPath.length());
+		return TargetFolder + SubPath;
+	};
+
 	SB_STATUS Status = SB_OK;
-	
+
+	// apply source FilePaths.dat on the targetfolder
+	if (QFile::exists(SourceFolder + "\\FilePaths.dat")) 
+	{
+		QFile datSource(SourceFolder + "\\FilePaths.dat");
+		if (datSource.open(QFile::ReadOnly)) 
+		{
+			QByteArray datBin = datSource.readAll();
+
+			QStringList datData = QString::fromWCharArray((wchar_t*)datBin.data(), datBin.size() / sizeof(wchar_t)).split("\n");
+
+			// process relocations
+			foreach (const QString& Line, datData) {
+				QStringList Data = Line.trimmed().split("|");
+
+				QString Path = Data[0];
+				if (Path.isEmpty()) continue;
+				Path = GetBoxedPath(Path, TargetFolder);
+				int Flags = Data.size() >= 2 ? Data[1].toInt() : 0;
+
+				if (Flags & FILE_RELOCATION_FLAG)
+				{
+					QString Relocation = Data.size() >= 3 ? GetBoxedPath(Data[2], TargetFolder) : QString();
+					
+					SNtObject ntSrc(L"\\??\\" + Relocation.toStdWString());
+
+					if (NtIo_FileExists(&ntSrc.attr)) {
+
+						SNtObject ntOld(L"\\??\\" + Path.toStdWString());
+
+						NTSTATUS status = NtIo_DeleteFolderRecursively(&ntOld.attr, [](const WCHAR* info, void* param) {
+							CSbieProgress* pProgress = (CSbieProgress*)param;
+							pProgress->ShowMessage(CSandBox::tr("Deleting folder: %1").arg(QString::fromWCharArray(info)));
+							return !pProgress->IsCanceled();
+						}, pProgress.data());
+
+						if (NT_SUCCESS(status))
+						{
+							QStringList PathX = Path.split("\\");
+							QString Name = PathX.takeLast();
+							SNtObject ntDest(L"\\??\\" + PathX.join("\\").toStdWString());
+
+							status = NtIo_RenameFolder(&ntSrc.attr, &ntDest.attr, Name.toStdWString().c_str());
+						}
+					}
+				}
+			}
+
+			// process deletions
+			foreach (const QString& Line, datData) {
+				QStringList Data = Line.trimmed().split("|");
+
+				QString Path = Data[0];
+				if (Path.isEmpty()) continue;
+				Path = GetBoxedPath(Path, TargetFolder);
+				int Flags = Data.size() >= 2 ? Data[1].toInt() : 0;
+
+				if (Flags & FILE_DELETED_FLAG)
+				{
+					SNtObject ntPath(L"\\??\\" + Path.toStdWString());
+
+					NTSTATUS status = NtIo_DeleteFile(ntPath, [](const WCHAR* info, void* param) {
+						CSbieProgress* pProgress = (CSbieProgress*)param;
+						pProgress->ShowMessage(CSandBox::tr("Deleting: %1").arg(QString::fromWCharArray(info)));
+						return !pProgress->IsCanceled(); 
+					}, pProgress.data());
+				}
+			}
+
+			// merge DeleteV2 file entries to the Target FilePaths.dat
+			QFile datTarget(TargetFolder + "\\FilePaths.dat");
+			if (datTarget.open(QFile::ReadWrite)) {
+				// merge with target
+				datTarget.seek(datTarget.size());
+				datTarget.write(datBin);
+				datTarget.close();
+			}
+
+			// remove source FilePaths.dat
+			datSource.close();
+			datSource.remove();
+		}
+	}
+
+	// merge source folders to the target snapshot
 	foreach(const QString& BoxSubFolder, CSandBox__BoxSubFolders) 
 	{
 		Status = CSandBox__MergeFolders(pProgress, TargetFolder + "\\" + BoxSubFolder, SourceFolder + "\\" + BoxSubFolder);
@@ -540,6 +714,9 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 
 	if(!Status.IsError())
 	{
+		// copy other data files from source to target
+		CSandBox__MoveDataFilesSafe(SourceFolder, TargetFolder);
+
 		if (IsCurrent)
 		{
 			// move all folders out of the snapshot to root
@@ -550,6 +727,9 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 					break;
 			}
 
+			// move all data files out of the snapshot to root
+			CSandBox__MoveDataFilesSafe(TargetFolder, SourceFolder);
+			
 			// delete snapshot rest
 			if (!Status.IsError())
 				Status = CSandBox__CleanupSnapshot(TargetFolder);
@@ -559,7 +739,7 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 			// delete rest of source snpshot
 			Status = CSandBox__CleanupSnapshot(SourceFolder);
 
-			// rename target snapshot o source snapshot
+			// rename target snapshot to source snapshot
 			if (!Status.IsError())
 				Status = CSandBox__MoveFolder(TargetFolder, BoxPath, "snapshot-" + SourceID);
 		}
@@ -591,17 +771,11 @@ SB_PROGRESS CSandBox::SelectSnapshot(const QString& ID)
 		return SB_ERR(SB_SnapNotFound);
 
 	if (m_pAPI->HasProcesses(m_Name))
-		return SB_ERR(SB_SnapIsRunning, OP_CONFIRM);
+		return SB_ERR(SB_SnapIsRunning);
 
 	foreach(const SBoxDataFile& BoxDataFile, CSandBox__BoxDataFiles)
 	{
-		if (!QFile::exists(m_FilePath + "\\" + BoxDataFile.Name))
-			continue;
-
-		if (!QFile::remove(m_FilePath + "\\" + BoxDataFile.Name)) {
-			if (BoxDataFile.Required)
-				return SB_ERR(SB_SnapDelDatFail);
-		}
+		QFile::remove(m_FilePath + "\\" + BoxDataFile.Name);
 
 		if (ID.isEmpty() || BoxDataFile.Recursive)
 			continue; // this one is incremental, don't restore it
@@ -634,4 +808,19 @@ SB_STATUS CSandBox::SetSnapshotInfo(const QString& ID, const QString& Name, cons
 		ini.setValue("Snapshot_" + ID + "/Description", Description);
 
 	return SB_OK;
+}
+
+SB_STATUS CSandBox::ImBoxCreate(quint64 uSizeKb, const QString& Password)
+{
+	return m_pAPI->ImBoxCreate(this, uSizeKb, Password);
+}
+
+SB_STATUS CSandBox::ImBoxMount(const QString& Password, bool bProtect, bool bAutoUnmount)
+{
+	return m_pAPI->ImBoxMount(this, Password, bProtect, bAutoUnmount);
+}
+
+SB_STATUS CSandBox::ImBoxUnmount()
+{
+	return m_pAPI->ImBoxUnmount(this);
 }

@@ -24,10 +24,13 @@
 
 #include "common/win32_ntddk.h"
 #include "core/dll/sbiedll.h"
+#include "common/defines.h"
 #include "core/svc/SbieIniWire.h"
 #include "common/my_version.h"
-#include "common/defines.h"
 #include "msgs/msgs.h"
+#include "core/drv/api_defs.h"
+#include <psapi.h>
+#include <Shlwapi.h>
 
 
 //---------------------------------------------------------------------------
@@ -49,9 +52,12 @@
 
 void List_Process_Ids(void);
 int Terminate_All_Processes(BOOL all_boxes);
+int Unmount_All_Boxes(BOOL all_boxes);
+int Delete_All_Sandboxes();
 
 extern WCHAR *DoRunDialog(HINSTANCE hInstance);
 extern WCHAR *DoBoxDialog(void);
+extern bool DoAboutDialog(bool bReminder = false);
 extern BOOL ResolveDirectory(WCHAR *PathW);
 extern WCHAR *DoStartMenu(void);
 extern BOOL WriteStartMenuResult(const WCHAR *MapName, const WCHAR *Command);
@@ -74,21 +80,22 @@ extern "C" {
 //---------------------------------------------------------------------------
 
 
-WCHAR BoxName[34];
+WCHAR BoxName[BOXNAME_COUNT];
+WCHAR BoxKey[128+1];
 
 PWSTR ChildCmdLine = NULL;
 BOOL run_mail_agent = FALSE;
 BOOL display_run_dialog = FALSE;
-BOOL display_start_menu = FALSE;
+int display_start_menu = 0;
 BOOL execute_auto_run = FALSE;
 BOOL execute_open_with = FALSE;
 BOOL run_elevated_2 = FALSE;
 BOOL disable_force_on_this_program = FALSE;
+BOOL force_children_on_this_program = FALSE;
 BOOL auto_select_default_box = FALSE;
 WCHAR *StartMenuSectionName = NULL;
 BOOL run_silent = FALSE;
 BOOL keep_alive = FALSE;
-BOOL dont_start_sbie_ctrl = FALSE;
 BOOL hide_window = FALSE;
 BOOL wait_for_process = FALSE;
 BOOLEAN layout_rtl = FALSE;
@@ -245,11 +252,17 @@ BOOL Validate_Box_Name(void)
 
     if (! disable_force_on_this_program) {
 
+        if (display_start_menu != 2) {
+            if (!DoAboutDialog(true))
+                return die(EXIT_FAILURE);
+        }
+
         if (_wcsicmp(BoxName, L"__ask__") == 0 ||
             _wcsicmp(BoxName, L"current") == 0) {
 
             if (auto_select_default_box) {
-                wcscpy(BoxName, L"DefaultBox");
+                if(!NT_SUCCESS(SbieApi_QueryConfAsIs(L"GlobalSettings", L"DefaultBox", 0, BoxName, sizeof(BoxName))) || *BoxName == L'\0')
+                    wcscpy(BoxName, L"DefaultBox");
                 if (SbieApi_IsBoxEnabled(BoxName) != STATUS_SUCCESS)
                     auto_select_default_box = FALSE;
             }
@@ -389,10 +402,12 @@ BOOL Parse_Command_Line(void)
     static const WCHAR *mail_agent        = L"mail_agent";
     static const WCHAR *run_dialog        = L"run_dialog";
     static const WCHAR *start_menu        = L"start_menu";
+    static const WCHAR *about_dialog      = L"about_dialog";
     static const WCHAR *open_with         = L"open_with";
     static const WCHAR *auto_run          = L"auto_run";
     static const WCHAR *mount_hive        = L"mount_hive";
     static const WCHAR *delete_sandbox    = L"delete_sandbox";
+    static const WCHAR *delete_all_sandboxes = L"delete_all_sandboxes";
     static const WCHAR *_logoff           = L"_logoff";
     static const WCHAR *_silent           = L"_silent";
     static const WCHAR *_phase            = L"_phase";
@@ -409,12 +424,29 @@ BOOL Parse_Command_Line(void)
     //
     //
 
-    if (_wcsicmp(cmd, L"run_sbie_ctrl") == 0) {
+    if (_wcsicmp(cmd, L"run_sbie_ctrl") == 0 || _wcsnicmp(cmd, L"open_agent", 10) == 0) {
 
-        MSG_HEADER req, *rpl = NULL;
+        union {
+            MSG_HEADER req;
+            UCHAR buffer[128];
+        };
+        MSG_HEADER *rpl = NULL;
         if (CallSbieSvcGetUser()) {
             req.length = sizeof(req);
             req.msgid  = MSGID_SBIE_INI_RUN_SBIE_CTRL;
+
+            if (_wcsnicmp(cmd, L"open_agent:", 11) == 0) {
+                cmd += 11;
+                tmp = Eat_String(cmd);
+                if (*cmd == L'\"') {
+                    cmd++;
+                    tmp--;
+                }
+                ULONG len = ULONG(tmp - cmd) * sizeof(WCHAR);
+                memcpy((WCHAR*)&buffer[req.length], cmd, len);
+                req.length += len;
+            }
+
             rpl = SbieDll_CallServer(&req);
         }
         ExitProcess((rpl && rpl->status == 0) ? EXIT_SUCCESS : EXIT_FAILURE);
@@ -468,7 +500,7 @@ BOOL Parse_Command_Line(void)
                 }
             }
 
-            if (tmp == cmd || (cmd - tmp > 32)) {
+            if (tmp == cmd || (cmd - tmp > (BOXNAME_COUNT - 2))) {
 
                 if (run_silent)
                     ExitProcess(ERROR_UNKNOWN_PROPERTY);
@@ -550,16 +582,6 @@ BOOL Parse_Command_Line(void)
             SetEnvironmentVariable(env_name_x, env_value_x);
 
         //
-        // Command line switch /nosbiectrl
-        //
-
-        } else if (_wcsnicmp(cmd, L"nosbiectrl", 10) == 0) {
-
-            cmd += 10;
-
-            dont_start_sbie_ctrl = TRUE;
-
-        //
         // Command line switch /reload
         //
 
@@ -580,6 +602,71 @@ BOOL Parse_Command_Line(void)
         } else if (_wcsnicmp(cmd, L"terminate", 9) == 0) {
 
             return die(Terminate_All_Processes(FALSE));
+            
+        //
+        // Command line switch /unmount, /unmount_all
+        //
+
+        } else if (_wcsnicmp(cmd, L"unmount_all", 11) == 0) {
+
+            Terminate_All_Processes(TRUE);
+            return die(Unmount_All_Boxes(TRUE));
+
+        } else if (_wcsnicmp(cmd, L"unmount", 7) == 0) {
+
+            Terminate_All_Processes(FALSE);
+            return die(Unmount_All_Boxes(FALSE));
+
+        //
+        // Command line switch /key:[box password] /mount
+        //
+
+        } else if (_wcsnicmp(cmd, L"key:", 4) == 0) {
+
+            cmd += 4;
+
+            tmp = cmd;
+
+            //
+            // parameter specifies boxkey
+            //
+
+            WCHAR end = L' ';
+            if (*tmp == L'\"') {
+                ++tmp;
+                ++cmd;
+                end = L'\"';
+            }
+
+            while (*cmd && *cmd != end) {
+                ++cmd;
+            }
+
+            if (tmp == cmd || (cmd - tmp > ARRAYSIZE(BoxKey)-1)) {
+
+                if (run_silent)
+                    ExitProcess(ERROR_UNKNOWN_PROPERTY);
+
+                SetLastError(0);
+                Show_Error(SbieDll_FormatMessage1(MSG_3202, tmp));
+                return FALSE;
+            }
+
+            memzero(BoxKey, sizeof(BoxKey));
+            wcsncpy(BoxKey, tmp, (cmd - tmp));
+
+            if (end == L'\"')
+                ++cmd;
+
+        } else if (_wcsnicmp(cmd, L"mount_protected", 15) == 0) {
+
+            Validate_Box_Name();
+            return die(SbieDll_Mount(BoxName, BoxKey, TRUE) ? EXIT_SUCCESS : EXIT_FAILURE);
+
+        } else if (_wcsnicmp(cmd, L"mount", 5) == 0) {
+
+            Validate_Box_Name();
+            return die(SbieDll_Mount(BoxName, BoxKey, FALSE) ? EXIT_SUCCESS : EXIT_FAILURE);
 
         //
         // Command line switch /listpids
@@ -632,6 +719,17 @@ BOOL Parse_Command_Line(void)
             cmd = Eat_String(cmd);
 
             disable_force_on_this_program = TRUE;
+
+        //
+        // Command line switch /force_children or /fcp
+        //
+
+        } else if (_wcsnicmp(cmd, L"force_children", 14) == 0 ||
+                   _wcsnicmp(cmd, L"fcp",             3) == 0) {
+
+            cmd = Eat_String(cmd);
+
+            force_children_on_this_program = TRUE;
 
         //
         // Command line switch /hide_window
@@ -727,6 +825,9 @@ BOOL Parse_Command_Line(void)
 
     } else if (wcsncmp(cmd, start_menu, wcslen(start_menu)) == 0) {
 
+        WCHAR *colon = cmd + wcslen(start_menu);
+        display_start_menu = *colon == L':' ? 2 : 1; // 1 run from start menu, 2 create shortcut
+
         if (! SbieApi_QueryProcessInfo(
                         (HANDLE)(ULONG_PTR)GetCurrentProcessId(), 0)) {
             // this is the instance of Start.exe outside the sandbox
@@ -738,7 +839,6 @@ BOOL Parse_Command_Line(void)
 
             // this is the instance of Start.exe in the sandbox so we
             // need to parse the start_menu command line
-            WCHAR *colon = cmd + wcslen(start_menu);
             if (*colon == L':') {
                 ULONG name_len = wcslen(colon + 1);
                 StartMenuSectionName =
@@ -754,8 +854,6 @@ BOOL Parse_Command_Line(void)
                 }
             }
         }
-
-        display_start_menu = TRUE;
 
         return TRUE;
 
@@ -779,6 +877,14 @@ BOOL Parse_Command_Line(void)
         wcscpy(ChildCmdLine, cmd + len);
 
         return TRUE;
+
+    // show about dialog
+
+    } else if (wcsncmp(cmd, about_dialog, wcslen(about_dialog)) == 0) {
+
+        DoAboutDialog();
+
+        return FALSE;
 
     // run auto start entries
 
@@ -851,6 +957,12 @@ BOOL Parse_Command_Line(void)
         // does not return
 
         return TRUE;
+
+    // if rest is exactly "delete_all_sandboxes", do that processing
+
+    } else if (wcsncmp(cmd, delete_all_sandboxes, wcslen(delete_all_sandboxes)) == 0) {
+
+        return die(Delete_All_Sandboxes());
 
     //
     // if rest is exactly "disable_force" or "disable_force_off"
@@ -959,6 +1071,33 @@ int Terminate_All_Processes(BOOL all_boxes)
 
 
 //---------------------------------------------------------------------------
+// Unmount_All_Boxes
+//---------------------------------------------------------------------------
+
+
+int Unmount_All_Boxes(BOOL all_boxes)
+{
+    if (all_boxes) {
+
+        int index = -1;
+        while (1) {
+            index = SbieApi_EnumBoxes(index, BoxName);
+            if (index == -1)
+                break;
+            SbieDll_Unmount(BoxName);
+        }
+
+    } else {
+
+        Validate_Box_Name();
+        SbieDll_Unmount(BoxName);
+    }
+
+    return EXIT_SUCCESS;
+}
+
+
+//---------------------------------------------------------------------------
 // Program_Start
 //---------------------------------------------------------------------------
 
@@ -985,7 +1124,7 @@ int Program_Start(void)
     }
 
     //
-    // copy input command line, minus leading and tailing spaces
+    // copy input command line, minus leading and trailing spaces
     //
 
     while (ChildCmdLine && *ChildCmdLine == L' ')
@@ -1027,6 +1166,14 @@ int Program_Start(void)
         expanded = MyHeapAlloc(8192 * sizeof(WCHAR));
         ExpandEnvironmentStrings(cmdline, expanded, 8192);
 
+        //
+        // When the service process has a manifest which requires elevated privileges,
+        // CreateProcess will fail if we did not start with a elevated token.
+        // To fix this issue we always fake being elevated when starting a service.
+        //
+
+        SbieDll_SetFakeAdmin(TRUE);
+
 		//
 		// If the command contains a space but no ", try to fix it
 		//
@@ -1061,7 +1208,7 @@ int Program_Start(void)
         shExecInfo.cbSize = sizeof(SHELLEXECUTEINFO);
         shExecInfo.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_DOENVSUBST
                          | SEE_MASK_FLAG_DDEWAIT | SEE_MASK_NOZONECHECKS;
-        if (wait_for_process || keep_alive)
+        if (wait_for_process || keep_alive || force_children_on_this_program)
             shExecInfo.fMask |= SEE_MASK_NOCLOSEPROCESS;
         shExecInfo.hwnd = NULL;
         shExecInfo.lpVerb = NULL;
@@ -1099,8 +1246,8 @@ int Program_Start(void)
         //
 
         //
-        // note: this workaround does nto work the path is still blocked 
-        // and we still get problems, hence now the deriver has an excemption for start.exe
+        // note: this workaround does not work the path is still blocked 
+        // and we still get problems, hence now the derive has an exemption for start.exe
         //
 
         //LoadLibrary(L"apphelp.dll");
@@ -1175,8 +1322,8 @@ int Program_Start(void)
             WCHAR *parms = Eat_String(cmdline);
             if (parms && *parms) {
 
-                WCHAR *cmd2 = MyHeapAlloc(cmdline_len * sizeof(WCHAR));
-                WCHAR *arg2 = MyHeapAlloc(cmdline_len * sizeof(WCHAR));
+                WCHAR *cmd2 = MyHeapAlloc((cmdline_len + 1) * sizeof(WCHAR));
+                WCHAR *arg2 = MyHeapAlloc((cmdline_len + 1) * sizeof(WCHAR));
 
                 wcsncpy(cmd2, cmdline, parms - cmdline);
                 cmd2[parms - cmdline] = L'\0';
@@ -1205,6 +1352,8 @@ int Program_Start(void)
 
         if (ok && (wait_for_process || keep_alive))
             hNewProcess = shExecInfo.hProcess;
+        else if(ok && force_children_on_this_program)
+            pi.dwProcessId = GetProcessId(shExecInfo.hProcess);
 
         if (! ok) {
 
@@ -1232,9 +1381,16 @@ int Program_Start(void)
     // we know for sure that SandboxieRpcSs has opened it
     //
 
-    if (ok && (! disable_force_on_this_program)) {
+    if (ok) {
 
-        SbieDll_StartCOM(FALSE);
+        if (force_children_on_this_program) {
+
+            SbieApi_Call(API_FORCE_CHILDREN, 2, pi.dwProcessId, BoxName);
+
+        } else if (!disable_force_on_this_program) {
+
+            SbieDll_StartCOM(FALSE);
+        }
     }
 
     //
@@ -1247,7 +1403,7 @@ int Program_Start(void)
         SetLastError(err);
         Show_Error(errmsg);
 
-        keep_alive = FALSE; // disable keep alive when the process cant be started in the first place
+        keep_alive = FALSE; // disable keep alive when the process can't be started in the first place
             
         return EXIT_FAILURE;
 
@@ -1263,7 +1419,9 @@ int Program_Start(void)
             }
         }
 
-    } else if (GetModuleHandle(L"protect.dll")) {
+    } 
+    // $Workaround$ - 3rd party fix
+    else if (GetModuleHandle(L"protect.dll")) {
 
         //
         // hack for FortKnox firewall -- keep Start.exe around for a few
@@ -1314,7 +1472,7 @@ void StartAutoRunKey(LPCWSTR lpKey)
 	UNICODE_STRING Data;
 	NTSTATUS Status;
 
-    // Get the native unhooked fucntion in order to enumerate only the sandboxed entries
+    // Get the native unhooked function in order to enumerate only the sandboxed entries
     P_NtOpenKey __sys_NtOpenKey = (P_NtOpenKey)SbieDll_GetSysFunction(L"NtOpenKey");
     P_NtEnumerateValueKey __sys_NtEnumerateValueKey = (P_NtEnumerateValueKey)SbieDll_GetSysFunction(L"NtEnumerateValueKey");
 
@@ -1413,7 +1571,7 @@ void StartAutoAutoFolder(LPCWSTR lpPath)
 	//HANDLE Event;
     PFILE_ID_BOTH_DIR_INFORMATION DirInformation;
 
-    // Get the native unhooked fucntion in order to enumerate only the sandboxed entries
+    // Get the native unhooked function in order to enumerate only the sandboxed entries
     P_NtCreateFile __sys_NtCreateFile = (P_NtCreateFile)SbieDll_GetSysFunction(L"NtCreateFile");
     P_NtQueryDirectoryFile __sys_NtQueryDirectoryFile = (P_NtQueryDirectoryFile)SbieDll_GetSysFunction(L"NtQueryDirectoryFile");
 	
@@ -1505,6 +1663,44 @@ void StartAllAutoRunEntries()
 
 
 //---------------------------------------------------------------------------
+// GetParentPIDAndName
+//---------------------------------------------------------------------------
+
+extern "C" WINBASEAPI BOOL WINAPI QueryFullProcessImageNameW(HANDLE hProcess, DWORD dwFlags, LPWSTR lpExeName, PDWORD lpdwSize);
+
+DWORD GetParentPIDAndName(DWORD ProcessID, LPTSTR lpszBuffer_Parent_Name) 
+{
+	HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, ProcessID);
+	if (!ProcessID) 
+		return 0;
+
+	PROCESS_BASIC_INFORMATION pbi;
+	NTSTATUS status = NtQueryInformationProcess(hProcess, ProcessBasicInformation, (LPVOID)&pbi, sizeof(pbi), NULL);
+
+	DWORD dwParentID = 0;
+	if (NT_SUCCESS(status)) {
+		
+		dwParentID = (DWORD)pbi.InheritedFromUniqueProcessId;
+
+		if (NULL != lpszBuffer_Parent_Name) {
+
+			HANDLE hParentProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, dwParentID);
+            if (hParentProcess) {
+
+                DWORD dwSize;
+                BOOL ret = QueryFullProcessImageNameW(hParentProcess, 0, lpszBuffer_Parent_Name, &dwSize);
+
+                CloseHandle(hParentProcess);
+            }
+		}
+	}
+
+	CloseHandle(hProcess);
+	return dwParentID;
+}
+
+
+//---------------------------------------------------------------------------
 // RestartInSandbox
 //---------------------------------------------------------------------------
 
@@ -1537,7 +1733,7 @@ ULONG RestartInSandbox(void)
     // build command line.  note that we pass the current directory as an
     // environment variable which will be queried by Program_Start.  this
     // is because SbieSvc ProcessServer (used by SbieDll_RunSandboxed)
-    // does not necssarily share our dos device map, and will not be able
+    // does not necessarily share our dos device map, and will not be able
     // to change to a drive letter that isn't in its dos device map
     //
 
@@ -1563,6 +1759,25 @@ ULONG RestartInSandbox(void)
     wcscpy(ptr, ChildCmdLine);
 
     SbieApi_GetHomePath(NULL, 0, dir, 1020);
+
+    //
+    //
+    //
+
+	if (SbieApi_QueryConfBool(BoxName, L"AlertBeforeStart", FALSE)) {
+
+        WCHAR parent_image[1020] = L"";
+		GetParentPIDAndName(GetCurrentProcessId(), parent_image);
+
+		WCHAR* text = SbieDll_FormatMessage1(MSG_3198, BoxName);
+		if (MessageBoxW(NULL, text, Sandboxie_Start_Title, MB_YESNO) == IDNO)
+			return EXIT_FAILURE;
+
+        if (_wcsnicmp(parent_image, dir, wcslen(dir)) != 0) {
+            if (MessageBoxW(NULL, SbieDll_FormatMessage0(3199), Sandboxie_Start_Title, MB_YESNO) == IDNO)
+                return EXIT_FAILURE;
+        }
+	}
 
     //
     //
@@ -1625,7 +1840,8 @@ int __stdcall WinMainCRTStartup(
     Sandboxie_Start_Title = SbieDll_FormatMessage0(MSG_3101);
     SbieDll_GetLanguage(&layout_rtl);
 
-    wcscpy(BoxName, L"DefaultBox");
+    if(!NT_SUCCESS(SbieApi_QueryConfAsIs(L"GlobalSettings", L"DefaultBox", 0, BoxName, sizeof(BoxName))) || *BoxName == L'\0')
+        wcscpy(BoxName, L"DefaultBox");
 
     Token_Elevation_Type = SbieDll_GetTokenElevationType();
 
@@ -1700,8 +1916,9 @@ int __stdcall WinMainCRTStartup(
 
                 ULONG NewState = DISABLE_JUST_THIS_PROCESS;
                 SbieApi_DisableForceProcess(&NewState, NULL);
-                return die(Program_Start());
             }
+            if (disable_force_on_this_program || force_children_on_this_program)
+                return die(Program_Start());
         }
 
         return die(RestartInSandbox());
@@ -1764,8 +1981,8 @@ int __stdcall WinMainCRTStartup(
         rc = Program_Start();
 
         // keep the process running unless it gracefully terminates
-        if (keep_alive && rc != EXIT_SUCCESS && retry++ < 5) { // after to many initialization failures abbort
-            if (::GetTickCount() - start >= 5000) // if the process run for less than 5 seconts considder it a failure to initialize
+        if (keep_alive && rc != EXIT_SUCCESS && retry++ < 5) { // after to many initialization failures abort
+            if (::GetTickCount() - start >= 5000) // if the process run for less than 5 seconds consider it a failure to initialize
                 retry = 0; // reset failure counter on success ful start
             goto run_program;
         }

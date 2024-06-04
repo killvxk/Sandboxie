@@ -1,5 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2021-2023 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -36,6 +37,7 @@ const WCHAR *_SandboxieRpcSs = SANDBOXIE L"RpcSs.exe";
 const WCHAR *_msiexec = L"msiexec.exe";
 
 static HMODULE KernelBase = NULL;
+static HMODULE SecHost = NULL;
 static BOOLEAN IsWindows81 = FALSE;
 
 //---------------------------------------------------------------------------
@@ -57,7 +59,20 @@ static BOOLEAN IsWindows81 = FALSE;
             SourceFunc = (void *)func;                              \
     }                                                               \
     __sys_##func =                                                  \
-        (ULONG_PTR)SbieDll_Hook(FuncName, SourceFunc, my_##func);   \
+        (ULONG_PTR)SbieDll_Hook(FuncName, SourceFunc, my_##func, KernelBase);   \
+    if (! __sys_##func)                                             \
+        hook_success = FALSE;                                       \
+    }
+
+#define HOOK_WIN32_SCM(func) {                                      \
+    const char *FuncName = #func;                                   \
+    void *SourceFunc = (void *)func;                                \
+    if (SecHost)                                                    \
+        SourceFunc = GetProcAddress(SecHost, FuncName);             \
+    if (! SourceFunc)                                               \
+        SourceFunc = (void *)func;                                  \
+    __sys_##func =                                                  \
+        (ULONG_PTR)SbieDll_Hook(FuncName, SourceFunc, my_##func, SourceFunc);   \
     if (! __sys_##func)                                             \
         hook_success = FALSE;                                       \
     }
@@ -80,6 +95,7 @@ void Check_Windows_7(void)
         osvi.dwMajorVersion == 6 && osvi.dwMinorVersion >= 1) {
 
         KernelBase = LoadLibrary(L"KernelBase.dll");
+        SecHost = LoadLibrary(L"SecHost.dll");
 
         //
         // GetVersionEx in Windows 8.1 returns version 6.2, same as
@@ -555,14 +571,14 @@ BOOL my_QueryServiceStatus(
 
 
 //---------------------------------------------------------------------------
-// my_StartService
+// my_StartServiceW
 //---------------------------------------------------------------------------
 
 
-ULONG_PTR __sys_StartService = 0;
+ULONG_PTR __sys_StartServiceW = 0;
 
 
-BOOL my_StartService(
+BOOL my_StartServiceW(
     SC_HANDLE hService,
     DWORD NumArgs,
     void *ArgVector)
@@ -578,7 +594,7 @@ BOOL my_StartService(
 
         typedef BOOL(*P_StartService)(
             SC_HANDLE hService, DWORD NumArgs, void *ArgVector);
-        ok = ((P_StartService)__sys_StartService)(
+        ok = ((P_StartService)__sys_StartServiceW)(
             hService, NumArgs, ArgVector);
 
     }
@@ -652,21 +668,6 @@ HANDLE my_CreateEventW(
 }
 
 
-//---------------------------------------------------------------------------
-// my_CreateFileMappingW (forward reference)
-//---------------------------------------------------------------------------
-
-ULONG_PTR __sys_CreateFileMappingW = 0;
-
-HANDLE my_CreateFileMappingW(
-    HANDLE hFile,
-    LPSECURITY_ATTRIBUTES lpAttributes,
-    DWORD flProtect,
-    DWORD dwMaximumSizeHigh,
-    DWORD dwMaximumSizeLow,
-    LPCWSTR lpName);
-
-
 
 #if 0
 
@@ -717,16 +718,14 @@ ULONG my_PowerSettingRegisterNotification(
 BOOL Hook_Service_Control_Manager(void)
 {
     BOOL hook_success = TRUE;
-    HOOK_WIN32(SetServiceStatus);
-    HOOK_WIN32(StartServiceCtrlDispatcherW);
-    HOOK_WIN32(OpenServiceW);
-    HOOK_WIN32(CloseServiceHandle);
-    HOOK_WIN32(QueryServiceStatusEx);
-    HOOK_WIN32(QueryServiceStatus);
-    HOOK_WIN32(StartService);
-    HOOK_WIN32(ControlService);
-
-    HOOK_WIN32(CreateFileMappingW);
+    HOOK_WIN32_SCM(SetServiceStatus);
+    HOOK_WIN32_SCM(StartServiceCtrlDispatcherW);
+    HOOK_WIN32_SCM(OpenServiceW);
+    HOOK_WIN32_SCM(CloseServiceHandle);
+    HOOK_WIN32_SCM(QueryServiceStatusEx);
+    HOOK_WIN32_SCM(QueryServiceStatus);
+    HOOK_WIN32_SCM(StartServiceW);
+    HOOK_WIN32_SCM(ControlService);
 
 #if 0
     HOOK_WIN32(RtlSetLastWin32Error);
@@ -755,6 +754,8 @@ BOOL Hook_Service_Control_Manager(void)
 
 BOOL Service_Start_ServiceMain(WCHAR *SvcName, const WCHAR *SvcDllName, const UCHAR *SvcProcName, BOOL UseMyStartServiceCtrlDispatcher)
 {
+    static const WCHAR *ServiceName_EnvVar =
+        L"00000000_" SBIE L"_SERVICE_NAME";
     HMODULE dll;
     LPSERVICE_MAIN_FUNCTION ServiceMain;
     ULONG table_len;
@@ -785,7 +786,7 @@ BOOL Service_Start_ServiceMain(WCHAR *SvcName, const WCHAR *SvcDllName, const UC
     table[0].lpServiceName = SvcName;
     table[0].lpServiceProc = ServiceMain;
 
-
+    SetEnvironmentVariable(ServiceName_EnvVar, SvcName);
 
     if (UseMyStartServiceCtrlDispatcher) {
         PROCESS_DATA *myData;

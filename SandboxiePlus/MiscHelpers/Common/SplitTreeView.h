@@ -9,7 +9,7 @@ class MISCHELPERS_EXPORT COneColumnModel : public QIdentityProxyModel
 {
 	Q_OBJECT
 public:
-	COneColumnModel( QObject* parrent = 0) : QIdentityProxyModel(parrent) {}
+	COneColumnModel( QObject* parent = 0) : QIdentityProxyModel(parent) {}
 
 	int	columnCount(const QModelIndex &parent = QModelIndex()) const { return 1; }
 };
@@ -78,7 +78,7 @@ public slots:
 	void				expand(const QModelIndex &index);
 	void				collapse(const QModelIndex &index);
     void				resizeColumnToContents(int column) { m_pList->resizeColumnToContents(column); }
-    void				sortByColumn(int column) { m_pList->sortByColumn(column); }
+    void				sortByColumn(int column) { m_pList->sortByColumn(column, m_pList->header()->sortIndicatorOrder()); }
     void				expandAll() { m_pTree->expandAll(); }
     void				collapseAll() { m_pTree->collapseAll(); }
     void				expandToDepth(int depth) { m_pTree->expandToDepth(depth); }
@@ -112,5 +112,5 @@ private:
 	QAbstractItemModel*		m_pModel;
 	COneColumnModel*		m_pOneModel;
 
-	int						m_LockSellection;
+	int						m_LockSelection;
 };

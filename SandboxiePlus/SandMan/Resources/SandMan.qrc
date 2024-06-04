@@ -67,22 +67,143 @@
         <file>IconOff.png</file>
         <file>IconOffC.png</file>
         <file>IconOffCx.png</file>
+        <file>Actions/Monitor.png</file>
+        <file>SideLogo.png</file>
+        <file>Actions/Refresh.png</file>
+        <file>Actions/UnPackBox.png</file>
+        <file>Actions/PackBox.png</file>
+        <file>Actions/GUI.png</file>
+        <file>Actions/Wizard.png</file>
+        <file>Actions/Magic.png</file>
+        <file>Actions/Update.png</file>
+        <file>Actions/Install.png</file>
+        <file>Actions/Cert.png</file>
+        <file>Actions/File.png</file>
+        <file>Actions/Security.png</file>
+        <file>Actions/NoAccess.png</file>
+        <file>Actions/Entry.png</file>
+        <file>Actions/Pass.png</file>
+        <file>Actions/Fail.png</file>
+        <file>Actions/List.png</file>
+        <file>Actions/Network.png</file>
+        <file>Actions/Policy.png</file>
+        <file>Actions/Rules.png</file>
+        <file>Actions/ImmidiateRecovery.png</file>
+        <file>Actions/QuickRecovery.png</file>
+        <file>Actions/Accessibility.png</file>
+        <file>Actions/Miscellaneous.png</file>
+        <file>Actions/Fence.png</file>
+        <file>Actions/Trigger.png</file>
+        <file>Actions/Anon.png</file>
+        <file>Actions/Users.png</file>
+        <file>Actions/Bug.png</file>
+        <file>Actions/Config.png</file>
+        <file>Actions/Sandbox.png</file>
+        <file>Actions/Token.png</file>
+        <file>Actions/Privilege.png</file>
+        <file>Actions/Printer.png</file>
+        <file>Actions/Move.png</file>
+        <file>Actions/Disk.png</file>
+        <file>Actions/Structure.png</file>
+        <file>Actions/Design.png</file>
+        <file>Actions/Objects.png</file>
+        <file>Actions/Program.png</file>
+        <file>Actions/Proxy.png</file>
+        <file>Actions/DNS.png</file>
+        <file>Actions/Alarm.png</file>
+        <file>Actions/EFence.png</file>
+        <file>Actions/Breakout.png</file>
+        <file>Actions/Control.png</file>
+        <file>Actions/Shield.png</file>
+        <file>Actions/Shield2.png</file>
+        <file>Actions/Shield3.png</file>
+        <file>Actions/Shield4.png</file>
+        <file>Actions/Shield5.png</file>
+        <file>Actions/Shield6.png</file>
+        <file>Actions/Shield7.png</file>
+        <file>Actions/Shield8.png</file>
+        <file>Actions/Shield9.png</file>
+        <file>Actions/Shield10.png</file>
+        <file>Actions/Shield11.png</file>
+        <file>Actions/Shield12.png</file>
+        <file>Actions/Shield13.png</file>
+        <file>Actions/Shield14.png</file>
+        <file>Actions/Shield15.png</file>
+        <file>Actions/Window.png</file>
+        <file>Actions/Port.png</file>
+        <file>Actions/Pipes.png</file>
+        <file>Actions/Folder.png</file>
+        <file>Actions/BFance.png</file>
+        <file>Actions/Shield16.png</file>
+        <file>Actions/Editor.png</file>
+        <file>Actions/USB.png</file>
+        <file>Actions/SystemShield.png</file>
+        <file>Actions/AdminShield.png</file>
+        <file>Actions/Files.png</file>
+        <file>Actions/Editor4.png</file>
+        <file>Actions/Editor3.png</file>
+        <file>Actions/Editor2.png</file>
+        <file>Actions/Folders.png</file>
+        <file>IconSun.png</file>
+        <file>Actions/Restricted.png</file>
+        <file>Actions/AppContainer.png</file>
+        <file>Actions/Windows.png</file>
+        <file>Actions/Interface.png</file>
+        <file>Actions/Notification.png</file>
+        <file>Actions/Network2.png</file>
+        <file>Actions/NetworkMgr.png</file>
+        <file>Actions/EthSocket.png</file>
+        <file>Actions/EthSocket2.png</file>
+        <file>Actions/NetCard.png</file>
+        <file>Actions/EthCable.png</file>
+        <file>Actions/EthPlug.png</file>
+        <file>Actions/Network3.png</file>
+        <file>Actions/LockOpen.png</file>
+        <file>Actions/LockClosed.png</file>
+        <file>Actions/RamDisk.png</file>
+        <file>Actions/BoxConfig.png</file>
+        <file>Actions/FirstAid.png</file>
+        <file>Actions/Forum.png</file>
+        <file>Actions/Help.png</file>
+        <file>Actions/Stack.png</file>
+        <file>Actions/Warning.png</file>
+        <file>Actions/PauseForce.png</file>
+        <file>Actions/DisableMessagePopup.png</file>
+        <file>Actions/DisableRecovery.png</file>
+        <file>Actions/Plugin.png</file>
+        <file>Actions/Plugins.png</file>
+        <file>Actions/AntiVir.png</file>
+        <file>Actions/SourceCode.png</file>
+        <file>Actions/Qube.png</file>
+        <file>Actions/Font.png</file>
+        <file>Actions/ResetFont.png</file>
+        <file>Actions/Dll.png</file>
+        <file>SideLogoDM.png</file>
+        <file>Actions/TaskBar.png</file>
+        <file>Actions/Desktop.png</file>
+        <file>Actions/Pause.png</file>
     </qresource>
     <qresource prefix="/Boxes">
-        <file alias="Empty3">Boxes/sandbox-b-empty.png</file>
-        <file alias="Full3">Boxes/sandbox-b-full.png</file>
-        <file alias="Empty4">Boxes/sandbox-c-empty.png</file>
-        <file alias="Full4">Boxes/sandbox-c-full.png</file>
-        <file alias="Empty2">Boxes/sandbox-g-empty.png</file>
-        <file alias="Full2">Boxes/sandbox-g-full.png</file>
-        <file alias="Empty5">Boxes/sandbox-m-empty.png</file>
-        <file alias="Full5">Boxes/sandbox-m-full.png</file>
-        <file alias="Empty1">Boxes/sandbox-r-empty.png</file>
-        <file alias="Full1">Boxes/sandbox-r-full.png</file>
-        <file alias="Empty0">Boxes/sandbox-y-empty.png</file>
-        <file alias="Full0">Boxes/sandbox-y-full.png</file>
-        <file alias="Empty6">Boxes/sandbox-o-empty.png</file>
-        <file alias="Full6">Boxes/sandbox-o-full.png</file>
         <file alias="Busy">Boxes/BusyOverlay.png</file>
+        <file alias="Frame">Boxes/sandbox-frame.png</file>
+        <file alias="Items">Boxes/sandbox-items.png</file>
+        <file alias="Sand">Boxes/sandbox-sand.png</file>
+        <file alias="Group">Boxes/sandbox-group.png</file>
+        <file alias="Group2">Boxes/sandbox-group+.png</file>
+        <file alias="Out">Boxes/sandbox-out.png</file>
+        <file alias="AutoDel">Boxes/DelOverlay.png</file>
+        <file alias="FrameDM">Boxes/sandbox-frameDM.png</file>
+    </qresource>
+    <qresource prefix="/Assets">
+        <file>Advanced.png</file>
+        <file>AdvancedD.png</file>
+        <file>Simple.png</file>
+        <file>SimpleD.png</file>
+        <file>background.png</file>
+        <file>sandboxie-logo.png</file>
+        <file>sandboxie-back.png</file>
+        <file>Classic.png</file>
+        <file>ClassicD.png</file>
+        <file>LayoutAndGroups.png</file>
     </qresource>
 </RCC>

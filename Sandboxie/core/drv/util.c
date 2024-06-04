@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
- * Copyright 2020-2021 David Xanatos, xanasoft.com
+ * Copyright 2020-2024 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -233,12 +233,13 @@ BOOLEAN UnicodeStringEndsWith(PCUNICODE_STRING pString1, PWCHAR pString2, BOOLEA
 
 BOOLEAN DoesRegValueExist(ULONG RelativeTo, WCHAR *Path, WCHAR *ValueName)
 {
-    WCHAR DummyBuffer[1] = {0}; // if we provide a NULL buffer this wil cause a memory pool leak someware in the kernel
+    WCHAR DummyBuffer[1] = {0}; // if we provide a NULL buffer, this will cause a memory pool leak somewhere in the kernel
     UNICODE_STRING Dummy = { 0, sizeof(DummyBuffer), DummyBuffer };
-    return GetRegString(RelativeTo, Path, ValueName, &Dummy);
+    NTSTATUS status = GetRegString(RelativeTo, Path, ValueName, &Dummy);
+    return (status == STATUS_SUCCESS || status == STATUS_OBJECT_TYPE_MISMATCH);
 }
 
-BOOLEAN GetRegString(ULONG RelativeTo, WCHAR *Path, WCHAR *ValueName, UNICODE_STRING* pData)
+NTSTATUS GetRegString(ULONG RelativeTo, const WCHAR *Path, const WCHAR *ValueName, UNICODE_STRING* pData)
 {
 	NTSTATUS status;
 	RTL_QUERY_REGISTRY_TABLE qrt[2];
@@ -246,16 +247,170 @@ BOOLEAN GetRegString(ULONG RelativeTo, WCHAR *Path, WCHAR *ValueName, UNICODE_ST
 	memzero(qrt, sizeof(qrt));
 	qrt[0].Flags = RTL_QUERY_REGISTRY_REQUIRED |
 		RTL_QUERY_REGISTRY_DIRECT |
+        RTL_QUERY_REGISTRY_TYPECHECK | // fixes security violation but causes STATUS_OBJECT_TYPE_MISMATCH when buffer to small
 		RTL_QUERY_REGISTRY_NOVALUE |
 		RTL_QUERY_REGISTRY_NOEXPAND;
-	qrt[0].Name = ValueName;
+	qrt[0].Name = (WCHAR *)ValueName;
 	qrt[0].EntryContext = pData;
-	qrt[0].DefaultType = REG_NONE;
+	qrt[0].DefaultType = (REG_SZ << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_NONE;
 
 	status = RtlQueryRegistryValues(
 		RelativeTo, Path, qrt, NULL, NULL);
 
-	return (status == STATUS_SUCCESS);
+    if (status == STATUS_OBJECT_TYPE_MISMATCH) {
+
+        qrt[0].DefaultType = (REG_EXPAND_SZ << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_NONE;
+
+	    status = RtlQueryRegistryValues(
+		    RelativeTo, Path, qrt, NULL, NULL);
+    }
+
+    return status;
+}
+
+_FX ULONG GetRegDword(const WCHAR *KeyPath, const WCHAR *ValueName)
+{
+    NTSTATUS status;
+    RTL_QUERY_REGISTRY_TABLE qrt[2];
+    UNICODE_STRING uni;
+    ULONG value;
+
+    value = -1;
+
+    uni.Length = 4;
+    uni.MaximumLength = 4;
+    uni.Buffer = (WCHAR *)&value;
+
+    memzero(qrt, sizeof(qrt));
+    qrt[0].Flags =  RTL_QUERY_REGISTRY_REQUIRED |
+        RTL_QUERY_REGISTRY_DIRECT |
+        RTL_QUERY_REGISTRY_TYPECHECK |
+        RTL_QUERY_REGISTRY_NOEXPAND;
+    qrt[0].Name = (WCHAR *)ValueName;
+    qrt[0].EntryContext = &uni;
+    qrt[0].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_NONE;
+
+    status = RtlQueryRegistryValues(
+        RTL_REGISTRY_ABSOLUTE, KeyPath, qrt, NULL, NULL);
+
+    if (status != STATUS_SUCCESS)
+        return 0;
+
+    if (value == -1) {
+
+        //
+        // if value is not string, RtlQueryRegistryValues writes
+        // it directly into EntryContext
+        //
+
+        value = *(ULONG *)&uni;
+    }
+
+    return value;
+}
+
+NTSTATUS SetRegValue(const WCHAR *KeyPath, const WCHAR *ValueName, const void *Data, ULONG uSize)
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    HANDLE handle = NULL;
+    UNICODE_STRING keyPath;
+    UNICODE_STRING valueName;
+    OBJECT_ATTRIBUTES objattrs;
+    ULONG disp;
+
+    if (!KeyPath || !ValueName || !Data)
+        return STATUS_INVALID_PARAMETER;
+
+    RtlInitUnicodeString(&keyPath, KeyPath);
+    InitializeObjectAttributes(&objattrs, &keyPath, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+    status = ZwCreateKey(&handle, KEY_WRITE, &objattrs, 0, NULL, REG_OPTION_NON_VOLATILE, &disp);
+    if (status == STATUS_SUCCESS) {
+
+        RtlInitUnicodeString(&valueName, ValueName);
+        status = ZwSetValueKey(handle, &valueName, 0, REG_BINARY, (PVOID)Data, uSize);
+    }
+
+    if(handle)
+        ZwClose(handle);
+
+    return status;
+}
+
+NTSTATUS GetRegValue(const WCHAR *KeyPath, const WCHAR *ValueName, PVOID* ppData, ULONG* pSize)
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    HANDLE handle = NULL;
+    UNICODE_STRING keyPath;
+    UNICODE_STRING valueName;
+    OBJECT_ATTRIBUTES objattrs;
+    ULONG disp;
+    ULONG length;
+    UCHAR buffer[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + 2048];
+    UCHAR* data = buffer;
+    ULONG data_len = 0;
+    
+    if (!KeyPath || !ValueName || !ppData || !pSize)
+        return STATUS_INVALID_PARAMETER;
+
+    RtlInitUnicodeString(&keyPath, KeyPath);
+    InitializeObjectAttributes(&objattrs, &keyPath, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+    status = ZwOpenKey(&handle, KEY_WRITE, &objattrs);
+    if (status == STATUS_SUCCESS) {
+
+        RtlInitUnicodeString(&valueName, ValueName);
+        status = ZwQueryValueKey(handle, &valueName, KeyValuePartialInformation, data, sizeof(buffer), &length);
+        if (status == STATUS_BUFFER_OVERFLOW || status == STATUS_BUFFER_TOO_SMALL) {
+
+            data_len = length;
+            data = Mem_Alloc(Driver_Pool, data_len);
+            if (!data) {
+                data_len = 0;
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                goto finish;
+            }
+
+            status = ZwQueryValueKey(handle, &valueName, KeyValuePartialInformation, data, data_len, &length);
+        }
+
+        if (NT_SUCCESS(status)) {
+
+            //
+            // guard the data copying as the pointer we get may be from user space!!!
+            //
+
+            __try {
+
+                PKEY_VALUE_PARTIAL_INFORMATION info = (PKEY_VALUE_PARTIAL_INFORMATION)data;
+
+                if (!*ppData) {
+                    *ppData = Mem_Alloc(Driver_Pool, info->DataLength);
+                    if (!*ppData) {
+                        status = STATUS_INSUFFICIENT_RESOURCES;
+                        goto finish;
+                    }
+                }
+                else if (info->DataLength > *pSize) {
+                    status = STATUS_BUFFER_TOO_SMALL;
+                    goto finish;
+                }
+
+                *pSize = info->DataLength;
+                memcpy(*ppData, info->Data, info->DataLength);
+
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                status = GetExceptionCode();
+            }
+        }
+    }
+
+finish:
+    if(handle)
+        ZwClose(handle);
+
+    if (data_len)
+        Mem_Free(data, data_len);
+
+    return status;
 }
 
 void *memmem(const void *pSearchBuf,
@@ -319,7 +474,7 @@ _FX BOOLEAN MyIsCallerSigned(void)
     NTSTATUS status;
 
     // in test signing mode don't verify the signature
-    if (MyIsTestSigning())
+    if (Driver_OsTestSigning)
         return TRUE;
 
     status = KphVerifyCurrentProcess();
@@ -341,15 +496,17 @@ _FX BOOLEAN MyIsCallerSigned(void)
 // MyValidateCertificate
 //---------------------------------------------------------------------------
 
-BOOLEAN Driver_Certified = FALSE;
-
 NTSTATUS KphValidateCertificate();
+
+extern wchar_t g_uuid_str[40];
+void InitFwUuid();
 
 _FX NTSTATUS MyValidateCertificate(void)
 {
-    NTSTATUS status = KphValidateCertificate();
+    if(!*g_uuid_str)
+        InitFwUuid();
 
-    Driver_Certified = NT_SUCCESS(status);
+    NTSTATUS status = KphValidateCertificate();
 
     if (status == STATUS_ACCOUNT_EXPIRED)
         status = STATUS_SUCCESS;
@@ -361,6 +518,7 @@ _FX NTSTATUS MyValidateCertificate(void)
 //---------------------------------------------------------------------------
 // Util_GetProcessPidByName
 //---------------------------------------------------------------------------
+
 
 _FX HANDLE Util_GetProcessPidByName(const WCHAR* name) 
 {
@@ -404,4 +562,121 @@ retry:
     }
 
     return pid;
+}
+
+
+//---------------------------------------------------------------------------
+// Util_IsCsrssProcess
+//---------------------------------------------------------------------------
+
+NTKERNELAPI PCHAR NTAPI PsGetProcessImageFileName(_In_ PEPROCESS Process);
+
+_FX BOOLEAN Util_IsCsrssProcess(HANDLE pid)
+{
+    PEPROCESS ProcessObject;
+    NTSTATUS status;
+    PCHAR ImageFileName;
+    BOOLEAN ret = FALSE;
+
+    if (!MyIsProcessRunningAsSystemAccount(pid))
+        return FALSE;
+
+    status = PsLookupProcessByProcessId(pid, &ProcessObject);
+    if (NT_SUCCESS(status)) {
+
+        ImageFileName = PsGetProcessImageFileName(ProcessObject);
+
+        ret = (_stricmp(ImageFileName, "csrss.exe") == 0);
+
+        ObDereferenceObject(ProcessObject);
+    }
+
+    return ret;
+}
+
+
+//---------------------------------------------------------------------------
+// Util_IsProtectedProcess
+//---------------------------------------------------------------------------
+
+NTKERNELAPI BOOLEAN NTAPI PsIsProtectedProcess(_In_ PEPROCESS Process);
+
+_FX BOOLEAN Util_IsProtectedProcess(HANDLE pid)
+{
+    PEPROCESS ProcessObject;
+    NTSTATUS status;
+    BOOLEAN ret = FALSE;
+
+    //
+    // Check if this process is a protected process,
+    // as protected processes are integral windows processes or trusted antimalware services
+    // we allow such processes to access even confidential sandboxed programs.
+    //
+
+    status = PsLookupProcessByProcessId(pid, &ProcessObject);
+    if (NT_SUCCESS(status)) {
+        
+        ret = PsIsProtectedProcess(ProcessObject);
+
+        ObDereferenceObject(ProcessObject);
+    }
+
+    return ret;
+}
+
+
+//---------------------------------------------------------------------------
+// Util_GetTime
+//---------------------------------------------------------------------------
+
+
+_FX LARGE_INTEGER Util_GetTimestamp(void)
+{
+    static LARGE_INTEGER gMonitorStartCounter;
+    static LARGE_INTEGER gPerformanceFrequency;
+    static LARGE_INTEGER gMonitorStartTime = { 0 };
+
+    if (gMonitorStartTime.QuadPart == 0) {
+        KeQuerySystemTime(&gMonitorStartTime);
+        gMonitorStartCounter = KeQueryPerformanceCounter(&gPerformanceFrequency);
+    }
+
+	LARGE_INTEGER Time;
+	LARGE_INTEGER CounterNow = KeQueryPerformanceCounter(NULL);
+	LONGLONG CounterOff = CounterNow.QuadPart - gMonitorStartCounter.QuadPart;
+
+	Time.QuadPart = gMonitorStartTime.QuadPart +
+	(10000000 * (CounterOff / gPerformanceFrequency.QuadPart)) +
+		((10000000 * (CounterOff % gPerformanceFrequency.QuadPart)) / gPerformanceFrequency.QuadPart);
+
+	return Time;
+}
+
+
+//---------------------------------------------------------------------------
+// Util_CaptureStack
+//---------------------------------------------------------------------------
+
+
+ULONG Util_CaptureStack(_Out_ PVOID* Frames, _In_ ULONG Count)
+{
+    ULONG frames;
+
+    NT_ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
+
+    frames = RtlWalkFrameChain(Frames, Count, 0);
+
+    if (KeGetCurrentIrql() < DISPATCH_LEVEL)
+    {
+        if (frames >= Count)
+        {
+            return frames;
+        }
+
+        frames += RtlWalkFrameChain(&Frames[frames],
+                                    (Count - frames),
+                                    RTL_WALK_USER_MODE_STACK);
+    }
+
+    return frames;
 }

@@ -56,7 +56,7 @@ static HMODULE Dump_DbgHelpMod;
                             MiniDumpWithProcessThreadData | \
                             MiniDumpWithoutOptionalData | \
                             MiniDumpIgnoreInaccessibleMemory | \
-                            MiniDumpFilterTriage //0x001205a4  thats what WerFault.exe uses
+                            MiniDumpFilterTriage //0x001205a4  that's what WerFault.exe uses
 
 #define DUMP_FLAGS_EXTENDED MiniDumpWithFullMemory | \
                             MiniDumpWithHandleData | \
@@ -95,7 +95,7 @@ static LONG __stdcall Dump_CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pEx)
 #ifdef _M_IX86
     if (pEx->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW)
     {
-        // be sure that we have enought space...
+        // be sure that we have enough space...
         static char MyStack[1024 * 128];
         // it assumes that DS and SS are the same!!! (this is the case for Win32)
         // change the stack only if the selectors are the same (this is the case for Win32)
@@ -106,13 +106,16 @@ static LONG __stdcall Dump_CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pEx)
     }
 #endif
 
-    SbieApi_Log(2224, L"%S [%S]", Dll_ImageName, Dll_BoxName);
+	if (pEx->ExceptionRecord->ExceptionCode == DBG_PRINTEXCEPTION_C || pEx->ExceptionRecord->ExceptionCode == DBG_PRINTEXCEPTION_WIDE_C)
+		return EXCEPTION_CONTINUE_SEARCH;
+
+    SbieApi_Log(2224, L"%S (0x%08X) [%S]", Dll_ImageName, pEx->ExceptionRecord->ExceptionCode, Dll_BoxName);
 
     BOOLEAN bSuccess = FALSE;
     HANDLE hFile;
 
     wchar_t szMiniDumpFileName[128];
-    Sbie_snwprintf(szMiniDumpFileName, 128, L"%s.%lld.dmp", Dll_ImageName, GetCurCycle);
+    Sbie_snwprintf(szMiniDumpFileName, 128, L"%s.%lld.dmp", Dll_ImageName, GetCurCycle());
 
     wchar_t szMiniDumpFilePath[MAX_PATH] = { 0 };
     Sbie_snwprintf(szMiniDumpFilePath, MAX_PATH, L"%s\\%s", Dll_BoxFilePath, szMiniDumpFileName);
@@ -149,7 +152,7 @@ static LONG __stdcall Dump_CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pEx)
         Sbie_snwprintf(szMiniDumpMessage, 256, L"%s crashed!\r\nCrashdump creation failed.", Dll_ImageName);
     else
         Sbie_snwprintf(szMiniDumpMessage, 256, L"%s crashed!\r\nCrashdump saved to \"%s\".", Dll_ImageName, szMiniDumpFileName);
-    SbieApi_MonitorPut2(MONITOR_OTHER | MONITOR_TRACE, szMiniDumpMessage, FALSE);
+    SbieApi_MonitorPutMsg(MONITOR_OTHER | MONITOR_TRACE, szMiniDumpMessage);
 
     // or return one of the following:
     // - EXCEPTION_CONTINUE_SEARCH      // this will trigger the "normal" OS error-dialog
@@ -173,7 +176,7 @@ ALIGNED LPTOP_LEVEL_EXCEPTION_FILTER Dump_SetUnhandledExceptionFilter(
 
 
 //---------------------------------------------------------------------------
-// Dump_SetUnhandledExceptionFilter
+// Dump_MiniDumpWriteDump
 //---------------------------------------------------------------------------
 
 
@@ -204,10 +207,12 @@ ALIGNED LPTOP_LEVEL_EXCEPTION_FILTER Dump_SetUnhandledExceptionFilter(
 
 _FX int Dump_Init(void)
 {
+    HMODULE module = Dll_Kernel32;
+
     if (Dump_DbgHelpMod != NULL)
         return 2;
 
-    // Initialize the member, so we do not load the dll after the exception has occured
+    // Initialize the member, so we do not load the dll after the exception has occurred
     // which might be not possible anymore...
     Dump_DbgHelpMod = LoadLibrary(L"dbghelp.dll");
     if (!Dump_DbgHelpMod )
@@ -240,6 +245,9 @@ _FX int Dump_Init(void)
 
     SBIEDLL_HOOK(Dump_, SetUnhandledExceptionFilter);
 
-    //SbieApi_MonitorPut2(MONITOR_OTHER | MONITOR_TRACE, L"Minidump enabled", FALSE);
+    // Register Vectored Exception Handler
+    //AddVectoredExceptionHandler(0, Dump_CrashHandlerExceptionFilter);
+
+    //SbieApi_MonitorPutMsg(MONITOR_OTHER | MONITOR_TRACE, L"Minidump enabled", FALSE);
     return 1;
 }

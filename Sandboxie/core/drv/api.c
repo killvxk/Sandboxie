@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
- * Copyright 2020 David Xanatos, xanasoft.com
+ * Copyright 2020-2024 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -24,10 +24,15 @@
 #include "api.h"
 #include "process.h"
 #include "util.h"
+#ifndef _M_ARM64
 #include "hook.h"
+#endif
 #include "session.h"
 #include "common/my_version.h"
 #include "log_buff.h"
+#define KERNEL_MODE
+#include "verify.h"
+#include "dyn_data.h"
 
 
 //---------------------------------------------------------------------------
@@ -74,6 +79,10 @@ static NTSTATUS Api_ProcessExemptionControl(PROCESS *proc, ULONG64 *parms);
 
 static NTSTATUS Api_QueryDriverInfo(PROCESS *proc, ULONG64 *parms);
 
+       NTSTATUS Api_SetSecureParam(PROCESS *proc, ULONG64 *parms);
+
+       NTSTATUS Api_GetSecureParam(PROCESS *proc, ULONG64 *parms);
+
 
 //---------------------------------------------------------------------------
 
@@ -108,6 +117,8 @@ static LOG_BUFFER* Api_LogBuffer = NULL;
 
 static volatile LONG Api_UseCount = -1;
 
+
+static const WCHAR* Api_ParamPath = L"\\REGISTRY\\MACHINE\\SECURITY\\SBIE";
 
 //---------------------------------------------------------------------------
 // Api_Init
@@ -194,7 +205,10 @@ _FX BOOLEAN Api_Init(void)
 
 	Api_SetFunction(API_PROCESS_EXEMPTION_CONTROL, Api_ProcessExemptionControl);
 
-    Api_SetFunction(API_QUERY_DRIVER_INFO, Api_QueryDriverInfo);
+    Api_SetFunction(API_QUERY_DRIVER_INFO,  Api_QueryDriverInfo);
+
+    Api_SetFunction(API_SET_SECURE_PARAM,   Api_SetSecureParam);
+    Api_SetFunction(API_GET_SECURE_PARAM,   Api_GetSecureParam);
 
     if ((! Api_Functions) || (Api_Functions == (void *)-1))
         return FALSE;
@@ -410,7 +424,9 @@ _FX BOOLEAN Api_FastIo_DEVICE_CONTROL(
     ULONG64 user_args[API_NUM_ARGS];
     PROCESS *proc;
     P_Api_Function func_ptr;
+#ifdef _DEBUG
     BOOLEAN ApcsDisabled;
+#endif
 
     //
     // SeFilterToken in kernel mode
@@ -485,7 +501,9 @@ _FX BOOLEAN Api_FastIo_DEVICE_CONTROL(
     // find calling process
     //
 
+#ifdef _DEBUG
     ApcsDisabled = KeAreApcsDisabled();
+#endif
 
     if (PsGetCurrentProcessId() == Api_ServiceProcessId)
         proc = NULL;
@@ -556,14 +574,17 @@ _FX BOOLEAN Api_FastIo_DEVICE_CONTROL(
 _FX NTSTATUS Api_GetVersion(PROCESS *proc, ULONG64 *parms)
 {
     API_GET_VERSION_ARGS *args = (API_GET_VERSION_ARGS *)parms;
-    size_t len;
-    WCHAR *pwcResult = args->string.val;
 
-    if (pwcResult == NULL)
-        return STATUS_INVALID_PARAMETER;
-    len = (wcslen(Driver_Version) + 1) * sizeof(WCHAR);
-    ProbeForWrite(pwcResult, len, sizeof(WCHAR));
-    memcpy(pwcResult, Driver_Version, len);
+    if (args->string.val != NULL) {
+        size_t len = (wcslen(Driver_Version) + 1) * sizeof(WCHAR);
+        ProbeForWrite(args->string.val, len, sizeof(WCHAR));
+        memcpy(args->string.val, Driver_Version, len);
+    }
+
+    if (args->abi_ver.val != NULL) {
+        ProbeForWrite(args->abi_ver.val, sizeof(ULONG), sizeof(ULONG));
+        *args->abi_ver.val = MY_ABI_VERSION;
+    }
 
     return STATUS_SUCCESS;
 }
@@ -597,8 +618,8 @@ _FX NTSTATUS Api_LogMessage(PROCESS *proc, ULONG64 *parms)
         msgid = MSG_1314;
     else if (msgid == 1307)
         msgid = MSG_1307;
-    else if (msgid == 6004)
-        msgid = MSG_6004;
+    else if (msgid == 6004 || msgid == 6008 || msgid == 6009)
+        msgid = msgid - 6001 + MSG_6001;
     else
         msgid = MSG_2301; // unknown message
 
@@ -694,7 +715,7 @@ _FX void Api_AddMessage(
         }
 	}
 	// else // this can only happen when the entire buffer is to small to hold this entire entry
-		// if loging fails we can't log this error :/
+		// if logging fails we can't log this error :/
 
 	Api_LeaveCriticalSection(irql);
 }
@@ -1146,13 +1167,13 @@ _FX NTSTATUS Api_SetServicePort(PROCESS *proc, ULONG64 *parms)
 _FX BOOLEAN Api_CopyBoxNameFromUser(
     WCHAR *boxname34, const WCHAR *user_boxname)
 {
-    wmemzero(boxname34, 34);
+    wmemzero(boxname34, BOXNAME_COUNT);
     if (user_boxname) {
         ProbeForRead((WCHAR *)user_boxname,
-                     sizeof(WCHAR) * 32,
+                     sizeof(WCHAR) * (BOXNAME_COUNT - 2),
                      sizeof(UCHAR));
         if (user_boxname[0])
-            wcsncpy(boxname34, user_boxname, 32);
+            wcsncpy(boxname34, user_boxname, (BOXNAME_COUNT - 2));
     }
     if (boxname34[0] && Box_IsValidName(boxname34))
         return TRUE;
@@ -1280,9 +1301,6 @@ _FX NTSTATUS Api_QueryDriverInfo(PROCESS* proc, ULONG64* parms)
 {
     NTSTATUS status = STATUS_SUCCESS;
     API_QUERY_DRIVER_INFO_ARGS *args = (API_QUERY_DRIVER_INFO_ARGS *)parms;
-	
-    if (proc)
-        status = STATUS_NOT_IMPLEMENTED;
 
     __try {
 
@@ -1301,9 +1319,7 @@ _FX NTSTATUS Api_QueryDriverInfo(PROCESS* proc, ULONG64* parms)
             if (Obj_CallbackInstalled)
                 FeatureFlags |= SBIE_FEATURE_FLAG_OB_CALLBACKS;
 
-            extern UCHAR SandboxieLogonSid[SECURITY_MAX_SID_SIZE];
-            if (SandboxieLogonSid[0] != 0)
-                FeatureFlags |= SBIE_FEATURE_FLAG_SBIE_LOGIN;
+            FeatureFlags |= SBIE_FEATURE_FLAG_SBIE_LOGIN;
 
 #ifdef HOOK_WIN32K
             extern ULONG Syscall_MaxIndex32;
@@ -1311,26 +1327,48 @@ _FX NTSTATUS Api_QueryDriverInfo(PROCESS* proc, ULONG64* parms)
                 FeatureFlags |= SBIE_FEATURE_FLAG_WIN32K_HOOK;
 #endif
 
-            if (Driver_Certified) {
+            if (CERT_IS_LEVEL(Verify_CertInfo, eCertStandard)) {
 
                 FeatureFlags |= SBIE_FEATURE_FLAG_CERTIFIED;
 
+                FeatureFlags |= SBIE_FEATURE_FLAG_SECURITY_MODE;
                 FeatureFlags |= SBIE_FEATURE_FLAG_PRIVACY_MODE;
                 FeatureFlags |= SBIE_FEATURE_FLAG_COMPARTMENTS;
             }
+
+            if (Dyndata_Active) {
+
+                FeatureFlags |= SBIE_FEATURE_FLAG_DYNDATA_OK;
+
+                if (Dyndata_Config.Flags & DYNDATA_FLAG_EXP)
+                    FeatureFlags |= SBIE_FEATURE_FLAG_DYNDATA_EXP;
+            }
+
+#ifdef _M_ARM64
+            FeatureFlags |= SBIE_FEATURE_FLAG_NEW_ARCH;
+#endif
 
             *data = FeatureFlags;
         }
         else if (args->info_class.val == -1) {
 
-            extern ULONGLONG Verify_CertInfo;
             if (args->info_len.val >= sizeof(ULONGLONG)) {
                 ULONGLONG* data = args->info_data.val;
-                *data = Verify_CertInfo;
+                *data = Verify_CertInfo.State;
             }
             else if (args->info_len.val == sizeof(ULONG)) {
                 ULONG* data = args->info_data.val;
-                *data = (ULONG)(Verify_CertInfo & 0xFFFFFFFF); // drop optional data
+                *data = (ULONG)(Verify_CertInfo.State & 0xFFFFFFFF); // drop optional data
+            }
+            else
+                status = STATUS_BUFFER_TOO_SMALL;
+        }
+        else if (args->info_class.val == -2) {
+
+            if (args->info_len.val >= 37 * sizeof(wchar_t)) {
+                wchar_t* hwid = args->info_data.val;
+                extern wchar_t g_uuid_str[40];
+                wmemcpy(hwid, g_uuid_str, 37);
             }
             else
                 status = STATUS_BUFFER_TOO_SMALL;
@@ -1342,5 +1380,120 @@ _FX NTSTATUS Api_QueryDriverInfo(PROCESS* proc, ULONG64* parms)
         status = GetExceptionCode();
     }
 
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// Api_SetSecureParam
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS Api_SetSecureParam(PROCESS* proc, ULONG64* parms)
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    API_SECURE_PARAM_ARGS *args = (API_SECURE_PARAM_ARGS *)parms;
+    WCHAR* name = NULL;
+    ULONG  name_len = 0;
+    UCHAR* data = NULL;
+    ULONG  data_len = 0;
+
+    if (proc) {
+        status = STATUS_NOT_IMPLEMENTED;
+        goto finish;
+    }
+
+    if (!MyIsCallerSigned()) {
+        status = STATUS_ACCESS_DENIED;
+        goto finish;
+    }
+
+    __try {
+
+        name_len = (wcslen(args->param_name.val) + 1) * sizeof(WCHAR);
+        name = Mem_Alloc(Driver_Pool, name_len);
+        memcpy(name, args->param_name.val, name_len);
+
+        data_len = args->param_size.val;
+        data = Mem_Alloc(Driver_Pool, data_len);
+        memcpy(data, args->param_data.val, data_len);
+
+        status = SetRegValue(Api_ParamPath, name, data, data_len);
+
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    if (name)
+        Mem_Free(name, name_len);
+    if (data)
+        Mem_Free(data, data_len);
+
+finish:
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// Api_GetSecureParam
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS Api_GetSecureParam(PROCESS* proc, ULONG64* parms)
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    API_SECURE_PARAM_ARGS *args = (API_SECURE_PARAM_ARGS *)parms;
+	HANDLE handle = NULL;
+    WCHAR* name = NULL;
+    ULONG  name_len = 0;
+
+    if (proc) {
+        status = STATUS_NOT_IMPLEMENTED;
+        goto finish;
+    }
+
+    if (!args->param_data.val || !args->param_size.val) {
+        status = STATUS_INVALID_PARAMETER;
+        goto finish;
+    }
+
+    __try {
+
+        name_len = (wcslen(args->param_name.val) + 3 + 1) * sizeof(WCHAR);
+        name = Mem_Alloc(Driver_Pool, name_len);
+        wcscpy(name, args->param_name.val);
+
+        PVOID val_ptr = args->param_data.val;
+        ULONG val_len = args->param_size.val;
+        status = GetRegValue(Api_ParamPath, name, &val_ptr, &val_len);
+        if (NT_SUCCESS(status))
+        {
+            if (args->param_size_out.val)
+                *args->param_size_out.val = val_len;
+
+            if(args->param_verify.val)
+            {
+                wcscat(name, L"Sig");
+
+                UCHAR data_sig[128];
+                PVOID sig_ptr = data_sig;
+                ULONG sig_len = sizeof(data_sig);
+                status = GetRegValue(Api_ParamPath, name, &sig_ptr, &sig_len);
+                if (NT_SUCCESS(status)) 
+                    status = KphVerifyBuffer(val_ptr, val_len, sig_ptr, sig_len);
+            }
+        }
+
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    if (name)
+        Mem_Free(name, name_len);
+
+    if(handle)
+        ZwClose(handle);
+
+finish:
     return status;
 }

@@ -45,8 +45,8 @@ __inline uint qHash( const QVariant & var )
         case QVariant::DateTime:
         case QVariant::Url:
         case QVariant::Locale:
-        case QVariant::RegExp:
-                return qHash( var.toString() );
+        //case QVariant::RegExp:
+        //        return qHash( var.toString() );
             break;
         case QVariant::Map:
         case QVariant::List:
@@ -83,20 +83,20 @@ public:
 
 	bool IsColumnEnabled(int column)
 	{
-		return m_Columns.contains(column);
+		return !m_ColumnsOff.contains(column);
 	}
 
 	void SetColumnEnabled(int column, bool set)
 	{
 		if (!set)
-			m_Columns.remove(column);
+			m_ColumnsOff.insert(column);
 		else
-			m_Columns.insert(column);
+			m_ColumnsOff.remove(column);
 	}
 
 protected:
 
-	QSet<int>				m_Columns;
+	QSet<int>				m_ColumnsOff;
 };
 
 class MISCHELPERS_EXPORT QTreeViewEx: public QTreeView
@@ -253,7 +253,7 @@ private slots:
 	{
 		QAbstractItemModel* pModel = model();
 
-		if(m_Columns.isEmpty())
+		if(m_pMenu->actions().isEmpty())
 		{
 			for(int i=0; i < pModel->columnCount(); i++)
 			{

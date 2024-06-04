@@ -17,26 +17,23 @@ void COptionsWindow::LoadTemplates()
 	QStringList Templates;
 	for (int index = 0; ; index++)
 	{
-		QString Value = m_pBox->GetAPI()->SbieIniGet("", "", index);
+		QString Value = m_pBox->GetAPI()->SbieIniGet2("", "", index, false, true, true);
 		if (Value.isNull())
 			break;
 		Templates.append(Value);
 	}
 
-	for (QStringList::iterator I = Templates.begin(); I != Templates.end();)
+	foreach(const QString& Name, Templates)
 	{
-		if (I->left(9).compare("Template_", Qt::CaseInsensitive) != 0 || *I == "Template_KnownConflicts") {
-			I = Templates.erase(I);
+		if (Name.left(9).compare("Template_", Qt::CaseInsensitive) != 0)
 			continue;
-		}
 	
-		QString Name = *I++;
-		QString Category = m_pBox->GetAPI()->SbieIniGet(Name, "Tmpl.Class", 0x40000000L); // CONF_GET_NO_GLOBAL);
-		QString Title = m_pBox->GetAPI()->SbieIniGet(Name, "Tmpl.Title", 0x40000000L); // CONF_GET_NO_GLOBAL);
-		QString Hide = m_pBox->GetAPI()->SbieIniGet(Name, "Tmpl.Hide", 0x40000000L); // CONF_GET_NO_GLOBAL);
+		QString Category = m_pBox->GetAPI()->SbieIniGet2(Name, "Tmpl.Class", 0, false, true, true);
+		QString Title = m_pBox->GetAPI()->SbieIniGet2(Name, "Tmpl.Title", 0, false, true, true);
+		QString Hide = m_pBox->GetAPI()->SbieIniGet2(Name, "Tmpl.Hide", 0, false, true, true);
 		if (Hide == "y" || Hide == "Y")
 			continue;
-		if (Name == "Template_ScreenReader")
+		if (Name == "Template_ScreenReader" || Name == "Template_KnownConflicts")
 			continue;
 
 		if (Title.left(1) == "#")
@@ -124,11 +121,12 @@ void COptionsWindow::ShowTemplates()
 			continue;
 
 		if (I.key().isEmpty())
-			continue; // dont show templates without a category (these are usually deprecated templates)
+			continue; // don't show templates without a category (these are usually deprecated templates)
 
 		QString Name = I.value().first.mid(9);
 
 		QTreeWidgetItem* pItem = new QTreeWidgetItem();
+		pItem->setData(0, Qt::UserRole, I.key());
 		pItem->setText(0, GetCategoryName(I.key()));
 		pItem->setData(1, Qt::UserRole, I.value().first);
 		pItem->setText(1, I.value().second);
@@ -177,10 +175,11 @@ void COptionsWindow::OnTemplateDoubleClicked(QTreeWidgetItem* pItem, int Column)
 	QSharedPointer<CSbieIni> pTemplate = QSharedPointer<CSbieIni>(new CSbieIni(pItem->data(1, Qt::UserRole).toString(), m_pBox->GetAPI()));
 
 	COptionsWindow OptionsWindow(pTemplate, pItem->text(1));
+	QPoint ParentPos = mapToGlobal(rect().topLeft());
+	OptionsWindow.move(ParentPos.x() + 30, ParentPos.y() + 10);
 	OptionsWindow.exec();
 
-	if(pItem->text(0) == "Local")
-		LoadTemplates();
+	// todo update name if it changed
 }
 
 void COptionsWindow::OnAddTemplates()
@@ -208,20 +207,38 @@ void COptionsWindow::OnAddTemplates()
 	LoadTemplates();
 }
 
-void COptionsWindow::OnDelTemplates()
+void COptionsWindow::OnTemplateWizard()
+{
+	CTemplateWizard::ETemplateType Type = (CTemplateWizard::ETemplateType)((QAction*)sender())->data().toInt();
+	if (CSandBox* pBox = qobject_cast<CSandBox*>(m_pBox.data())) {
+		if (CTemplateWizard::CreateNewTemplate(pBox, Type, this)) {
+			LoadTemplates();
+		}
+	}
+}
+
+void COptionsWindow::OnOpenTemplate()
 {
 	QTreeWidgetItem* pItem = ui.treeTemplates->currentItem();
-	if (!pItem || pItem->text(0) != "Local")
+	if (pItem)
+		OnTemplateDoubleClicked(pItem, 0);
+}
+
+void COptionsWindow::OnDelTemplates()
+{
+	if (QMessageBox("Sandboxie-Plus", tr("Do you really want to delete the selected local template(s)?"), QMessageBox::Question, QMessageBox::Yes, QMessageBox::No | QMessageBox::Default | QMessageBox::Escape, QMessageBox::NoButton, this).exec() != QMessageBox::Yes)
+		return;
+
+	foreach(QTreeWidgetItem * pItem, ui.treeTemplates->selectedItems())
 	{
-		QMessageBox::critical(this, "Sandboxie-Plus", tr("Only local templates can be removed!"));
-		return;
+		if (!pItem || pItem->data(0, Qt::UserRole).toString() != "Local") {
+			QMessageBox::critical(this, "Sandboxie-Plus", tr("Only local templates can be removed!"));
+			break;
+		}
+
+		// delete section
+		m_pBox->GetAPI()->SbieIniSet(pItem->data(1, Qt::UserRole).toString(), "*", "");
 	}
-
-	if (QMessageBox("Sandboxie-Plus", tr("Do you really want to delete the selected local template?"), QMessageBox::Question, QMessageBox::Yes, QMessageBox::No | QMessageBox::Default | QMessageBox::Escape, QMessageBox::NoButton, this).exec() != QMessageBox::Yes)
-		return;
-
-	// delete section
-	m_pBox->GetAPI()->SbieIniSet(pItem->data(1, Qt::UserRole).toString(), "*", "");
 
 	LoadTemplates();
 }
@@ -260,7 +277,19 @@ void COptionsWindow::LoadFolders()
 
 void COptionsWindow::OnFolderChanged()
 {
-	//CPathEdit* pEdit = (CPathEdit*)sender();
+	CPathEdit* pEdit = (CPathEdit*)sender();
+
+	QSharedPointer<CSbieIni> pTemplateSettings = QSharedPointer<CSbieIni>(new CSbieIni("TemplateSettings", m_pBox->GetAPI()));
+
+	QString Folder = pEdit->property("key").toString();
+	QString Test = pTemplateSettings->GetText(Folder + ":ExpectFile", "", false, true, true);
+	QString Path = pEdit->GetText();
+	if (!Test.isEmpty() && !Path.isEmpty())
+	{
+		if (!QFile::exists(Path + "\\" + Test))
+			QMessageBox::warning(this, "Sandboxie-Plus", tr("An alternate location for '%1'\nshould contain the following file:\n\n%2\n\nThe selected location does not contain this file.\nPlease select a folder which contains this file.").arg(Folder).arg(Test));
+	}
+
 	m_FoldersChanged = true;
 	OnOptChanged();
 }
@@ -280,8 +309,9 @@ void COptionsWindow::ShowFolders()
 
 		CPathEdit* pEdit = new CPathEdit(true);
 		pEdit->SetWindowsPaths();
-		pEdit->SetDefault(pTemplateSettings->GetText(Folder));
+		pEdit->SetDefault(pTemplateSettings->GetText(Folder, "", false, true, true));
 		pEdit->SetText(pTemplateSettings->GetText(Folder + "." + UserName));
+		pEdit->setProperty("key", Folder);
 		connect(pEdit, SIGNAL(textChanged(const QString&)), this, SLOT(OnFolderChanged()));
 		ui.treeFolders->setItemWidget(pItem, 1, pEdit);
 	}

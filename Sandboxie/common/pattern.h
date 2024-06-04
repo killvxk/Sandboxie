@@ -71,6 +71,24 @@ const WCHAR *Pattern_Source(PATTERN *pat);
 ULONG Pattern_Level(PATTERN *pat);
 
 //
+// Pattern_Aux:  returns the associated auxiliary data.
+//
+
+PVOID* Pattern_Aux(PATTERN *pat);
+
+//
+// Pattern_Wildcards:  returns count of wildcards in the pattern, not counting the trailing * when present
+//
+
+USHORT Pattern_Wildcards(PATTERN *pat);
+
+//
+// Pattern_Exact:  returns true if the pattern has no wildcard at the end
+//
+
+BOOLEAN Pattern_Exact(PATTERN *pat);
+
+//
 // Pattern_Match:  returns TRUE if 'string' matches PATTERN object 'pattern'.
 // If 'lower' was TRUE at time of Pattern_Create(), the 'string' passed here
 // should be all lowercase characters.
@@ -78,6 +96,18 @@ ULONG Pattern_Level(PATTERN *pat);
 
 BOOLEAN Pattern_Match(PATTERN *pat, const WCHAR *string, int string_len);
 int Pattern_MatchX(PATTERN *pat, const WCHAR *string, int string_len);
+
+//
+// Pattern_MatchPathList:  match a specific path
+//
+
+#define MATCH_FLAG_EXACT    0x01
+#define MATCH_FLAG_AUX      0x02
+
+int Pattern_MatchPathList(
+    WCHAR* path_lwr, ULONG path_len, LIST* list, ULONG* plevel, ULONG* pflags, USHORT* pwildc, PATTERN **found);
+BOOLEAN Pattern_MatchPathListEx(
+    WCHAR* path_lwr, ULONG path_len, LIST* list, ULONG* plevel, int* pmatch_len, ULONG* pflags, USHORT* pwildc, const WCHAR** patsrc);
 
 //---------------------------------------------------------------------------
 

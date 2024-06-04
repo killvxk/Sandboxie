@@ -1,6 +1,5 @@
-/*
- * 
- * Copyright (c) 2020, David Xanatos
+/* 
+ * Copyright (c) 2020-2023, David Xanatos
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -15,6 +14,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+
 #include "stdafx.h"
 #include <QDebug>
 #include <QStandardPaths>
@@ -31,6 +31,7 @@ typedef long NTSTATUS;
 #include "SbieDefs.h"
 
 #include "..\..\Sandboxie\common\win32_ntddk.h"
+#include "..\..\Sandboxie\common\defines.h"
 
 #include "..\..\Sandboxie\core\drv\api_defs.h"
 #include "..\..\Sandboxie\core\drv\api_flags.h"
@@ -41,6 +42,7 @@ typedef long NTSTATUS;
 #include "..\..\Sandboxie\core\svc\sbieiniwire.h"
 #include "..\..\Sandboxie\core\svc\QueueWire.h"
 #include "..\..\Sandboxie\core\svc\InteractiveWire.h"
+#include "..\..\Sandboxie\core\svc\MountManagerWire.h"
 
 int _SB_STATUS_type = qRegisterMetaType<SB_STATUS>("SB_STATUS");
 
@@ -62,12 +64,16 @@ struct SSbieAPI
 
 		lastMessageNum = 0;
 		//lastRecordNum = 0;
+		traceBuffer = NULL;
+		traceBufferLen = 0;
 
 		SbieMsgDll = NULL;
 
 		SvcLock = 0;
 	}
 	~SSbieAPI() {
+		if (traceBuffer) 
+			free(traceBuffer);
 	}
 
 	NTSTATUS IoControl(ULONG64 *parms)
@@ -93,12 +99,14 @@ struct SSbieAPI
 	bool clearingBuffers;
 	ULONG lastMessageNum;
 	//ULONG lastRecordNum;
+	UCHAR* traceBuffer;
+	ULONG traceBufferLen;
 
 	HMODULE SbieMsgDll;
 
 	mutable volatile LONG   SvcLock;
-	mutable void*			SvcReq;
-	mutable void*			SvcRpl;
+	mutable MSG_HEADER*		SvcReq;
+	mutable CSbieAPI::SScopedVoid* SvcRpl;
 	mutable SB_STATUS		SvcStatus;
 };
 
@@ -126,15 +134,15 @@ CSbieAPI::CSbieAPI(QObject* parent) : QThread(parent)
 {
 	m = new SSbieAPI();
 
-	m_pGlobalSection = new CSbieIni("GlobalSettings", this, this);
-	m_pUserSection = new CSbieIni("UserSettings", this, this); // dummy
+	m_pGlobalSection = QSharedPointer<CSbieIni>(new CSbieIni("GlobalSettings", this));
+	m_pUserSection = QSharedPointer<CSbieIni>(new CSbieIni("UserSettings", this)); // dummy
 
+	m_IniReLoad = false;
 	m_bReloadPending = false;
-
-	m_LastTraceEntry = 0;
+	m_bBoxesDirty = false;
 
 	connect(&m_IniWatcher, SIGNAL(fileChanged(const QString&)), this, SLOT(OnIniChanged(const QString&)));
-	connect(this, SIGNAL(ProcessBoxed(quint32, const QString&, const QString&, quint32)), this, SLOT(OnProcessBoxed(quint32, const QString&, const QString&, quint32)));
+	connect(this, SIGNAL(ProcessBoxed(quint32, const QString&, const QString&, quint32, const QString&)), this, SLOT(OnProcessBoxed(quint32, const QString&, const QString&, quint32, const QString&)));
 }
 
 CSbieAPI::~CSbieAPI()
@@ -288,15 +296,15 @@ SB_STATUS CSbieAPI::Connect(bool takeOver, bool withQueue)
 	m->lastMessageNum = 0;
 	//m->lastRecordNum = 0;
 
-	// Note: this lib is not using all functions hence it can be compatible with multiple driver ABI revisions
-	QStringList CompatVersions = QStringList () << "5.55.0";
-	QString CurVersion = GetVersion();
-	if (!CompatVersions.contains(CurVersion))
-	{
-		NtClose(m->SbieApiHandle);
-		m->SbieApiHandle = INVALID_HANDLE_VALUE;	
-		return SB_ERR(SB_Incompatible, QVariantList() << CurVersion << CompatVersions.join(", "));
-	}
+	// Note: this lib is not using all functions, hence it can be compatible with multiple driver ABI revisions
+	//QStringList CompatVersions = QStringList () << "5.55.0";
+	//QString CurVersion = GetVersion();
+	//if (!CompatVersions.contains(CurVersion))
+	//{
+	//	NtClose(m->SbieApiHandle);
+	//	m->SbieApiHandle = INVALID_HANDLE_VALUE;	
+	//	return SB_ERR(SB_Incompatible, QVariantList() << CurVersion << CompatVersions.join(", "));
+	//}
 
 	SB_STATUS Status = SB_OK;
 	if (takeOver) {
@@ -317,7 +325,7 @@ SB_STATUS CSbieAPI::Connect(bool takeOver, bool withQueue)
 	if (m_UserName.isEmpty()) {
 		QString UserSection = GetUserSection(&m_UserName);
 		if(!UserSection.isEmpty())
-			m_pUserSection = new CSbieIni(UserSection, this, this);
+			m_pUserSection = QSharedPointer<CSbieIni>(new CSbieIni(UserSection, this));
 	}
 
 	if (m_UserDir.isEmpty()) {
@@ -342,7 +350,7 @@ SB_STATUS CSbieAPI::Disconnect()
 		m->SbieApiHandle = INVALID_HANDLE_VALUE;
 	}
 
-	// ensure the client thread is enteirly terminated to avoid the service keeping the reference
+	// ensure that the client thread is entirely terminated to avoid the service keeping the reference
 	// see SbieSvc PortDisconnectByCreateTime
 	QThread::msleep(250); 
 	if (m->PortHandle) {
@@ -357,6 +365,7 @@ SB_STATUS CSbieAPI::Disconnect()
 
 	m_SandBoxes.clear();
 	m_BoxedProxesses.clear();
+	m_bBoxesDirty = true;
 
 	emit StatusChanged();
 	return SB_OK;
@@ -367,7 +376,7 @@ bool CSbieAPI::IsConnected() const
 	return m->SbieApiHandle != INVALID_HANDLE_VALUE;
 }
 
-bool CSbieAPI__IsWow64()
+bool CSbieAPI::IsWow64()
 {
 	static bool IsWow64 = false;
 #ifndef _WIN64
@@ -401,18 +410,18 @@ SB_STATUS CSbieAPI__ConnectPort(SSbieAPI* m)
 	if (!NT_SUCCESS(status))
 		return SB_ERR(status); // 2203
 
-	// Function associate PortHandle with thread, and sends LPC_TERMINATION_MESSAGE to specified port immediatelly after call NtTerminateThread.
+	// Function associate PortHandle with thread, and sends LPC_TERMINATION_MESSAGE to specified port immediately after call NtTerminateThread.
 	//NtRegisterThreadTerminatePort(m->PortHandle);
 
 	m->SizeofPortMsg = sizeof(PORT_MESSAGE);
-	if (CSbieAPI__IsWow64())
+	if (CSbieAPI::IsWow64())
 		m->SizeofPortMsg += sizeof(ULONG) * 4;
 	m->MaxDataLen -= m->SizeofPortMsg;
 
 	return SB_OK;
 }
 
-SB_STATUS CSbieAPI__CallServer(SSbieAPI* m, MSG_HEADER* req, MSG_HEADER** prpl)
+SB_STATUS CSbieAPI__CallServer(SSbieAPI* m, MSG_HEADER* req, CSbieAPI::SScopedVoid* prpl)
 {
 	if (!m->PortHandle) {
 		SB_STATUS Status = CSbieAPI__ConnectPort(m);
@@ -472,7 +481,7 @@ SB_STATUS CSbieAPI__CallServer(SSbieAPI* m, MSG_HEADER* req, MSG_HEADER** prpl)
 		if (ResData[3] != CurSeqNumber)
 			return SB_ERR(SB_ServiceFail, QVariantList() << QString("mismatched reply")); // 2203
 
-		// clear highest byte of the size filed
+		// clear highest byte of the size field
 		ResData[3] = 0;
 		BuffLen = ((MSG_HEADER*)ResData)->length;
 	}
@@ -481,9 +490,8 @@ SB_STATUS CSbieAPI__CallServer(SSbieAPI* m, MSG_HEADER* req, MSG_HEADER** prpl)
 	if (BuffLen == 0)
 		return SB_ERR(SB_ServiceFail, QVariantList() << QString("null reply (msg %1 len %2)").arg(req->msgid, 8, 16).arg(req->length)); // 2203
 
-	// read remining chunks
-	MSG_HEADER*& rpl = *prpl;
-	rpl = (MSG_HEADER*)malloc(BuffLen);
+	// read remaining chunks
+	MSG_HEADER* rpl = (MSG_HEADER*)malloc(BuffLen);
 	Buffer = (UCHAR*)rpl;
 	for (;;)
 	{
@@ -520,6 +528,7 @@ SB_STATUS CSbieAPI__CallServer(SSbieAPI* m, MSG_HEADER* req, MSG_HEADER** prpl)
 			return SB_ERR(SB_ServiceFail, QVariantList() << QString("reply %1").arg(status, 8, 16), status); // 2203
 		}
 	}
+	prpl->Assign(rpl);
 
 	return SB_OK;
 }
@@ -535,13 +544,10 @@ SB_STATUS CSbieAPI__QueueCreate(SSbieAPI* m, const WCHAR* QueueName, HANDLE *out
 		return SB_ERR(STATUS_UNSUCCESSFUL);
 
 	NTSTATUS status = STATUS_SERVER_DISABLED;
-	QUEUE_CREATE_RPL *rpl = NULL;
-	CSbieAPI__CallServer(m, &req.h, (MSG_HEADER**)&rpl);
+	CSbieAPI::SScoped<QUEUE_CREATE_RPL> rpl;
+	CSbieAPI__CallServer(m, &req.h, &rpl);
 	if (rpl) 
-	{
 		status = rpl->h.status;
-		free(rpl);
-	}
 
 	if (!NT_SUCCESS(status)) {
 		CloseHandle((HANDLE)(ULONG_PTR)req.event_handle);
@@ -561,8 +567,8 @@ bool CSbieAPI::GetQueue()
 	wcscpy(req.queue_name, m->QueueName);
 
 	NTSTATUS status = STATUS_SERVER_DISABLED;
-	QUEUE_GETREQ_RPL *rpl = NULL;
-	CSbieAPI__CallServer(m, &req.h, (MSG_HEADER**)&rpl);
+	SScoped<QUEUE_GETREQ_RPL> rpl;
+	CSbieAPI__CallServer(m, &req.h, &rpl);
 	if (rpl)
 	{
 		status = rpl->h.status;
@@ -583,16 +589,17 @@ bool CSbieAPI::GetQueue()
 				case MAN_INET_BLOCKADE:
 					Data["id"] = (int)eInetBlockade;
 					break;
+				case -1:
+					Data["id"] = 0;
+					break;
 			}
 
 			emit QueuedRequest(rpl->client_pid, rpl->client_tid, rpl->req_id, Data);
 		}
-
-		free(rpl);
 	}
 
 	//if(status == STATUS_END_OF_FILE) // there are no more requests in the queue at this time
-	//	return false; // nothign more to do
+	//	return false; // nothing more to do
 
 	if (NT_SUCCESS(status))
 		return true; // we did something
@@ -623,12 +630,17 @@ void CSbieAPI::SendReplyData(quint32 RequestId, const QVariantMap& Result)
 			Data = QByteArray((char*)&rpl, sizeof(MAN_INET_BLOCKADE_RPL));
 			break;
 		}
+		default:
+		{
+			ULONG rpl[2];
+			rpl[0] = STATUS_SUCCESS;
+			rpl[1] = Result["retval"].toUInt();
+			Data = QByteArray((char*)&rpl, sizeof(rpl));
+		}
 	}
 
 	ULONG req_len = sizeof(QUEUE_PUTRPL_REQ) + Data.length();
-
-	QUEUE_PUTRPL_REQ *req;
-	req = (QUEUE_PUTRPL_REQ*)malloc(req_len);
+	SScoped<QUEUE_PUTRPL_REQ> req(malloc(req_len));
 	req->h.length = req_len;
 	req->h.msgid = MSGID_QUEUE_PUTRPL;
 	wcscpy(req->queue_name, m->QueueName);
@@ -637,15 +649,10 @@ void CSbieAPI::SendReplyData(quint32 RequestId, const QVariantMap& Result)
 	memcpy(req->data, Data.constData(), req->data_len);
 
 	NTSTATUS status = STATUS_SERVER_DISABLED;
-	QUEUE_PUTRPL_RPL *rpl = NULL;
-	CallServer(&req->h, (MSG_HEADER**)&rpl);
+	SScoped<QUEUE_PUTRPL_RPL> rpl;
+	CallServer(&req->h, &rpl);
 	if (rpl)
-	{
 		status = rpl->h.status;
-		free(rpl);
-	}
-
-	free(req);
 }
 
 void CSbieAPI::run()
@@ -662,7 +669,7 @@ void CSbieAPI::run()
 
 		if (InterlockedCompareExchange(&m->SvcLock, SVC_OP_STATE_EXEC, SVC_OP_STATE_START) == SVC_OP_STATE_START)
 		{
-			m->SvcStatus = CSbieAPI__CallServer(m, (MSG_HEADER*)m->SvcReq, (MSG_HEADER**)m->SvcRpl);
+			m->SvcStatus = CSbieAPI__CallServer(m, m->SvcReq, m->SvcRpl);
 
 			InterlockedExchange(&m->SvcLock, SVC_OP_STATE_DONE);
 
@@ -701,21 +708,21 @@ void CSbieAPI::run()
 		CloseHandle(EventHandle);
 }
 
-SB_STATUS CSbieAPI::CallServer(void* req, void* rpl) const
+SB_STATUS CSbieAPI::CallServer(void* req, SScopedVoid* prpl) const
 {
 	//
 	// Note: Once we open a port to the server from a threat the service will remember it we can't reconnect after disconnection
 	//			So for every new connection we need a new threat, we achieve this by letting our monitor threat issue all requests
 	// 
 	//		 As of Sbie build 5.50.5 the SbieCvc properly handles reconnection attempts so this mechanism is no longer necessary
-	// 	     Howeever for the queue mechanism we need the communication to be still handled by the helper thread
+	// 	     However for the queue mechanism we need the communication to be still handled by the helper thread
 	//
 
 	while (InterlockedCompareExchange(&m->SvcLock, SVC_OP_STATE_PREP, SVC_OP_STATE_IDLE) != SVC_OP_STATE_IDLE)
 		QThread::usleep(100);
 
-	m->SvcReq = req;
-	m->SvcRpl = rpl;
+	m->SvcReq = (MSG_HEADER*)req;
+	m->SvcRpl = prpl;
 	m->SvcStatus = SB_OK;
 
 	InterlockedExchange(&m->SvcLock, SVC_OP_STATE_START);
@@ -738,20 +745,6 @@ SB_STATUS CSbieAPI::CallServer(void* req, void* rpl) const
 
 	return Status;
 }
-
-/*void CSbieAPI::OnMonitorEntry(quint32 ProcessId, quint32 Type, const QString& Value)
-{
-	QMap<quint32, CBoxedProcessPtr>::iterator I = m_BoxedProxesses.find(ProcessId);
-	if (I == m_BoxedProxesses.end())
-	{
-		UpdateProcesses(true);
-		I = m_BoxedProxesses.find(ProcessId);
-	}
-	if (I == m_BoxedProxesses.end())
-		return;
-
-	I.value()->AddResourceEntry(Type, Value);
-}*/
 
 QString CSbieAPI::GetVersion()
 {
@@ -786,10 +779,12 @@ SB_STATUS CSbieAPI::TakeOver()
 	return SB_OK;
 }
 
-SB_STATUS CSbieAPI::WatchIni(bool bEnable)
+SB_STATUS CSbieAPI::WatchIni(bool bEnable, bool bReLoad)
 {
-	if (bEnable)
+	if (bEnable) {
 		m_IniWatcher.addPath(m_IniPath);
+		m_IniReLoad = bReLoad;
+	}
 	else
 		m_IniWatcher.removePath(m_IniPath);
 	return SB_OK;
@@ -807,22 +802,16 @@ void CSbieAPI::OnIniChanged(const QString &path)
 void CSbieAPI::OnReloadConfig()
 {
 	m_bReloadPending = false;
-	ReloadConfig();
+	m_bBoxesDirty = true;
+	if (m_IniReLoad) 
+		ReloadConfig();
 }
-
-typedef struct _FILE_FS_VOLUME_INFORMATION {
-  LARGE_INTEGER VolumeCreationTime;
-  ULONG         VolumeSerialNumber;
-  ULONG         VolumeLabelLength;
-  BOOLEAN       SupportsObjects;
-  WCHAR         VolumeLabel[1];
-} FILE_FS_VOLUME_INFORMATION, *PFILE_FS_VOLUME_INFORMATION;
 
 extern "C" {
 	NTSTATUS NTAPI RtlSetThreadErrorMode(IN ULONG NewMode, OUT PULONG OldMode);
 }
 
-ULONG CSbieAPI__GetVolumeSN(wchar_t* path)
+quint32 CSbieAPI::GetVolumeSN(const wchar_t* path, std::wstring* pLabel)
 {
     ULONG sn = 0;
     HANDLE handle;
@@ -860,13 +849,52 @@ ULONG CSbieAPI__GetVolumeSN(wchar_t* path)
             FILE_FS_VOLUME_INFORMATION volumeInfo;
             BYTE volumeInfoBuff[64];
         } u;
-        if (NT_SUCCESS(NtQueryVolumeInformationFile(handle, &iosb, &u.volumeInfo, sizeof(u), FileFsVolumeInformation)))
-            sn = u.volumeInfo.VolumeSerialNumber;
+		if (NT_SUCCESS(NtQueryVolumeInformationFile(handle, &iosb, &u.volumeInfo, sizeof(u), FileFsVolumeInformation))) {
+			sn = u.volumeInfo.VolumeSerialNumber;
+			if (pLabel) *pLabel = std::wstring(u.volumeInfo.VolumeLabel, u.volumeInfo.VolumeLabelLength/sizeof(wchar_t));
+		}
 
         NtClose(handle);
     }
 
     return sn;
+}
+
+QString CSbieAPI::ResolveAbsolutePath(const QString& Path)
+{
+	std::wstring path = Path.toStdWString();
+	UNICODE_STRING uni;
+    RtlInitUnicodeString(&uni, path.c_str());
+	OBJECT_ATTRIBUTES objattrs;
+    InitializeObjectAttributes(&objattrs, &uni, OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+	HANDLE FileHandle;
+    IO_STATUS_BLOCK IoStatusBlock;
+    NTSTATUS status = NtCreateFile(&FileHandle, FILE_READ_ATTRIBUTES | SYNCHRONIZE, &objattrs, &IoStatusBlock, NULL, 0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,NULL, 0);
+
+    if (NT_SUCCESS(status)) {
+
+		const ULONG NameLen = 4096;
+		WCHAR NameBuf[NameLen];
+
+		__declspec(align(8)) ULONG64 parms[API_NUM_ARGS];
+		API_GET_FILE_NAME_ARGS *args = (API_GET_FILE_NAME_ARGS *)parms;
+
+		memset(parms, 0, sizeof(parms));
+		args->func_code               = API_GET_FILE_NAME;
+		args->handle.val64            = (ULONG64)(ULONG_PTR)FileHandle;
+		args->name_len.val64          = (ULONG64)(ULONG_PTR)(NameLen * sizeof(WCHAR));
+		args->name_buf.val64          = (ULONG64)(ULONG_PTR)NameBuf;
+		status = m->IoControl(parms);
+
+        NtClose(FileHandle);
+
+		if (NT_SUCCESS(status))
+			return QString::fromWCharArray(NameBuf);
+    }
+
+	return Path;
 }
 
 void CSbieAPI::UpdateDriveLetters()
@@ -899,7 +927,7 @@ void CSbieAPI::UpdateDriveLetters()
 			}
 			else {
 				Drive.Type = SDrive::EVolume;
-				if (ULONG sn = CSbieAPI__GetVolumeSN(lpTargetPath))
+				if (quint32 sn = GetVolumeSN(lpTargetPath))
 					Drive.Aux = QString("%1-%2").arg((ushort)HIWORD(sn), 4, 16, QChar('0')).arg((ushort)LOWORD(sn), 4, 16, QChar('0')).toUpper();
 			}
 			Key.append("\\");
@@ -913,10 +941,17 @@ void CSbieAPI::UpdateDriveLetters()
 
 QString CSbieAPI::Nt2DosPath(QString NtPath, bool* pOk) const
 {
-	QReadLocker Lock(&m_DriveLettersMutex);
+	if (NtPath.left(11) == "\\??\\Volume{") {
+		wchar_t DeviceName [MAX_PATH];
+		std::wstring VolumeName = NtPath.mid(4, 44).toStdWString();
+		if (QueryDosDeviceW(VolumeName.c_str(), DeviceName, ARRAYSIZE(DeviceName)))
+			NtPath.replace(0, 48, QString::fromWCharArray(DeviceName));
+	}
 
 	if (NtPath.indexOf("\\device\\mup", 0, Qt::CaseInsensitive) == 0)
 		NtPath = "\\Device\\LanmanRedirector" + NtPath.mid(11);
+
+	QReadLocker Lock(&m_DriveLettersMutex);
 
 	for (QMap<QString, SDrive>::const_iterator I = m_DriveLetters.begin(); I != m_DriveLetters.end(); ++I)
 	{
@@ -959,7 +994,7 @@ QString CSbieAPI::GetIniPath(bool* IsHome) const
 	req.h.msgid = MSGID_SBIE_INI_GET_PATH;
 	req.h.length = sizeof(SBIE_INI_GET_PATH_REQ);
 
-	SBIE_INI_GET_PATH_RPL *rpl = NULL;
+	SScoped<SBIE_INI_GET_PATH_RPL> rpl;
 	SB_STATUS Status = CallServer(&req.h, &rpl);
 	if (!Status || !rpl)
 		return QString();
@@ -968,7 +1003,6 @@ QString CSbieAPI::GetIniPath(bool* IsHome) const
 		if (IsHome)
 			*IsHome = rpl->is_home_path;
 	}
-	free(rpl);
 	
 	return IniPath;
 }
@@ -981,7 +1015,7 @@ QString CSbieAPI::GetUserSection(QString* pUserName, bool* pIsAdmin) const
 	req.h.msgid = MSGID_SBIE_INI_GET_USER;
 	req.h.length = sizeof(SBIE_INI_GET_USER_REQ);
 
-	SBIE_INI_GET_USER_RPL *rpl = NULL;
+	SScoped<SBIE_INI_GET_USER_RPL> rpl;
 	SB_STATUS Status = CallServer(&req.h, &rpl);
 	if (!Status || !rpl)
 		return QString();
@@ -991,19 +1025,21 @@ QString CSbieAPI::GetUserSection(QString* pUserName, bool* pIsAdmin) const
 		UserSection = QString::fromWCharArray(rpl->section);
 		if (pUserName) *pUserName = QString::fromWCharArray(rpl->name);
 	}
-	free(rpl);
 
 	return UserSection;
 }
 
-SB_STATUS CSbieAPI::RunStart(const QString& BoxName, const QString& Command, bool Elevated, const QString& WorkingDir, QProcess* pProcess)
+SB_RESULT(quint32) CSbieAPI::RunStart(const QString& BoxName, const QString& Command, EStartFlags Flags, const QString& WorkingDir, QProcess* pProcess)
 {
 	if (m_SbiePath.isEmpty())
 		return SB_ERR(SB_PathFail);
 
 	QString StartArgs;
-	if(Elevated)
+	if (Flags & eStartElevated)
 		StartArgs += "/elevated ";
+	if (Flags & eStartFCP)
+		StartArgs += "/fcp ";
+
 	if (!BoxName.isEmpty())
 		StartArgs += "/box:" + BoxName + " ";
 	else
@@ -1011,6 +1047,7 @@ SB_STATUS CSbieAPI::RunStart(const QString& BoxName, const QString& Command, boo
 
 	StartArgs += Command;
 
+	qint64 pid = 0;
 	//wchar_t sysPath[MAX_PATH];
 	//GetSystemDirectoryW(sysPath, MAX_PATH);
 	if (pProcess) {
@@ -1020,7 +1057,8 @@ SB_STATUS CSbieAPI::RunStart(const QString& BoxName, const QString& Command, boo
 		pProcess->setProgram(GetStartPath());
 		pProcess->setNativeArguments(StartArgs);
 		pProcess->start();
-	} 
+		pid = pProcess->processId();
+	}
 	else {
 		QProcess process;
 		//process.setWorkingDirectory(QString::fromWCharArray(sysPath));
@@ -1028,7 +1066,7 @@ SB_STATUS CSbieAPI::RunStart(const QString& BoxName, const QString& Command, boo
 			process.setWorkingDirectory(WorkingDir);
 		process.setProgram(GetStartPath());
 		process.setNativeArguments(StartArgs);
-		process.startDetached();
+		process.startDetached(&pid);
 	}
 
 	/*
@@ -1065,7 +1103,9 @@ SB_STATUS CSbieAPI::RunStart(const QString& BoxName, const QString& Command, boo
     CloseHandle( pi.hThread );
 	*/
 
-	return SB_OK;
+	if(pid == 0)
+		return SB_ERR();
+	return CSbieResult<quint32>((quint32)pid);
 }
 
 QString CSbieAPI::GetStartPath() const
@@ -1078,13 +1118,17 @@ quint32 CSbieAPI::GetSessionID() const
 	return m->sessionId;
 }
 
-SB_STATUS CSbieAPI::ReloadBoxes(bool bFullUpdate)
+SB_STATUS CSbieAPI::ReloadBoxes(bool bForceUpdate)
 {
+	if (!bForceUpdate && !m_bBoxesDirty && !m_IniWatcher.files().isEmpty())
+		return SB_OK;
+	m_bBoxesDirty = false;
+
 	QMap<QString, CSandBoxPtr> OldSandBoxes = m_SandBoxes;
 
 	for (int i = 0;;i++)
 	{
-		QString BoxName = SbieIniGet(QString(), QString(), (i | CONF_GET_NO_EXPAND));
+		QString BoxName = SbieIniGet(QString(), QString(), (i | CONF_GET_NO_EXPAND | CONF_GET_NO_TEMPLS));
 		if (BoxName.isNull())
 			break;
 
@@ -1097,18 +1141,20 @@ SB_STATUS CSbieAPI::ReloadBoxes(bool bFullUpdate)
 		{
 			pBox = CSandBoxPtr(NewSandBox(BoxName, this));
 			m_SandBoxes.insert(BoxName.toLower(), pBox);
-			UpdateBoxPaths(pBox);
+			emit BoxAdded(pBox);
 		}
-		else if(bFullUpdate)
-			UpdateBoxPaths(pBox);
+		UpdateBoxPaths(pBox.data());
 
 		pBox->m_IsEnabled = bIsEnabled;
 
 		pBox->UpdateDetails();
 	}
 
-	foreach(const QString& BoxName, OldSandBoxes.keys())
-		m_SandBoxes.remove(BoxName);
+	foreach(const QString & BoxName, OldSandBoxes.keys()) {
+		CSandBoxPtr pBox = m_SandBoxes.take(BoxName);
+		pBox->SetBoxPaths(QString(), QString(), QString());
+		emit BoxRemoved(pBox);
+	}
 
 	return SB_OK;
 }
@@ -1123,7 +1169,7 @@ QString CSbieAPI__FormatNtStatus(long nsCode)
 
 	WCHAR* ret_str = NULL;
     DWORD dwRes = FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_FROM_HMODULE,
-        hNtDll, RtlNtStatusToDosError(nsCode), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        hNtDll, nsCode >= 0 ? nsCode : RtlNtStatusToDosError(nsCode), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
         (LPTSTR)&ret_str, 0, NULL);
 
 	QString qStr = dwRes > 0 ? QString::fromWCharArray(ret_str) : QString();
@@ -1137,13 +1183,12 @@ retry:
 	m->Password.toWCharArray((WCHAR*)pPasswordWithinRequestBuf); // fix-me: potential overflow
 	((WCHAR*)pPasswordWithinRequestBuf)[m->Password.length()] = L'\0';
 
-	MSG_HEADER *rpl = NULL;
+	SScoped<MSG_HEADER> rpl;
 	SB_STATUS Status = CallServer((MSG_HEADER *)RequestBuf, &rpl);
 	SecureZeroMemory(pPasswordWithinRequestBuf, sizeof(WCHAR) * 64);
 	if (!Status || !rpl)
 		return Status;
 	ULONG status = rpl->status;
-	free(rpl);
 	if (status == 0)
 		return SB_OK;
 	if (status == STATUS_LOGON_NOT_GRANTED || status == STATUS_WRONG_PASSWORD) 
@@ -1173,7 +1218,7 @@ SB_STATUS CSbieAPI::SbieIniSet(const QString& Section, const QString& Setting, c
 		return SB_ERR();
 	}
 
-	SBIE_INI_SETTING_REQ *req = (SBIE_INI_SETTING_REQ *)malloc(sizeof(SBIE_INI_SETTING_REQ) + Value.length() * sizeof(WCHAR));
+	SScoped<SBIE_INI_SETTING_REQ> req(malloc(sizeof(SBIE_INI_SETTING_REQ) + Value.length() * sizeof(WCHAR)));
 
 	req->refresh = bRefresh ? TRUE : FALSE;
 
@@ -1187,10 +1232,9 @@ SB_STATUS CSbieAPI::SbieIniSet(const QString& Section, const QString& Setting, c
 	req->h.msgid = msgid;
 	req->h.length = sizeof(SBIE_INI_SETTING_REQ) + req->value_len * sizeof(WCHAR);
 
-	SB_STATUS Status = SbieIniSet(req, req->password, Section, Setting);
+	SB_STATUS Status = SbieIniSet(&req->h, req->password, Section, Setting);
 	//if (!Status) 
 	//	emit LogSbieMessage(0xC1020000 | 2203, QStringList() << "" << Status.GetText() << "", GetCurrentProcessId());
-	free(req);
 	return Status;
 }
 
@@ -1201,13 +1245,15 @@ void CSbieAPI::CommitIniChanges()
 	SbieIniSet("", "", ""); // commit and refresh
 
 	if (bRemoved) m_IniWatcher.addPath(m_IniPath);
+
+	m_bBoxesDirty = true;
 }
 
 QString CSbieAPI::SbieIniGetEx(const QString& Section, const QString& Setting)
 {
 	QString Value;
 
-	SBIE_INI_SETTING_REQ *req = (SBIE_INI_SETTING_REQ *)malloc(sizeof(SBIE_INI_SETTING_REQ) );
+	SScoped<SBIE_INI_SETTING_REQ> req(malloc(sizeof(SBIE_INI_SETTING_REQ) ));
 	memset(req, 0, sizeof(SBIE_INI_SETTING_REQ));
 
 	Section.toWCharArray(req->section); // fix-me: potential overflow
@@ -1217,23 +1263,21 @@ QString CSbieAPI::SbieIniGetEx(const QString& Section, const QString& Setting)
 	req->h.msgid = MSGID_SBIE_INI_GET_SETTING;
 	req->h.length = sizeof(SBIE_INI_SETTING_REQ);
 
-	SBIE_INI_SETTING_RPL *rpl = NULL;
+	SScoped<SBIE_INI_SETTING_RPL> rpl;
 	SB_STATUS Status = CallServer(&req->h, &rpl);
-	free(req);
 	if (!Status || !rpl)
 		return QString();
 	if (rpl->h.status == 0) {
 		Value = QString::fromWCharArray(rpl->value, rpl->value_len - 1);
 	}
-	free(rpl);
 	
 	return Value;
 }
 
 QString CSbieAPI::SbieIniGet(const QString& Section, const QString& Setting, quint32 Index, qint32* ErrCode)
 {
-	wstring section = Section.toStdWString();
-	wstring setting = Setting.toStdWString();
+	std::wstring section = Section.toStdWString();
+	std::wstring setting = Setting.toStdWString();
 
 	WCHAR out_buffer[CONF_LINE_LEN] = { 0 };
 
@@ -1255,12 +1299,23 @@ QString CSbieAPI::SbieIniGet(const QString& Section, const QString& Setting, qui
 	return QString::fromWCharArray(out_buffer);
 }
 
+QString CSbieAPI::SbieIniGet2(const QString& Section, const QString& Setting, quint32 Index, bool bWithGlobal, bool bNoExpand, bool withTemplates)
+{
+	int flags = (bWithGlobal ? 0 : CONF_GET_NO_GLOBAL);
+	if (!withTemplates)
+		flags |= CONF_GET_NO_TEMPLS;
+	if (bNoExpand)
+		flags |= CONF_GET_NO_EXPAND;
+
+	return SbieIniGet(Section, Setting, Index | flags);
+}
+
 SB_STATUS CSbieAPI::ValidateName(const QString& BoxName)
 {
-	if (BoxName.length() > 32)
+	if (BoxName.length() > (BOXNAME_COUNT - 2))
 		return SB_ERR(SB_NameLenLimit);
 
-	/* invalid file name charakters on windows
+	/* invalid file name characters on windows
 	  < (less than)
 	  > (greater than)
 	  : (colon - sometimes works, but is actually NTFS Alternate Data Streams)
@@ -1284,10 +1339,22 @@ SB_STATUS CSbieAPI::ValidateName(const QString& BoxName)
 	if(BoxName.left(13).compare("UserSettings_", Qt::CaseInsensitive) == 0)
 		return SB_ERR(SB_BadNameDev);
 
-	if (BoxName.contains(QRegExp("[^A-Za-z0-9_]")))
+	if (BoxName.contains(QRegularExpression("[^A-Za-z0-9_]")))
 		return SB_ERR(SB_BadNameChar);
 
 	return SB_OK;
+}
+
+QString CSbieAPI::MkNewName(QString Name)
+{
+	Name.replace(QRegularExpression("[<>:\"/\\\\|?*\\[\\]]"), "-").replace(" ", "_");
+	for (int i=0;; i++) {
+		QString NewName = Name;
+		if (i > 0) NewName.append("_" + QString::number(i));
+		if (m_SandBoxes.contains(NewName.toLower()))
+			continue;
+		return NewName;
+	}
 }
 
 SB_STATUS CSbieAPI::CreateBox(const QString& BoxName, bool bReLoad)
@@ -1312,7 +1379,7 @@ SB_STATUS CSbieAPI::CreateBox(const QString& BoxName, bool bReLoad)
 
 SB_STATUS CSbieAPI__GetProcessPIDs(SSbieAPI* m, const QString& BoxName, bool bAllSessions, ULONG* pids, ULONG* count)
 {
-	WCHAR box_name[34];
+	WCHAR box_name[BOXNAME_COUNT];
 	BoxName.toWCharArray(box_name); // fix-me: potential overflow
 	box_name[BoxName.size()] = L'\0';
 	BOOLEAN all_sessions = bAllSessions ? TRUE : false;
@@ -1334,7 +1401,7 @@ SB_STATUS CSbieAPI__GetProcessPIDs(SSbieAPI* m, const QString& BoxName, bool bAl
 	return SB_OK;
 }
 
-SB_STATUS CSbieAPI::UpdateProcesses(bool bKeep, bool bAllSessions)
+SB_STATUS CSbieAPI::UpdateProcesses(int iKeep, bool bAllSessions)
 {
 	ULONG count = 0;
 	SB_STATUS Status = CSbieAPI__GetProcessPIDs(m, "", bAllSessions, NULL, &count); // query count
@@ -1349,8 +1416,6 @@ SB_STATUS CSbieAPI::UpdateProcesses(bool bKeep, bool bAllSessions)
 		delete[] boxed_pids;
 		return Status;
 	}
-
-	bool ProcessesChanged = false;
 
 	QMap<quint32, CBoxedProcessPtr>	OldProcessList;
 	foreach(const CSandBoxPtr& pBox, m_SandBoxes)
@@ -1370,33 +1435,41 @@ SB_STATUS CSbieAPI::UpdateProcesses(bool bKeep, bool bAllSessions)
 			if (pBox.isNull())
 				continue;
 
+			if (pBox->m_ActiveProcessCount == 0) {
+				pBox->m_ActiveProcessCount = 1;
+				pBox->OpenBox();
+				m_bBoxesDirty = true;
+				emit BoxOpened(pBox);
+			}
+
 			pProcess->m_pBox = pBox.data();
 			pBox->m_ProcessList.insert(ProcessId, pProcess);
 			m_BoxedProxesses.insert(ProcessId, pProcess);
+			pBox->m_ActiveProcessDirty = true;
 
 			pProcess->InitProcessInfo();
-
-			ProcessesChanged = true;
 		}
 
-		pProcess->InitProcessInfoEx();
+		pProcess->UpdateProcessInfo();
 	}
 
 	foreach(const CBoxedProcessPtr& pProcess, OldProcessList) 
 	{
 		if (!pProcess->IsTerminated()) {
 			pProcess->SetTerminated();
-			ProcessesChanged = true;
+			pProcess->m_pBox->m_ActiveProcessDirty = true;
 		}
-		else if (!bKeep && pProcess->IsTerminated(1500)) { // keep for at least 1.5 seconds
+		else if (iKeep != -1 && pProcess->IsTerminated(iKeep)) {
 			pProcess->m_pBox->m_ProcessList.remove(pProcess->m_ProcessId);
 			m_BoxedProxesses.remove(pProcess->m_ProcessId);
 		}
 	}
 
-	if (ProcessesChanged) {
-		foreach(const CSandBoxPtr & pBox, m_SandBoxes)
+	foreach(const CSandBoxPtr & pBox, m_SandBoxes)
+	{
+		if (pBox->m_ActiveProcessDirty) 
 		{
+			pBox->m_ActiveProcessDirty = false;
 			int ActiveProcessCount = 0;
 			foreach(const CBoxedProcessPtr & pProcess, pBox->GetProcessList()) {
 				if (!pProcess->IsTerminated())
@@ -1406,7 +1479,8 @@ SB_STATUS CSbieAPI::UpdateProcesses(bool bKeep, bool bAllSessions)
 			pBox->m_ActiveProcessCount = ActiveProcessCount;
 			if (WasBoxClosed) {
 				pBox->CloseBox();
-				emit BoxClosed(pBox->GetName());
+				m_bBoxesDirty = true;
+				emit BoxClosed(pBox);
 			}
 		}
 	}
@@ -1414,69 +1488,6 @@ SB_STATUS CSbieAPI::UpdateProcesses(bool bKeep, bool bAllSessions)
 	delete[] boxed_pids;
 	return SB_OK;
 }
-
-/*SB_STATUS CSbieAPI::UpdateProcesses(bool bKeep)
-{
-	foreach(const CSandBoxPtr& pBox, m_SandBoxes)
-		UpdateProcesses(bKeep, pBox);
-	return SB_OK;
-}
-
-SB_STATUS CSbieAPI::UpdateProcesses(bool bKeep, const CSandBoxPtr& pBox)
-{
-	ULONG count = 0;
-	SB_STATUS Status = CSbieAPI__GetProcessPIDs(m, pBox->GetName(), NULL, &count); // query the count
-	if (Status.IsError())
-		return Status;
-
-	count += 128; // add some extra space
-	ULONG* boxed_pids = new ULONG[count]; 
-
-	Status = CSbieAPI__GetProcessPIDs(m, pBox->GetName(), boxed_pids, &count); // query the count
-	if (Status.IsError())
-		goto finish;
-
-	QMap<quint32, CBoxedProcessPtr>	OldProcessList = pBox->m_ProcessList;
-
-	for (int i=0; i < count; i++)
-	{
-		quint32 ProcessId = boxed_pids[i];
-
-		CBoxedProcessPtr pProcess = OldProcessList.take(ProcessId);
-		if (!pProcess)
-		{
-			pProcess = CBoxedProcessPtr(NewBoxedProcess(ProcessId, pBox.data()));
-			pBox->m_ProcessList.insert(ProcessId, pProcess);
-			m_BoxedProxesses.insert(ProcessId, pProcess);
-
-			UpdateProcessInfo(pProcess);
-			pProcess->InitProcessInfo();
-		}
-
-		pProcess->InitProcessInfoEx();
-	}
-
-	foreach(const CBoxedProcessPtr& pProcess, OldProcessList) 
-	{
-		if (!pProcess->IsTerminated())
-			pProcess->SetTerminated();
-		else if (!bKeep && pProcess->IsTerminated(1500)) { // keep for at least 1.5 seconds
-			pBox->m_ProcessList.remove(pProcess->m_ProcessId);
-			m_BoxedProxesses.remove(pProcess->m_ProcessId);
-		}
-	}
-
-	bool WasBoxClosed = pBox->m_ActiveProcessCount > 0 && count == 0;
-	pBox->m_ActiveProcessCount = count;
-	if (WasBoxClosed) {
-		pBox->CloseBox();
-		emit BoxClosed(pBox->GetName());
-	}
-
-finish:
-	delete[] boxed_pids;
-	return Status;
-}*/
 
 bool CSbieAPI::HasProcesses(const QString& BoxName)
 {
@@ -1515,9 +1526,9 @@ SB_STATUS CSbieAPI__QueryBoxPath(SSbieAPI* m, const WCHAR *box_name, WCHAR *out_
 	return SB_OK;
 }
 
-SB_STATUS CSbieAPI::UpdateBoxPaths(const CSandBoxPtr& pSandBox)
+SB_STATUS CSbieAPI::UpdateBoxPaths(CSandBox* pSandBox)
 {
-	wstring boxName = pSandBox->GetName().toStdWString();
+	std::wstring boxName = pSandBox->GetName().toStdWString();
 
 	ULONG filePathLength = 0;
 	ULONG keyPathLength = 0;
@@ -1526,22 +1537,24 @@ SB_STATUS CSbieAPI::UpdateBoxPaths(const CSandBoxPtr& pSandBox)
 	if (!Status)
 		return Status;
 
-	wstring FileRoot(filePathLength / 2 + 1, '\0');
-	wstring KeyRoot(keyPathLength / 2 + 1, '\0');
-	wstring IpcRoot(ipcPathLength / 2 + 1, '\0');
+	std::wstring FileRoot(filePathLength / 2 + 1, '\0');
+	std::wstring KeyRoot(keyPathLength / 2 + 1, '\0');
+	std::wstring IpcRoot(ipcPathLength / 2 + 1, '\0');
 	Status = CSbieAPI__QueryBoxPath(m, boxName.c_str(), (WCHAR*)FileRoot.data(), (WCHAR*)KeyRoot.data(), (WCHAR*)IpcRoot.data(), &filePathLength, &keyPathLength, &ipcPathLength);
 	if (!Status)
 		return Status;
 
-	pSandBox->m_FilePath = Nt2DosPath(QString::fromWCharArray(FileRoot.c_str(), wcslen(FileRoot.c_str())));
-	pSandBox->m_RegPath = QString::fromWCharArray(KeyRoot.c_str(), wcslen(KeyRoot.c_str()));
-	pSandBox->m_IpcPath = QString::fromWCharArray(IpcRoot.c_str(), wcslen(IpcRoot.c_str()));
+	QString FilePath = QString::fromWCharArray(FileRoot.c_str());
+	QString RegPath = QString::fromWCharArray(KeyRoot.c_str());
+	QString IpcPath = QString::fromWCharArray(IpcRoot.c_str());
+
+	pSandBox->SetBoxPaths(Nt2DosPath(FilePath), RegPath, IpcPath);
 	return SB_OK;
 }
 
 SB_STATUS CSbieAPI::UpdateProcessInfo(const CBoxedProcessPtr& pProcess)
 {
-	WCHAR box_name[34] = { 0 };
+	WCHAR box_name[BOXNAME_COUNT] = { 0 };
 	WCHAR image_name[MAX_PATH];
 	//WCHAR sid[96];
 	ULONG session_id;
@@ -1575,6 +1588,40 @@ SB_STATUS CSbieAPI::UpdateProcessInfo(const CBoxedProcessPtr& pProcess)
 	return SB_OK;
 }
 
+SB_STATUS CSbieAPI::GetProcessInfo(quint32 ProcessId, quint32* pParentId, quint32* pInfo, bool* pSuspended, QString* pImagePath, QString* pCommandLine, QString* pWorkingDir)
+{
+	PROCESS_GET_INFO_REQ req;
+	req.h.length = sizeof(PROCESS_GET_INFO_REQ);
+	req.h.msgid = MSGID_PROCESS_GET_INFO;
+	req.dwProcessId = ProcessId;
+	req.dwInfoClasses = 0;
+
+	if(pParentId || pInfo)
+		req.dwInfoClasses |= SBIE_PROCESS_BASIC_INFO;
+	if(pSuspended)
+		req.dwInfoClasses |= SBIE_PROCESS_EXEC_INFO;
+	if(pImagePath || pCommandLine || pWorkingDir)
+		req.dwInfoClasses |= SBIE_PROCESS_PATHS_INFO;
+
+	SScoped<PROCESS_INFO_RPL> rpl;
+	SB_STATUS Status = CallServer(&req.h, &rpl);
+	if (!Status || !rpl)
+		return Status;
+	
+	if (!NT_SUCCESS(rpl->h.status))
+		return SB_ERR(rpl->h.status);
+
+	if (pParentId)		*pParentId	= rpl->dwParentId;
+	if (pInfo)			*pInfo		= rpl->dwInfo;
+	if (pSuspended)		*pSuspended = rpl->bSuspended;
+
+	if (pImagePath && rpl->app_ofs && rpl->app_len > 0)		*pImagePath   = QString::fromWCharArray((WCHAR*)((ULONG_PTR)rpl.Value() + rpl->app_ofs), rpl->app_len);
+	if (pCommandLine && rpl->cmd_ofs && rpl->cmd_len > 0)	*pCommandLine = QString::fromWCharArray((WCHAR*)((ULONG_PTR)rpl.Value() + rpl->cmd_ofs), rpl->cmd_len);
+	if (pWorkingDir && rpl->dir_ofs && rpl->dir_len > 0)	*pWorkingDir  = QString::fromWCharArray((WCHAR*)((ULONG_PTR)rpl.Value() + rpl->dir_ofs), rpl->dir_len);
+
+	return SB_OK;
+}
+
 CSandBoxPtr CSbieAPI::GetBoxByProcessId(quint32 ProcessId) const
 {
 	CBoxedProcessPtr pProcess = m_BoxedProxesses.value(ProcessId);
@@ -1588,7 +1635,7 @@ CBoxedProcessPtr CSbieAPI::GetProcessById(quint32 ProcessId) const
 	return m_BoxedProxesses.value(ProcessId);
 }
 
-quint32 CSbieAPI::QueryProcessInfo(quint32 ProcessId, quint32 InfoClass)
+quint64 CSbieAPI::QueryProcessInfo(quint32 ProcessId, quint32 InfoClass)
 {
 	__declspec(align(8)) ULONG64 ResultValue;
 	__declspec(align(8)) ULONG64 parms[API_NUM_ARGS];
@@ -1604,7 +1651,7 @@ quint32 CSbieAPI::QueryProcessInfo(quint32 ProcessId, quint32 InfoClass)
 
 	NTSTATUS status = m->IoControl(parms);
 	if (!NT_SUCCESS(status))
-		return -1;
+		return NULL;
 	return ResultValue;
 }
 
@@ -1617,24 +1664,28 @@ SB_STATUS CSbieAPI::TerminateAll(const QString& BoxName)
 	BoxName.toWCharArray(req.boxname); // fix-me: potential overflow
 	req.boxname[BoxName.size()] = L'\0';
 
-	MSG_HEADER *rpl = NULL;
+	SScoped<MSG_HEADER> rpl;
 	SB_STATUS Status = CallServer(&req.h, &rpl);
 	if (!Status || !rpl)
 		return Status;
 	if(rpl->status != 0) 
 		Status = SB_ERR(rpl->status);
-	free(rpl);
 	return Status;
 }
 
-SB_STATUS CSbieAPI::TerminateAll()
+SB_STATUS CSbieAPI::TerminateAll(bool bNoExceptions)
 {
-	SB_STATUS Status = SB_OK;
+#ifdef _DEBUG
+	qDebug() << "TerminateAll" << bNoExceptions;
+#endif
+	bool bFailed = false;
 	foreach(const CSandBoxPtr& pBox, m_SandBoxes) {
+		if (!bNoExceptions && pBox->GetBool("ExcludeFromTerminateAll", false))
+			continue;
 		if (!pBox->TerminateAll())
-			Status = SB_ERR(SB_FailedKillAll);
+			bFailed = true;
 	}
-	return Status;
+	return bFailed ? SB_ERR(SB_FailedKillAll) : SB_OK;
 }
 
 SB_STATUS CSbieAPI::Terminate(quint32 ProcessId)
@@ -1644,13 +1695,48 @@ SB_STATUS CSbieAPI::Terminate(quint32 ProcessId)
 	req.h.msgid = MSGID_PROCESS_KILL_ONE;
 	req.pid = ProcessId;
 
-	MSG_HEADER *rpl = NULL;
+	SScoped<MSG_HEADER> rpl;
 	SB_STATUS Status = CallServer(&req.h, &rpl);
 	if (!Status || !rpl)
 		return Status;
 	if (rpl->status != 0)
 		Status = SB_ERR(rpl->status);
-	free(rpl);
+	return Status;
+}
+
+SB_STATUS CSbieAPI::SetSuspendedAll(const QString& BoxName, bool bSuspended)
+{
+	PROCESS_SUSPEND_RESUME_ALL_REQ req;
+	req.h.length = sizeof(PROCESS_SUSPEND_RESUME_ALL_REQ);
+	req.h.msgid = MSGID_PROCESS_SUSPEND_RESUME_ALL;
+	req.session_id = -1;
+	BoxName.toWCharArray(req.boxname); // fix-me: potential overflow
+	req.boxname[BoxName.size()] = L'\0';
+	req.suspend = bSuspended ? TRUE : FALSE;
+
+	SScoped<MSG_HEADER> rpl;
+	SB_STATUS Status = CallServer(&req.h, &rpl);
+	if (!Status || !rpl)
+		return Status;
+	if(rpl->status != 0) 
+		Status = SB_ERR(rpl->status);
+	return Status;
+}
+
+SB_STATUS CSbieAPI::SetSuspended(quint32 ProcessId, bool bSuspended)
+{
+	PROCESS_SUSPEND_RESUME_ONE_REQ req;
+	req.h.length = sizeof(PROCESS_SUSPEND_RESUME_ONE_REQ);
+	req.h.msgid = MSGID_PROCESS_SUSPEND_RESUME_ONE;
+	req.pid = ProcessId;
+	req.suspend = bSuspended ? TRUE : FALSE;
+
+	SScoped<MSG_HEADER> rpl;
+	SB_STATUS Status = CallServer(&req.h, &rpl);
+	if (!Status || !rpl)
+		return Status;
+	if (rpl->status != 0)
+		Status = SB_ERR(rpl->status);
 	return Status;
 }
 
@@ -1681,7 +1767,7 @@ QString CSbieAPI::GetDeviceMap()
 
 	HANDLE handle;
 	NTSTATUS status = NtOpenDirectoryObject(&handle, DIRECTORY_QUERY, &objattrs);
-	if (status == STATUS_ACCESS_DENIED) // if we are missign admin rights, lets the driver do it
+	if (status == STATUS_ACCESS_DENIED) // if we are missing admin rights, lets the driver do it
 		status = CSbieAPI__OpenDeviceMap(m, &handle);
 
 	if (!NT_SUCCESS(status)) {
@@ -1761,7 +1847,7 @@ SB_STATUS CSbieAPI::RunSandboxed(const QString& BoxName, const QString& Command,
 		return SB_ERR(ERROR_INVALID_PARAMETER);
 
 	if (WrkDir.isEmpty())
-		WrkDir = QDir::currentPath();
+		WrkDir = QDir::currentPath().replace("/","\\");
 
 	ULONG cmd_len = Command.length();
 	ULONG dir_len = WrkDir.length();
@@ -1769,7 +1855,7 @@ SB_STATUS CSbieAPI::RunSandboxed(const QString& BoxName, const QString& Command,
 	ULONG env_len = (env.size() - 1) / sizeof(WCHAR);
 
 	ULONG req_len = sizeof(PROCESS_RUN_SANDBOXED_REQ) + (cmd_len + dir_len + env_len + 8) * sizeof(WCHAR);
-	PROCESS_RUN_SANDBOXED_REQ* req = (PROCESS_RUN_SANDBOXED_REQ*)malloc(req_len);
+	SScoped<PROCESS_RUN_SANDBOXED_REQ> req(malloc(req_len));
 
 	req->h.length = req_len;
 	req->h.msgid = MSGID_PROCESS_RUN_SANDBOXED;
@@ -1785,9 +1871,9 @@ SB_STATUS CSbieAPI::RunSandboxed(const QString& BoxName, const QString& Command,
 		req->si_flags |= STARTF_USESHOWWINDOW;
 	req->creation_flags = Flags;
 
-	WCHAR* ptr = (WCHAR*)((ULONG_PTR)req + sizeof(PROCESS_RUN_SANDBOXED_REQ));
+	WCHAR* ptr = (WCHAR*)((ULONG_PTR)req.Value() + sizeof(PROCESS_RUN_SANDBOXED_REQ));
 
-	req->cmd_ofs = (ULONG)((ULONG_PTR)ptr - (ULONG_PTR)req);
+	req->cmd_ofs = (ULONG)((ULONG_PTR)ptr - (ULONG_PTR)req.Value());
 	req->cmd_len = cmd_len;
 	if (cmd_len) {
 		Command.toWCharArray(ptr);
@@ -1795,7 +1881,7 @@ SB_STATUS CSbieAPI::RunSandboxed(const QString& BoxName, const QString& Command,
 	}
 	*ptr++ = L'\0';
 
-	req->dir_ofs = (ULONG)((ULONG_PTR)ptr - (ULONG_PTR)req);
+	req->dir_ofs = (ULONG)((ULONG_PTR)ptr - (ULONG_PTR)req.Value());
 	req->dir_len = dir_len;
 	if (dir_len) {
 		WrkDir.toWCharArray(ptr);
@@ -1803,7 +1889,7 @@ SB_STATUS CSbieAPI::RunSandboxed(const QString& BoxName, const QString& Command,
 	}
 	*ptr++ = L'\0';
 
-	req->env_ofs = (ULONG)((ULONG_PTR)ptr - (ULONG_PTR)req);
+	req->env_ofs = (ULONG)((ULONG_PTR)ptr - (ULONG_PTR)req.Value());
 	req->env_len = env_len;
 	if (env_len) {
 		wmemcpy(ptr, (WCHAR*)env.data(), env_len);
@@ -1811,9 +1897,8 @@ SB_STATUS CSbieAPI::RunSandboxed(const QString& BoxName, const QString& Command,
 	}
 	*ptr++ = L'\0';
 
-	PROCESS_RUN_SANDBOXED_RPL *rpl;
+	SScoped<PROCESS_RUN_SANDBOXED_RPL> rpl;
 	SB_STATUS Status = CallServer(&req->h, &rpl);
-	free(req);
 	if (!Status)
 		return Status;
 	if (!rpl) 
@@ -1821,20 +1906,12 @@ SB_STATUS CSbieAPI::RunSandboxed(const QString& BoxName, const QString& Command,
 	
 
 	if (rpl->h.status != 0)
-		Status = SB_ERR(rpl->h.status);
+		return SB_ERR(rpl->h.status);
 
-	PROCESS_INFORMATION pi;
-	pi.hProcess = (HANDLE)rpl->hProcess;
-	pi.hThread = (HANDLE)rpl->hThread;
-	pi.dwProcessId = rpl->dwProcessId;
-	pi.dwThreadId = rpl->dwThreadId;
-
-	free(rpl);
-
-	CloseHandle(pi.hProcess);
-	CloseHandle(pi.hThread);
+	CloseHandle((HANDLE)rpl->hProcess);
+	CloseHandle((HANDLE)rpl->hThread);
 	
-	return Status;
+	return SB_OK;
 }
 
 SB_STATUS CSbieAPI__ProceccssExemptionControl(SSbieAPI* m, quint32 process_id, quint32 action_id, ULONG *NewState, ULONG *OldState)
@@ -1873,14 +1950,17 @@ QString CSbieAPI::GetBoxedPath(const QString& BoxName, const QString& Path)
 	CSandBoxPtr pBox = GetBoxByName(BoxName);
 	if (!pBox)
 		return QString();
-	return GetBoxedPath(pBox, Path);
+	return GetBoxedPath(pBox.data(), Path);
 }
 
 //#pragma comment(lib, "mpr.lib")
 
-QString CSbieAPI::GetBoxedPath(const CSandBoxPtr& pBox, const QString& Path)
+QString CSbieAPI::GetBoxedPath(CSandBox* pBox, const QString& Path, const QString& Snapshot)
 {
 	QString BoxRoot = pBox->m_FilePath;
+
+	if (!Snapshot.isEmpty())
+		BoxRoot += QString("\\snapshot-%1").arg(Snapshot);
 
     //WCHAR Buffer[4096];
     //DWORD dwBufferLength = sizeof(Buffer)/sizeof(WCHAR );
@@ -1938,7 +2018,7 @@ QString CSbieAPI::GetBoxedPath(const CSandBoxPtr& pBox, const QString& Path)
 	return Paths;*/
 }
 
-QString CSbieAPI::GetRealPath(const CSandBoxPtr& pBox, const QString& Path)
+QString CSbieAPI::GetRealPath(CSandBox* pBox, const QString& Path)
 {
 	QString RealPath;
 	QString BoxRoot = pBox->m_FilePath;
@@ -1948,6 +2028,11 @@ QString CSbieAPI::GetRealPath(const CSandBoxPtr& pBox, const QString& Path)
 		return QString();
 
 	RealPath = Path.mid(BoxRoot.length());
+	if (RealPath.left(10).compare("\\snapshot-", Qt::CaseInsensitive) == 0) {
+		int pos = RealPath.indexOf("\\", 1);
+		if (pos != -1)
+			RealPath.remove(0, pos);
+	}
 
 	if (RealPath.left(6) == "\\share") 
 	{
@@ -2009,17 +2094,14 @@ SB_STATUS CSbieAPI::ReloadConf(quint32 flags, quint32 SessionId)
 
 	emit ConfigReloaded();
 
-	//emit LogMessage("Sandboxie config has been reloaded.", false);
-	emit LogSbieMessage(0, QStringList() << "Sandboxie config has been reloaded" << "" << "", 4);
-
-	ReloadBoxes(true);
+	m_bBoxesDirty = true;
 
 	return SB_OK;
 }
 
 bool CSbieAPI::IsBox(const QString& BoxName, bool& bIsEnabled)
 {
-	wstring box_name = BoxName.toStdWString();
+	std::wstring box_name = BoxName.toStdWString();
 
 	__declspec(align(8)) ULONG64 parms[API_NUM_ARGS];
 	API_IS_BOX_ENABLED_ARGS *args = (API_IS_BOX_ENABLED_ARGS*)parms;
@@ -2040,14 +2122,13 @@ bool CSbieAPI::IsConfigLocked()
 
 SB_STATUS CSbieAPI::UnlockConfig(const QString& Password)
 {
-	SBIE_INI_PASSWORD_REQ *req = (SBIE_INI_PASSWORD_REQ *)malloc(REQUEST_LEN);
+	SScoped<SBIE_INI_PASSWORD_REQ> req(malloc(REQUEST_LEN));
 	req->h.msgid = MSGID_SBIE_INI_TEST_PASSWORD;
 	req->h.length = sizeof(SBIE_INI_PASSWORD_REQ);
 	m->Password = Password;
-	SB_STATUS Status = SbieIniSet(req, req->old_password, "GlobalSettings", "*");
+	SB_STATUS Status = SbieIniSet(&req->h, req->old_password, "GlobalSettings", "*");
 	if (Status.IsError())
 		m->Password.clear();
-	free(req);
 	return Status;
 }
 
@@ -2056,15 +2137,14 @@ SB_STATUS CSbieAPI::LockConfig(const QString& NewPassword)
 	if(NewPassword.length() > 64)
 		return SB_ERR(SB_PasswordBad, STATUS_INVALID_PARAMETER);
 
-	SBIE_INI_PASSWORD_REQ *req = (SBIE_INI_PASSWORD_REQ *)malloc(REQUEST_LEN);
+	SScoped<SBIE_INI_PASSWORD_REQ> req(malloc(REQUEST_LEN));
 	req->h.msgid = MSGID_SBIE_INI_SET_PASSWORD;
 	req->h.length = sizeof(SBIE_INI_PASSWORD_REQ);
-	m->Password.toWCharArray(req->new_password); // fix-me: potential overflow
-	req->new_password[m->Password.length()] = L'\0';
-	SB_STATUS Status = SbieIniSet(req, req->old_password, "GlobalSettings", "*");
+	NewPassword.toWCharArray(req->new_password); // fix-me: potential overflow
+	req->new_password[NewPassword.length()] = L'\0';
+	SB_STATUS Status = SbieIniSet(&req->h, req->old_password, "GlobalSettings", "*");
 	if (!Status.IsError())
 		m->Password = NewPassword;
-	free(req);
 	return Status;
 }
 
@@ -2073,24 +2153,50 @@ void CSbieAPI::ClearPassword()
 	m->Password.clear();
 }
 
-quint32 CSbieAPI::GetFeatureFlags()
+SB_RESULT(QByteArray) CSbieAPI::RC4Crypt(const QByteArray& Data)
+{
+	ULONG req_len = sizeof(SBIE_INI_RC4_CRYPT_REQ) + Data.size();
+	SScoped<SBIE_INI_RC4_CRYPT_REQ> req(malloc(req_len));
+
+	req->h.length = req_len;
+	req->h.msgid = MSGID_SBIE_INI_RC4_CRYPT;
+	req->value_len = Data.size();
+	memcpy(req->value, Data.constData(), req->value_len);
+	
+	SScoped<SBIE_INI_RC4_CRYPT_RPL> rpl;
+	SB_STATUS Status = CallServer(&req->h, &rpl);
+	if (!Status)
+		return Status;
+	if (!rpl) 
+		return SB_ERR(ERROR_SERVER_DISABLED);
+	if (rpl->h.status != 0)
+		return SB_ERR(rpl->h.status);
+	return CSbieResult<QByteArray>(QByteArray((char*)rpl->value, rpl->value_len));
+}
+
+bool CSbieAPI::GetDriverInfo(quint32 InfoClass, void* pBuffer, size_t Size)
 {
 	__declspec(align(8)) ULONG64 parms[API_NUM_ARGS];
 	API_QUERY_DRIVER_INFO_ARGS *args = (API_QUERY_DRIVER_INFO_ARGS*)parms;
 
-	ULONG flags = 0;
-	//ULONG len = sizeof(flags);
-
 	memset(parms, 0, sizeof(parms));
 	args->func_code = API_QUERY_DRIVER_INFO;
-	args->info_class.val = 0;
-	args->info_data.val = &flags;
-	//args->info_len.val = &len;
+	args->info_class.val = InfoClass;
+	args->info_data.val = pBuffer;
+	args->info_len.val = Size;
 
 	NTSTATUS status = m->IoControl(parms);
-	if (!NT_SUCCESS(status))
-		return 0;
+	if (!NT_SUCCESS(status)) {
+		memset(pBuffer, 0, Size);
+		return false;
+	}
+	return true;
+}
 
+quint32 CSbieAPI::GetFeatureFlags()
+{
+	quint32 flags = 0;
+	GetDriverInfo(0, &flags, sizeof(flags));
 	return flags;
 }
 
@@ -2105,6 +2211,8 @@ QString CSbieAPI::GetFeatureStr()
 		str.append("ObCB");
 	if (flags & SBIE_FEATURE_FLAG_SBIE_LOGIN)
 		str.append("SbL");
+	if (flags & SBIE_FEATURE_FLAG_SECURITY_MODE)
+		str.append("SMod");
 	if (flags & SBIE_FEATURE_FLAG_PRIVACY_MODE)
 		str.append("PMod");
 	if (flags & SBIE_FEATURE_FLAG_COMPARTMENTS)
@@ -2115,25 +2223,55 @@ QString CSbieAPI::GetFeatureStr()
 	return str.join(",");
 }
 
-quint64 CSbieAPI::GetCertState()
+int CSbieAPI::IsDyndataActive()
+{
+	quint32 flags = GetFeatureFlags();
+
+	if (flags & SBIE_FEATURE_FLAG_DYNDATA_EXP)
+		return -1;
+	if (flags & SBIE_FEATURE_FLAG_DYNDATA_OK)
+		return 1;
+	return 0;
+}
+
+SB_STATUS CSbieAPI::SetSecureParam(const QString& Name, const void* data, size_t size)
 {
 	__declspec(align(8)) ULONG64 parms[API_NUM_ARGS];
-	API_QUERY_DRIVER_INFO_ARGS *args = (API_QUERY_DRIVER_INFO_ARGS*)parms;
+	API_SECURE_PARAM_ARGS *args = (API_SECURE_PARAM_ARGS*)parms;
 
-	ULONGLONG state = 0;
-	ULONG len = sizeof(state);
+	std::wstring name = Name.toStdWString();
 
 	memset(parms, 0, sizeof(parms));
-	args->func_code = API_QUERY_DRIVER_INFO;
-	args->info_class.val = -1;
-	args->info_data.val = &state;
-	args->info_len.val = len;
+	args->func_code = API_SET_SECURE_PARAM;
+	args->param_name.val = (WCHAR*)name.c_str();
+	args->param_data.val = (void*)data;
+	args->param_size.val = size;
 
 	NTSTATUS status = m->IoControl(parms);
 	if (!NT_SUCCESS(status))
-		return 0;
+		return SB_ERR(status);
+	return SB_OK;
+}
 
-	return state;
+SB_STATUS CSbieAPI::GetSecureParam(const QString& Name, void* data, size_t size, quint32* size_out, bool bVerify)
+{
+	__declspec(align(8)) ULONG64 parms[API_NUM_ARGS];
+	API_SECURE_PARAM_ARGS *args = (API_SECURE_PARAM_ARGS*)parms;
+
+	std::wstring name = Name.toStdWString();
+
+	memset(parms, 0, sizeof(parms));
+	args->func_code = API_GET_SECURE_PARAM;
+	args->param_name.val = (WCHAR*)name.c_str();
+	args->param_data.val = (void*)data;
+	args->param_size.val = size;
+	args->param_size_out.val = (ULONG*)size_out;
+	args->param_verify.val = bVerify;
+
+	NTSTATUS status = m->IoControl(parms);
+	if (!NT_SUCCESS(status))
+		return SB_ERR(status);
+	return SB_OK;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -2249,7 +2387,7 @@ bool CSbieAPI::GetLog()
 
 	if ((MsgCode & 0xFFFF) == 1399) // Process Start Notification
 	{
-		emit ProcessBoxed(ProcessId, Nt2DosPath(MsgData[1]), MsgData[2], MsgData.length() < 4 ? 0 : MsgData[3].toUInt());
+		emit ProcessBoxed(ProcessId, Nt2DosPath(MsgData[1]), MsgData[2], MsgData.length() < 4 ? 0 : MsgData[3].toUInt(), MsgData.length() < 5 ? QString() : MsgData[4]);
 		return true;
 	}
 	
@@ -2263,7 +2401,7 @@ bool CSbieAPI::GetLog()
 
 	/*
 	QString Message = CSbieAPI__FormatSbieMsg(m, MsgCode, str1, str2);
-	if (ProcessId != 4) // if its not from the driver add the pid
+	if (ProcessId != 4) // if it is not from the driver, add the pid
 		Message += tr(", by process: %1").arg(ProcessId);
 
 	emit LogMessage(Message, MessageId);
@@ -2273,7 +2411,7 @@ bool CSbieAPI::GetLog()
 	return true;
 }
 
-CBoxedProcessPtr CSbieAPI::OnProcessBoxed(quint32 ProcessId, const QString& Path, const QString& Box, quint32 ParentId)
+CBoxedProcessPtr CSbieAPI::OnProcessBoxed(quint32 ProcessId, const QString& Path, const QString& Box, quint32 ParentId, const QString& CmdLine)
 {
 	CBoxedProcessPtr pProcess = m_BoxedProxesses.value(ProcessId);
 	if (!pProcess)
@@ -2282,9 +2420,17 @@ CBoxedProcessPtr CSbieAPI::OnProcessBoxed(quint32 ProcessId, const QString& Path
 		if (!pBox)
 			return CBoxedProcessPtr();
 		
+		if (pBox->m_ActiveProcessCount == 0) {
+			pBox->m_ActiveProcessCount = 1;
+			pBox->OpenBox();
+			m_bBoxesDirty = true;
+			emit BoxOpened(pBox);
+		}
+
 		pProcess = CBoxedProcessPtr(NewBoxedProcess(ProcessId, pBox.data()));
 		pBox->m_ProcessList.insert(ProcessId, pProcess);
 		m_BoxedProxesses.insert(ProcessId, pProcess);
+		pBox->m_ActiveProcessDirty = true;
 
 		UpdateProcessInfo(pProcess);
 		pProcess->InitProcessInfo();
@@ -2296,6 +2442,8 @@ CBoxedProcessPtr CSbieAPI::OnProcessBoxed(quint32 ProcessId, const QString& Path
 		pProcess->m_ParendPID = ParentId;
 	if (pProcess->m_ImagePath.isEmpty())
 		pProcess->m_ImagePath = Path;
+	if (pProcess->m_CommandLine.isEmpty() && !CmdLine.isEmpty())
+		pProcess->m_CommandLine = CmdLine;
 
 	return pProcess;
 }
@@ -2335,6 +2483,149 @@ bool CSbieAPI::AreForceProcessDisabled()
 	CSbieAPI__ForceProcessControl(m, NULL, &uOldState);
 	return uOldState != FALSE;
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// Mount Manager
+//
+
+SB_STATUS CSbieAPI::ImBoxCreate(CSandBox* pBox, quint64 uSizeKb, const QString& Password)
+{
+	std::wstring file_root = L"\\??\\" + pBox->GetFileRoot().toStdWString();
+	std::wstring password = Password.toStdWString();
+	if(password.length() > 128)
+		return SB_ERR(ERROR_INVALID_PARAMETER);
+
+	ULONG req_len = sizeof(IMBOX_CREATE_REQ);
+	req_len += file_root.length() * sizeof(wchar_t);
+	SScoped<IMBOX_CREATE_REQ> req(malloc(req_len));
+
+	req->h.length = req_len;
+	req->h.msgid = MSGID_IMBOX_CREATE;
+	req->image_size = uSizeKb;
+	wcscpy(req->password, password.c_str());
+	wcscpy(req->file_root, file_root.c_str());
+
+	SScoped<IMBOX_CREATE_RPL> rpl;
+	SB_STATUS Status = CallServer(&req->h, &rpl);
+	m_bBoxesDirty = true;
+	if (!Status)
+		return Status;
+	if (!rpl) 
+		return SB_ERR(ERROR_SERVER_DISABLED);
+	if (rpl->h.status != 0)
+		return SB_ERR(rpl->h.status);
+	return SB_OK;
+}
+
+SB_STATUS CSbieAPI::ImBoxMount(CSandBox* pBox, const QString& Password, bool bProtect, bool bAutoUnmount)
+{
+	std::wstring root = pBox->GetRegRoot().toStdWString();
+	if(root.length() >= MAX_REG_ROOT_LEN)
+		return SB_ERR(ERROR_INVALID_PARAMETER);
+	std::wstring file_root = L"\\??\\" + pBox->GetFileRoot().toStdWString();
+	std::wstring password = Password.toStdWString();
+	if(password.length() > 128)
+		return SB_ERR(ERROR_INVALID_PARAMETER);
+
+	ULONG req_len = sizeof(IMBOX_MOUNT_REQ);
+	req_len += file_root.length() * sizeof(wchar_t);
+	SScoped<IMBOX_MOUNT_REQ> req(malloc(req_len));
+
+	req->h.length = req_len;
+	req->h.msgid = MSGID_IMBOX_MOUNT;
+	wcscpy(req->password, password.c_str());
+	req->protect_root = bProtect;
+	req->auto_unmount = bAutoUnmount;
+	wcscpy(req->reg_root, root.c_str());
+	wcscpy(req->file_root, file_root.c_str());
+
+	SScoped<IMBOX_MOUNT_RPL> rpl;
+	SB_STATUS Status = CallServer(&req->h, &rpl);
+	m_bBoxesDirty = true;
+	if (!Status)
+		return Status;
+	if (!rpl) 
+		return SB_ERR(ERROR_SERVER_DISABLED);
+	if (rpl->h.status != 0)
+		return SB_ERR(rpl->h.status);
+	return SB_OK;
+}
+
+SB_STATUS CSbieAPI::ImBoxUnmount(CSandBox* pBox)
+{
+	std::wstring root = pBox->GetRegRoot().toStdWString();
+
+	IMBOX_UNMOUNT_REQ req;
+	req.h.length = sizeof(IMBOX_UNMOUNT_REQ);
+	req.h.msgid = MSGID_IMBOX_UNMOUNT;
+	wcscpy(req.reg_root, root.c_str());
+
+	SScoped<IMBOX_UNMOUNT_RPL> rpl;
+	SB_STATUS Status = CallServer(&req.h, &rpl);
+	m_bBoxesDirty = true;
+	if (!Status)
+		return Status;
+	if (!rpl) 
+		return SB_ERR(ERROR_SERVER_DISABLED);
+	if (rpl->h.status != 0)
+		return SB_ERR(rpl->h.status);
+	return SB_OK;
+}
+
+SB_RESULT(QStringList) CSbieAPI::ImBoxEnum()
+{
+	IMBOX_ENUM_REQ req;
+	req.h.length = sizeof(IMBOX_ENUM_REQ);
+	req.h.msgid = MSGID_IMBOX_ENUM;
+
+	SScoped<IMBOX_ENUM_RPL> rpl;
+	SB_STATUS Status = CallServer(&req.h, &rpl);
+	if (!Status)
+		return Status;
+	if (!rpl) 
+		return SB_ERR(ERROR_SERVER_DISABLED);
+	if (rpl->h.status != 0)
+		return SB_ERR(rpl->h.status);
+
+	QStringList Roots;
+
+	wchar_t* reg_roots = rpl->reg_roots;
+	while (*reg_roots) {
+		size_t len = wcslen(reg_roots);
+		Roots.append(QString::fromWCharArray(reg_roots, len));
+		reg_roots += len + 1;
+	}
+
+	return CSbieResult<QStringList>(Roots);
+}
+
+SB_RESULT(QVariantMap) CSbieAPI::ImBoxQuery(const QString& Root)
+{
+	std::wstring root = Root.toStdWString();
+
+	IMBOX_QUERY_REQ req;
+	req.h.length = sizeof(IMBOX_QUERY_REQ);
+	req.h.msgid = MSGID_IMBOX_QUERY;
+	wcscpy(req.reg_root, root.c_str());
+
+	SScoped<IMBOX_QUERY_RPL> rpl;
+	SB_STATUS Status = CallServer(&req.h, &rpl);
+	if (!Status)
+		return Status;
+	if (!rpl) 
+		return SB_ERR(ERROR_SERVER_DISABLED);
+	if (rpl->h.status != 0)
+		return SB_ERR(rpl->h.status);
+
+	QVariantMap Info;
+
+	Info["DiskSize"] = rpl->disk_size;
+	Info["UsedSize"] = rpl->used_size;
+	Info["DiskRoot"] = QString::fromWCharArray(rpl->disk_root);
+
+	return CSbieResult<QVariantMap>(Info);
+}
+
 
 ///////////////////////////////////////////////////////////////////////////////
 // Monitor
@@ -2377,15 +2668,15 @@ bool CSbieAPI::IsMonitoring()
 
 bool CSbieAPI::GetMonitor()
 {
+#if 0
 	ULONG type;
 	ULONG pid = 0;
 	ULONG tid = 0;
 	wchar_t* Buffer[4 * 1024];
-	ULONG Length = ARRAYSIZE(Buffer);
 
 	//ULONG RecordNum = m->lastRecordNum;
 
-	__declspec(align(8)) UNICODE_STRING64 log_buffer = { 0, (USHORT)Length, (ULONG64)Buffer };
+	__declspec(align(8)) UNICODE_STRING64 log_buffer = { 0, (USHORT)ARRAYSIZE(Buffer), (ULONG64)Buffer };
 	__declspec(align(8)) ULONG64 parms[API_NUM_ARGS];
     API_MONITOR_GET_EX_ARGS* args	= (API_MONITOR_GET_EX_ARGS*)parms;
 
@@ -2400,7 +2691,7 @@ bool CSbieAPI::GetMonitor()
 	if (!NT_SUCCESS(m->IoControl(parms)))
 		return false; // error or no more entries
 
-	if (type == 0) // versions prioir to 5.45.0 return success and type 0 when there are no more entries
+	if (type == 0) // versions prior to 5.45.0 return success and type 0 when there are no more entries
 		return false;
 
 	//if (RecordNum != m->lastRecordNum + 1 && !m->clearingBuffers)
@@ -2410,50 +2701,155 @@ bool CSbieAPI::GetMonitor()
 	if (m->clearingBuffers)
 		return true; 
 
-	QString Data = QString::fromWCharArray((wchar_t*)log_buffer.Buffer, log_buffer.Length / sizeof(wchar_t));
-	if (Data.length() == Length - 1) // if we got exactly the max length assume data were truncated and indicate accordingly...
-		Data += "..."; 
-
-	// cleanup debug output strings and drop empty once.
-	if (type == (MONITOR_OTHER | MONITOR_TRACE)) {
-		Data = Data.trimmed();
-		if (Data.isEmpty())
-			return true;
+	QStringList LogData;
+	for (size_t pos = 0; pos < log_buffer.Length; ) {
+		size_t len = wcslen((WCHAR*)(log_buffer.Buffer + pos));
+		LogData.append(QString::fromWCharArray((WCHAR*)(log_buffer.Buffer + pos), len));
+		pos += (len + 1) * sizeof(WCHAR);
 	}
 
-	CTraceEntryPtr LogEntry = CTraceEntryPtr(new CTraceEntry(pid, tid, type, Data));
-	AddTraceEntry(LogEntry, true);
+	CTraceEntryPtr LogEntry = CTraceEntryPtr(new CTraceEntry(0, pid, tid, type, LogData));
+
+	QMutexLocker Lock(&m_TraceMutex);
+	m_TraceCache.append(LogEntry);
 
 	return true;
-}
 
-void CSbieAPI::AddTraceEntry(const CTraceEntryPtr& LogEntry, bool bCanMerge)
-{
-	QWriteLocker Lock(&m_TraceMutex);
+#else // bulk retrieval starting with build 1.6.6
 
-	if (bCanMerge && !m_TraceList.isEmpty() && m_TraceList.last()->Equals(LogEntry)) {
-		m_TraceList.last()->Merge(LogEntry);
-		return;
+	if (m->traceBuffer == NULL) {
+		m->traceBufferLen = 256 * PAGE_SIZE;
+		m->traceBuffer = (UCHAR*)malloc(m->traceBufferLen);
 	}
 
-	m_TraceList.append(LogEntry);
-}
+	ULONG buffer_len = m->traceBufferLen;
+	UCHAR* buffer = m->traceBuffer;
 
-QVector<CTraceEntryPtr> CSbieAPI::GetTrace() const 
-{ 
-	QReadLocker Lock(&m_TraceMutex); 
+	__declspec(align(8)) ULONG64 parms[API_NUM_ARGS];
+    API_MONITOR_GET2_ARGS* args	= (API_MONITOR_GET2_ARGS*)parms;
 
-	if (m_TraceList.count() >= m_LastTraceEntry) {
-		for (int i = m_LastTraceEntry; i < m_TraceList.count(); i++) {
-			const CTraceEntryPtr& pEntry = m_TraceList[i];
-			if (CBoxedProcessPtr proc = m_BoxedProxesses.value(pEntry->GetProcessId())) {
-				((CTraceEntry*)pEntry.data())->SetProcessName(proc->GetProcessName());
-				((CTraceEntry*)pEntry.data())->SetBoxPtr(proc->GetBoxPtr());
+	memset(parms, 0, sizeof(parms));
+    args->func_code	= API_MONITOR_GET2;
+	args->buffer_ptr.val = (WCHAR*)buffer;
+	args->buffer_len.val = &buffer_len;
+
+	NTSTATUS status = m->IoControl(parms);
+	if (!NT_SUCCESS(status))
+		return false; // error or no more entries
+
+	if (m->clearingBuffers)
+		return true; 
+
+	for (UCHAR* ptr = buffer; *(ULONG*)ptr > 0; ) {
+
+		ULONG uSize = *(ULONG*)ptr;
+		ptr += sizeof(ULONG);
+
+		LONGLONG uTimestamp = *(LONGLONG*)ptr;
+		ptr += sizeof(LONGLONG);
+		uSize -= sizeof(LONGLONG);
+
+		ULONG uType = *(ULONG*)ptr;
+		ptr += sizeof(ULONG);
+		uSize -= sizeof(ULONG);
+
+		ULONG uPid = *(ULONG*)ptr;
+		ptr += sizeof(ULONG);
+		uSize -= sizeof(ULONG);
+
+		ULONG uTid = *(ULONG*)ptr;
+		ptr += sizeof(ULONG);
+		uSize -= sizeof(ULONG);
+
+		QStringList LogData;
+		for (; uSize > 0;) {
+			if (*(WCHAR*)ptr == 0xFFFF) { // end of strings marker
+				ptr += sizeof(WCHAR);
+				uSize -= sizeof(WCHAR);
+				break;
+			}
+			size_t len = wcslen((WCHAR*)ptr);
+			QString str = QString::fromWCharArray((WCHAR*)ptr, len);
+			ptr += (len + 1) * sizeof(WCHAR);
+			uSize -= (len + 1) * sizeof(WCHAR);
+			LogData.append(str);
+		}
+
+		QVector<quint64> Stack;
+
+		for (; uSize > 0;) {
+
+			ULONG uTagID = *(ULONG*)ptr;
+			ptr += sizeof(ULONG);
+			uSize -= sizeof(ULONG);
+
+			ULONG uTagLen = *(ULONG*)ptr;
+			ptr += sizeof(ULONG);
+			uSize -= sizeof(ULONG);
+
+			switch (uTagID) {
+			case 'STCK':
+				int PtrSize = sizeof(PVOID);
+#ifndef _WIN64
+				if (IsWow64())
+					PtrSize = sizeof(__int64);
+#endif
+				int Frames = uTagLen / PtrSize;
+				Stack.reserve(Frames);
+				for (int i = 0; i < Frames; i++) {
+					quint64 Address;
+#ifndef _WIN64
+					if (PtrSize == sizeof(quint32))
+						Address = ((quint32*)ptr)[i];
+					else
+#endif
+						Address = ((quint64*)ptr)[i];
+
+					if ((Address & 0x8000000000000000ull) == 0) // skip kernel addresses
+						Stack.append(Address);
+				}
 			}
 
+			ptr += uTagLen;
+			uSize -= uTagLen;
 		}
-		((CSbieAPI*)this)->m_LastTraceEntry = m_TraceList.count();
+
+		CTraceEntryPtr LogEntry = CTraceEntryPtr(new CTraceEntry(FILETIME2ms(uTimestamp), uPid, uTid, uType, LogData, Stack));
+
+		QMutexLocker Lock(&m_TraceMutex);
+		m_TraceCache.append(LogEntry);
 	}
+
+	return status == STATUS_MORE_ENTRIES;
+#endif
+}
+
+const QVector<CTraceEntryPtr>& CSbieAPI::GetTrace()
+{ 
+	QMutexLocker Lock(&m_TraceMutex);
+
+	for (int i = 0; i < m_TraceCache.count(); i++) 
+	{
+		CTraceEntryPtr& pEntry = m_TraceCache[i];
+
+#ifdef USE_MERGE_TRACE
+		if (!m_TraceList.isEmpty() && m_TraceList.last()->Equals(pEntry)) {
+			m_TraceList.last()->Merge(pEntry);
+			continue;
+		}
+#endif
+
+		if (CBoxedProcessPtr proc = m_BoxedProxesses.value(pEntry->GetProcessId())) {
+			pEntry->SetProcessName(proc->GetProcessName());
+			pEntry->SetBoxPtr(proc->GetBoxPtr());
+			QVector<quint64> Stack = pEntry->GetStack();
+			if(!Stack.isEmpty())
+				proc->ResolveSymbols(Stack);
+		}
+
+		m_TraceList.append(pEntry);
+	}
+	m_TraceCache.clear();
 
 	return m_TraceList; 
 }
@@ -2468,8 +2864,112 @@ QString CSbieAPI::GetSbieMsgStr(quint32 code, quint32 Lang)
 	WCHAR* ret_str = NULL;
 	if (!m->SbieMsgDll || (FormatMessage(FormatFlags, m->SbieMsgDll, code, Lang, (LPWSTR)&ret_str, 4, NULL) == 0
 						&& FormatMessage(FormatFlags, m->SbieMsgDll, code, 1033, (LPWSTR)&ret_str, 4, NULL) == 0))
-		return QString("SBIE%0: %1; %2").arg(code, 4, 10);
+		return QString("SBIE%0: %1; %2").arg(code & 0xFFFF, 4, 10);
 	QString qStr = QString::fromWCharArray(ret_str);
 	LocalFree(ret_str);
 	return qStr.trimmed(); // note messages may have \r\n at the end
+}
+
+void CSbieAPI::LoadEventLog()
+{
+	QByteArray buff;
+	buff.resize(8 * 1024);
+
+    HANDLE hEventLog = OpenEventLog(NULL, L"System");
+
+    while (hEventLog) 
+	{
+        ULONG bytesRead, bytesNeeded;
+        if(!ReadEventLog(hEventLog, EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ, 0, buff.data(), buff.size(), &bytesRead, &bytesNeeded))
+            break;
+
+        EVENTLOGRECORD *rec = (EVENTLOGRECORD *)buff.data();
+        while (bytesRead > 0) 
+		{
+			time_t recently = time(NULL) - 15 * 60;
+
+            WCHAR *source = (WCHAR *) ((UCHAR *)rec + sizeof(EVENTLOGRECORD));
+            if ((time_t)rec->TimeGenerated >= recently && (wcscmp(source, SBIEDRV) == 0 || wcscmp(source, SBIESVC) == 0)) 
+			{
+				ULONG MsgCode = rec->EventID;
+				QStringList MsgData = QStringList() << "" << "" << "";
+
+				WCHAR *str0 = (WCHAR *)((UCHAR *)rec + rec->StringOffset);
+                if (rec->NumStrings >= 2) 
+				{
+                    WCHAR *str1 = str0 + wcslen(str0) + 1;
+					MsgData[1] = QString::fromWCharArray(str1);
+					if (rec->NumStrings >= 3)
+					{
+						WCHAR *str2 = str1 + wcslen(str1) + 1;
+						MsgData[2] = QString::fromWCharArray(str2);
+					}
+                }
+
+                emit LogSbieMessage(MsgCode & 0xFFFF, MsgData, 0);
+            }
+
+            bytesRead -= rec->Length;
+            rec = (EVENTLOGRECORD *)((UCHAR *)rec + rec->Length);
+        }
+    }
+
+    if (hEventLog)
+        CloseEventLog(hEventLog);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Updater 
+//
+
+SB_RESULT(int) CSbieAPI::RunUpdateUtility(const QStringList& Params, quint32 Elevate, bool Wait)
+{
+	if (Params.isEmpty())
+		return SB_ERR(ERROR_INVALID_PARAMETER);
+
+	QString Command;
+	foreach(const QString & Param, Params) {
+		if (!Command.isEmpty()) Command += " ";
+		Command += "\"" + Param + "\"";
+	}
+
+	ULONG cmd_len = Command.length();
+
+	ULONG req_len = sizeof(PROCESS_RUN_UPDATER_REQ) + (cmd_len + 8) * sizeof(WCHAR);
+	SScoped<PROCESS_RUN_UPDATER_REQ> req(malloc(req_len));
+
+	req->h.length = req_len;
+	req->h.msgid = MSGID_PROCESS_RUN_UPDATER;
+	req->elevate = Elevate;
+
+	WCHAR* ptr = (WCHAR*)((ULONG_PTR)req.Value() + sizeof(PROCESS_RUN_UPDATER_REQ));
+
+	req->cmd_ofs = (ULONG)((ULONG_PTR)ptr - (ULONG_PTR)req.Value());
+	req->cmd_len = cmd_len;
+	if (cmd_len) {
+		Command.toWCharArray(ptr);
+		ptr += cmd_len;
+	}
+	*ptr++ = L'\0';
+
+	SScoped<PROCESS_RUN_UPDATER_RPL> rpl;
+	SB_STATUS Status = CallServer(&req->h, &rpl);
+	if (!Status)
+		return Status;
+	if (!rpl) 
+		return SB_ERR(ERROR_SERVER_DISABLED);
+	
+	if (rpl->h.status != 0)
+		return SB_ERR(rpl->h.status);
+
+	DWORD ExitCode = 0;
+	if (Wait) {
+		WaitForSingleObject((HANDLE)rpl->hProcess, INFINITE);
+		GetExitCodeProcess((HANDLE)rpl->hProcess, &ExitCode);
+	}
+
+	CloseHandle((HANDLE)rpl->hProcess);
+	CloseHandle((HANDLE)rpl->hThread);
+
+	return CSbieResult<int>((int)ExitCode);
 }

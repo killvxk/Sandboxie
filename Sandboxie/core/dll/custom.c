@@ -1,6 +1,6 @@
 /*
  * Copyright 2004-2020 Sandboxie Holdings, LLC 
- * Copyright 2020-2021 David Xanatos, xanasoft.com
+ * Copyright 2020-2023 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -27,7 +27,7 @@
 
 
 //---------------------------------------------------------------------------
-// Fuctions
+// Functions
 //---------------------------------------------------------------------------
 
 
@@ -41,6 +41,7 @@ static BOOLEAN  DisableRecycleBin(void);
 static BOOLEAN  DisableWinRS(void);
 static BOOLEAN  DisableWerFaultUI(void);
 static BOOLEAN  EnableMsiDebugging(void);
+static BOOLEAN  DisableEdgeBoost(void);
 static BOOLEAN  Custom_EnableBrowseNewProcess(void);
 static BOOLEAN  Custom_DisableBHOs(void);
 static BOOLEAN  Custom_OpenWith(void);
@@ -74,8 +75,8 @@ _FX BOOLEAN CustomizeSandbox(void)
 
     if ((Dll_ProcessFlags & SBIE_FLAG_PRIVACY_MODE) != 0) {
 
-        Key_CreateBaseKeys();
-        //Key_CreateBaseFolders(); // no longer needed those paths will be created on demand
+        //Key_CreateBaseKeys();
+        File_CreateBaseFolders();
     }
 
     if (GetSetCustomLevel(0) != '2') {
@@ -87,6 +88,7 @@ _FX BOOLEAN CustomizeSandbox(void)
             DisableWinRS();
         DisableWerFaultUI();
         EnableMsiDebugging();
+        DisableEdgeBoost();
         Custom_EnableBrowseNewProcess();
         DeleteShellAssocKeys(0);
         Custom_DisableBHOs();
@@ -173,6 +175,20 @@ _FX UCHAR GetSetCustomLevel(UCHAR SetLevel)
             Sbie_snwprintf(path, 256, L"%d [%08X]", -2, status);
             SbieApi_Log(2206, path);
         }
+
+        //
+        // if UseRegDeleteV2 is set, check if RegPaths.dat was loaded
+        // if not it means the box was previously a V1 box,
+        // hence return 0 and re run customization
+        // 
+        // note: DeleteShellAssocKeys deletes the sandboxie shell integration keys
+        // so the existence of a RegPaths.dat in a customized box is a reliable indicator
+        //
+
+        extern BOOLEAN Key_Delete_v2;
+        extern BOOLEAN Key_RegPaths_Loaded;
+        if (Key_Delete_v2 && !Key_RegPaths_Loaded)
+            return 0;
 
     } else if (AutoExecHKey) {
 
@@ -439,6 +455,44 @@ _FX BOOLEAN EnableMsiDebugging(void)
                 NtClose(hKeyMSI);
             }
             NtClose(hKeyWin);
+        }
+        NtClose(hKeyRoot);
+    }
+
+    return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
+// DisableEdgeBoost
+//
+// Disable edge startup boost
+//---------------------------------------------------------------------------
+
+
+_FX BOOLEAN DisableEdgeBoost(void)
+{
+    NTSTATUS status;
+    OBJECT_ATTRIBUTES objattrs;
+    UNICODE_STRING uni;
+    HANDLE hKeyRoot;
+    HANDLE hKeyEdge;
+
+    // Open HKLM
+    RtlInitUnicodeString(&uni, Custom_PrefixHKLM);
+    InitializeObjectAttributes(&objattrs, &uni, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    if (NtOpenKey(&hKeyRoot, KEY_READ, &objattrs) == STATUS_SUCCESS)
+    {
+        // open/create WER parent key
+        RtlInitUnicodeString(&uni, L"SOFTWARE\\Policies\\Microsoft\\Edge");
+        InitializeObjectAttributes(&objattrs, &uni, OBJ_CASE_INSENSITIVE, hKeyRoot, NULL);
+        if (Key_OpenOrCreateIfBoxed(&hKeyEdge, KEY_ALL_ACCESS, &objattrs) == STATUS_SUCCESS)
+        {
+            DWORD StartupBoostEnabled = 0;
+            RtlInitUnicodeString(&uni, L"StartupBoostEnabled");
+            status = NtSetValueKey(hKeyEdge, &uni, 0, REG_DWORD, &StartupBoostEnabled, sizeof(StartupBoostEnabled));
+
+            NtClose(hKeyEdge);
         }
         NtClose(hKeyRoot);
     }
@@ -866,7 +920,11 @@ _FX HANDLE OpenExplorerKey(
 
     InitializeObjectAttributes(
         &objattrs, &uni, OBJ_CASE_INSENSITIVE, NULL, NULL);
-    status = NtOpenKey(&HKey_Root, KEY_READ, &objattrs);
+    status = Key_OpenOrCreateIfBoxed(&HKey_Root, KEY_READ, &objattrs);
+    if (status == STATUS_BAD_INITIAL_PC) {
+        *error = 0;
+        return INVALID_HANDLE_VALUE;
+    }
 
     if (status != STATUS_SUCCESS) {
         *error = 0x99;
@@ -880,7 +938,11 @@ _FX HANDLE OpenExplorerKey(
     RtlInitUnicodeString(&uni, _Explorer);
     InitializeObjectAttributes(
         &objattrs, &uni, OBJ_CASE_INSENSITIVE, HKey_Root, NULL);
-    status = NtOpenKey(&HKey_Explorer, KEY_READ, &objattrs);
+    status = Key_OpenOrCreateIfBoxed(&HKey_Explorer, KEY_READ, &objattrs);
+    if (status == STATUS_BAD_INITIAL_PC) {
+        *error = 0;
+        return INVALID_HANDLE_VALUE;
+    }
 
     NtClose(HKey_Root);
 
@@ -897,9 +959,7 @@ _FX HANDLE OpenExplorerKey(
     InitializeObjectAttributes(
         &objattrs, &uni, OBJ_CASE_INSENSITIVE, HKey_Explorer, NULL);
 
-    status = Key_OpenOrCreateIfBoxed(
-                    &HKey_Subkey, KEY_ALL_ACCESS, &objattrs);
-
+    status = Key_OpenOrCreateIfBoxed(&HKey_Subkey, KEY_ALL_ACCESS, &objattrs);
     if (status == STATUS_BAD_INITIAL_PC) {
         *error = 0;
         return INVALID_HANDLE_VALUE;
@@ -1136,7 +1196,7 @@ _FX BOOLEAN SbieDll_ExpandAndRunProgram(const WCHAR *Command)
 		wmemcpy(ptr2, ptr, length);
 		ptr2 += len;
 	}
-	wcscpy(ptr2, ptr1); // copy whats left
+	wcscpy(ptr2, ptr1); // copy what's left
 
     Dll_Free(cmdline);
 
@@ -1396,7 +1456,11 @@ _FX BOOLEAN Custom_OsppcDll(HMODULE module)
     ULONG zero = 0;
     ULONG ProductIndex, ValueIndex;
 
-    ULONG Wow64 = Dll_IsWow64 ? KEY_WOW64_64KEY : 0;
+    ULONG Wow64 = 0;
+#ifndef _WIN64
+    if (Dll_IsWow64)
+        Wow64 = KEY_WOW64_64KEY;
+#endif
 
     //
     // open Microsoft Office 2010 registry key
@@ -1405,9 +1469,7 @@ _FX BOOLEAN Custom_OsppcDll(HMODULE module)
     InitializeObjectAttributes(
         &objattrs, &uni, OBJ_CASE_INSENSITIVE, NULL, NULL);
 
-    RtlInitUnicodeString(&uni,
-        L"\\registry\\user\\current\\software"
-            L"\\Microsoft\\Office\\14.0");
+    RtlInitUnicodeString(&uni, L"\\registry\\user\\current\\software\\Microsoft\\Office\\14.0");
 
     status = Key_OpenIfBoxed(&hOfficeKey, KEY_ALL_ACCESS | Wow64, &objattrs);
     if (! NT_SUCCESS(status))
@@ -1473,6 +1535,7 @@ _FX BOOLEAN Custom_OsppcDll(HMODULE module)
     return TRUE;
 }
 
+#ifndef _M_ARM64
 
 //---------------------------------------------------------------------------
 // Custom_InternetDownloadManager
@@ -1677,3 +1740,5 @@ _FX BOOLEAN Acscmonitor_Init(HMODULE hDll)
 		CloseHandle(ThreadHandle); 
     return TRUE;
 }
+
+#endif

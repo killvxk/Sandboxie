@@ -610,6 +610,7 @@ typedef struct tagGUI_SPLWOW64_REQ GUI_SPLWOW64_REQ;
 // Change Display Settings
 //---------------------------------------------------------------------------
 
+#ifndef NOGDI
 
 struct tagGUI_CHANGE_DISPLAY_SETTINGS_REQ
 {
@@ -635,6 +636,8 @@ typedef struct tagGUI_CHANGE_DISPLAY_SETTINGS_REQ
 typedef struct tagGUI_CHANGE_DISPLAY_SETTINGS_RPL
                                             GUI_CHANGE_DISPLAY_SETTINGS_RPL;
 
+
+#endif
 
 //---------------------------------------------------------------------------
 // Set Cursor Pos
@@ -762,7 +765,7 @@ typedef struct tagGUI_WND_HOOK_REGISTER_RPL GUI_WND_HOOK_REGISTER_RPL;
 struct tagGUI_KILL_JOB_REQ
 {
     ULONG msgid;
-    WCHAR boxname[34];
+    WCHAR boxname[BOXNAME_COUNT];
 };
 
 typedef struct tagGUI_KILL_JOB_REQ GUI_KILL_JOB_REQ;
